@@ -7,6 +7,7 @@
 #include "nxrt/svc.h"
 #include "nxrt/log.h"
 #include "nxrt/services_api.h"
+#include "nxrt/am_ps5.h"
 #include <array>
 #include <cstring>
 #include <limits>
@@ -289,7 +290,7 @@ NXTEST(applet_reset_keeps_old_sessions_isolated_and_unported_commands_fail) {
     const auto next = f.open(); REQUIRE(next); const auto fresh = f.child(next, 0); REQUIRE(fresh);
     nxrt::services::amctl::set_focus(false);
     CHECK_EQ(f.receive(old), UINT32_MAX); CHECK_EQ(f.receive(fresh), 15u); CHECK_EQ(f.receive(fresh), 15u);
-    CHECK_EQ(f.send(p, request(4)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kStubService);
+    CHECK_EQ(f.send(p, request(999)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kStubService);
     CHECK(!ipc::has_service("appletAE"));
 }
 NXTEST(applet_graphics_scale_reports_the_fixed_guest_profile) {
@@ -386,4 +387,98 @@ NXTEST(applet_expected_audio_volumes_are_shared_clamped_and_reset_separately) {
     CHECK_EQ(f.send(fresh, request(1)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), 0x3f800000u);
     CHECK_EQ(f.send(first, request(1)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), 0u);
     CHECK_EQ(f.send(first, request(3)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kStubService);
+}
+NXTEST(applet_display_and_debug_endpoints_cannot_report_unbacked_operations_as_success) {
+    AmFixture f; const auto p = f.open(); REQUIRE(p);
+    const auto display = f.child(p, 4), debug = f.child(p, 1000); REQUIRE(display && debug);
+    CHECK_EQ(k::handle_as<ipc::KSession>(display)->svc->name(), std::string("IDisplayController"));
+    CHECK_EQ(k::handle_as<ipc::KSession>(debug)->svc->name(), std::string("IDebugFunctions"));
+    const auto count = k::handle_count(), data = f.base + 0x1000;
+    std::memset(reinterpret_cast<void*>(data), 0xa5, 32);
+    for (uint32_t command = 0; command <= 28; ++command) {
+        if (command == 19) continue;
+        auto m = request(command); m.recv.push_back({data, 32, 0});
+        CHECK_EQ(f.send(display, m), k::kOk); auto reply = f.reply();
+        CHECK_EQ(word(reply.raw, 8), k::kNotImplemented); CHECK(reply.copy.empty() && reply.move.empty());
+        CHECK_EQ(k::handle_count(), count); CHECK_EQ(*reinterpret_cast<uint64_t*>(data), 0xa5a5a5a5a5a5a5a5ull);
+    }
+    for (auto command : {0u, 10u, 20u, 40u, 100u, 300u}) {
+        CHECK_EQ(f.send(debug, request(command)), k::kOk); const auto reply = f.reply();
+        CHECK_EQ(word(reply.raw, 8), k::kNotImplemented); CHECK(reply.copy.empty() && reply.move.empty());
+    }
+    CHECK_EQ(f.send(display, request(999)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kStubService);
+}
+NXTEST(applet_lifecycle_policy_updates_atomically_and_old_sessions_stay_isolated) {
+    AmFixture f; const auto p = f.open(), self = f.child(p, 1), common = f.child(p, 0); REQUIRE(self && common);
+    auto m = request(13); push(m.raw, uint8_t{1}); push(m.raw, uint8_t{0}); push(m.raw, uint8_t{1});
+    CHECK_EQ(f.send(self, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    auto policy = nxrt::services::amctl::lifecycle_policy();
+    CHECK(policy.focus_handling[0] && !policy.focus_handling[1] && policy.focus_handling[2]);
+    const uint8_t short_args[] = {0, 1}; ipc::Request req; ipc::Response rsp;
+    req.cmd = 13; req.in = short_args; req.in_size = sizeof short_args;
+    CHECK_EQ(k::handle_as<ipc::KSession>(self)->svc->handle(req, rsp), k::kInvalidCombination);
+    CHECK(nxrt::services::amctl::lifecycle_policy().focus_handling == policy.focus_handling);
+    m = request(14); push(m.raw, uint8_t{1}); CHECK_EQ(f.send(self, m), k::kOk);
+    m = request(16); push(m.raw, uint8_t{0}); CHECK_EQ(f.send(self, m), k::kOk);
+    m = request(900); CHECK_EQ(f.send(common, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    policy = nxrt::services::amctl::lifecycle_policy(); CHECK(policy.restart_message && !policy.out_of_focus_suspending);
+    CHECK(policy.exit_library_on_next_program);
+    nxrt::services::am_reset(); CHECK_EQ(f.send(common, m), k::kOk);
+    policy = nxrt::services::amctl::lifecycle_policy(); CHECK(!policy.restart_message && policy.out_of_focus_suspending);
+    CHECK(!policy.exit_library_on_next_program);
+    CHECK(!policy.focus_handling[0] && !policy.focus_handling[1] && !policy.focus_handling[2]);
+}
+NXTEST(applet_suspended_tick_accounting_signals_shared_events_and_optional_resume_messages) {
+    AmFixture f; const auto p = f.open(), self = f.child(p, 1), common = f.child(p, 0); REQUIRE(self && common);
+    CHECK_EQ(f.receive(common), 15u);
+    CHECK_EQ(f.send(self, request(91)), k::kOk); auto reply = f.reply(); REQUIRE(reply.copy.size() == 1);
+    const auto first = reply.copy[0]; auto event = k::handle_as<k::KEvent>(first); REQUIRE(event); CHECK(!event->signaled());
+    CHECK_EQ(f.send(self, request(91)), k::kOk); reply = f.reply(); REQUIRE(reply.copy.size() == 1);
+    const auto second = reply.copy[0]; CHECK(k::handle_as<k::KEvent>(second)->state == event->state);
+    CHECK(nxrt::services::amctl::record_suspended_ticks(0)); CHECK(!event->signaled());
+    CHECK(nxrt::services::amctl::record_suspended_ticks(0x100000002ull)); CHECK(event->signaled());
+    CHECK_EQ(f.receive(common), UINT32_MAX);
+    CHECK_EQ(f.send(self, request(90)), k::kOk); reply = f.reply();
+    CHECK_EQ(word(reply.raw, 16), 2u); CHECK_EQ(word(reply.raw, 20), 1u);
+    f.c.x[0] = second; CHECK_EQ(call(f.c, 0x17), k::kOk); CHECK(!event->signaled());
+    k::handle_close(first);
+    auto m = request(14); push(m.raw, uint8_t{1}); CHECK_EQ(f.send(self, m), k::kOk);
+    CHECK(nxrt::services::amctl::record_suspended_ticks(3)); CHECK(event->signaled()); CHECK_EQ(f.receive(common), 16u);
+    CHECK_EQ(f.send(self, request(90)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), 5u);
+}
+NXTEST(applet_suspension_overflow_and_reset_preserve_previous_state_and_events) {
+    AmFixture f; const auto self = f.child(f.open(), 1); REQUIRE(self);
+    CHECK_EQ(f.send(self, request(91)), k::kOk); auto reply = f.reply(); REQUIRE(reply.copy.size() == 1);
+    const auto handle = reply.copy[0]; auto event = k::handle_as<k::KEvent>(handle); REQUIRE(event);
+    CHECK(nxrt::services::amctl::record_suspended_ticks(UINT64_MAX));
+    f.c.x[0] = handle; CHECK_EQ(call(f.c, 0x17), k::kOk);
+    CHECK(!nxrt::services::amctl::record_suspended_ticks(1)); CHECK(!event->signaled());
+    CHECK_EQ(f.send(self, request(90)), k::kOk); reply = f.reply();
+    CHECK_EQ(word(reply.raw, 16), UINT32_MAX); CHECK_EQ(word(reply.raw, 20), UINT32_MAX);
+    nxrt::services::am_reset(); CHECK(nxrt::services::amctl::record_suspended_ticks(7)); CHECK(!event->signaled());
+    CHECK_EQ(f.send(self, request(90)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), UINT32_MAX);
+    const auto next = f.child(f.open(), 1); REQUIRE(next);
+    CHECK_EQ(f.send(next, request(90)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), 7u);
+}
+NXTEST(applet_fatal_sections_nest_and_reject_unbalanced_leaves) {
+    AmFixture f; const auto self = f.child(f.open(), 1); REQUIRE(self);
+    CHECK_EQ(f.send(self, request(4)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 512));
+    for (auto command : {3u, 3u, 4u, 4u}) {
+        CHECK_EQ(f.send(self, request(command)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    }
+    CHECK_EQ(f.send(self, request(4)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 512));
+}
+NXTEST(applet_gpu_error_event_copies_remain_shared_and_reset_isolates_old_readers) {
+    AmFixture f; const auto application = f.child(f.open(), 20); REQUIRE(application);
+    CHECK_EQ(f.send(application, request(130)), k::kOk); auto reply = f.reply(); REQUIRE(reply.copy.size() == 1);
+    const auto first = reply.copy[0]; auto event = k::handle_as<k::KEvent>(first); REQUIRE(event);
+    CHECK(!event->writable && !event->signaled());
+    CHECK_EQ(f.send(application, request(130)), k::kOk); reply = f.reply(); REQUIRE(reply.copy.size() == 1);
+    const auto second = reply.copy[0]; CHECK(k::handle_as<k::KEvent>(second)->state == event->state);
+    k::handle_close(first); nxrt::services::amctl::signal_gpu_error(); CHECK(event->signaled());
+    f.c.x[0] = second; CHECK_EQ(call(f.c, 0x17), k::kOk); CHECK(!event->signaled());
+    nxrt::services::am_reset(); nxrt::services::amctl::signal_gpu_error(); CHECK(!event->signaled());
+    const auto next = f.child(f.open(), 20); REQUIRE(next);
+    CHECK_EQ(f.send(next, request(130)), k::kOk); reply = f.reply(); REQUIRE(reply.copy.size() == 1);
+    CHECK(k::handle_as<k::KEvent>(reply.copy[0])->signaled());
 }

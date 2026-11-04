@@ -2,6 +2,7 @@
 // PS5 application bootstrap. Command layouts follow am.cpp and libnx applet.c.
 // Services are added as their state and backing are ported; unknown calls fail.
 #include "services_internal.h"
+#include "nxrt/am_ps5.h"
 #include "nxrt/kernel.h"
 #include "nxrt/subpage.h"
 #include "nxrt/services_api.h"
@@ -22,11 +23,16 @@ struct State {
     std::mutex mu;
     std::shared_ptr<kernel::KProcess> process = kernel::current_process();
     std::shared_ptr<kernel::EventState> message_event = std::make_shared<kernel::EventState>();
+    std::shared_ptr<kernel::EventState> suspended_event = std::make_shared<kernel::EventState>();
+    std::shared_ptr<kernel::EventState> gpu_error_event = std::make_shared<kernel::EventState>();
     std::deque<uint32_t> messages{focus_changed};
     bool docked = true, focused = true, foreground = false;
     bool operation_notify = false, performance_notify = false;
     bool graphics_notify = false;
-    bool exit_locked = false, fatal_section = false;
+    bool exit_locked = false;
+    uint32_t fatal_depth = 0;
+    uint64_t suspended_ticks = 0;
+    amctl::LifecyclePolicy lifecycle;
     uint32_t terminate_result = 0;
     float main_volume = 1.0f, library_volume = 1.0f;
     State() { message_event->signaled = true; }
@@ -70,6 +76,9 @@ Ptr common(const std::shared_ptr<State>& state) {
         s.add_cmd(130, "EnableStartupLogoDisappearedMessage", [state](Request&, Response&) -> uint32_t {
             std::lock_guard lock(state->mu); state->queue(95); return 0;
         });
+        s.add_cmd(900, "SetRequestExitToLibraryAppletAtExecuteNextProgramEnabled", [state](Request&, Response&) -> uint32_t {
+            std::lock_guard lock(state->mu); state->lifecycle.exit_library_on_next_program = true; return 0;
+        });
     });
 }
 Ptr self(const std::shared_ptr<State>& state) {
@@ -81,10 +90,14 @@ Ptr self(const std::shared_ptr<State>& state) {
             std::lock_guard lock(state->mu); state->exit_locked = false; return 0;
         });
         s.add_cmd(3, "EnterFatalSection", [state](Request&, Response&) -> uint32_t {
-            std::lock_guard lock(state->mu); state->fatal_section = true; return 0;
+            std::lock_guard lock(state->mu);
+            if (state->fatal_depth == UINT32_MAX) return kernel::kOutOfRange;
+            ++state->fatal_depth; return 0;
         });
         s.add_cmd(4, "LeaveFatalSection", [state](Request&, Response&) -> uint32_t {
-            std::lock_guard lock(state->mu); state->fatal_section = false; return 0;
+            std::lock_guard lock(state->mu);
+            if (!state->fatal_depth) return res(128, 512);
+            --state->fatal_depth; return 0;
         });
         s.add_cmd(11, "SetOperationModeChangedNotification", [state](Request& req, Response&) -> uint32_t {
             if (req.in_size < 1) return kernel::kInvalidCombination;
@@ -93,6 +106,26 @@ Ptr self(const std::shared_ptr<State>& state) {
         s.add_cmd(12, "SetPerformanceModeChangedNotification", [state](Request& req, Response&) -> uint32_t {
             if (req.in_size < 1) return kernel::kInvalidCombination;
             std::lock_guard lock(state->mu); state->performance_notify = req.arg<uint8_t>(0) != 0; return 0;
+        });
+        s.add_cmd(13, "SetFocusHandlingMode", [state](Request& req, Response&) -> uint32_t {
+            if (req.in_size < 3) return kernel::kInvalidCombination;
+            std::lock_guard lock(state->mu);
+            for (unsigned n = 0; n < 3; ++n) state->lifecycle.focus_handling[n] = req.arg<uint8_t>(n) != 0;
+            return 0;
+        });
+        s.add_cmd(14, "SetRestartMessageEnabled", [state](Request& req, Response&) -> uint32_t {
+            if (req.in_size < 1) return kernel::kInvalidCombination;
+            std::lock_guard lock(state->mu); state->lifecycle.restart_message = req.arg<uint8_t>(0) != 0; return 0;
+        });
+        s.add_cmd(16, "SetOutOfFocusSuspendingEnabled", [state](Request& req, Response&) -> uint32_t {
+            if (req.in_size < 1) return kernel::kInvalidCombination;
+            std::lock_guard lock(state->mu); state->lifecycle.out_of_focus_suspending = req.arg<uint8_t>(0) != 0; return 0;
+        });
+        s.add_cmd(90, "GetAccumulatedSuspendedTickValue", [state](Request&, Response& rsp) -> uint32_t {
+            std::lock_guard lock(state->mu); rsp.push(state->suspended_ticks); return 0;
+        });
+        s.add_cmd(91, "GetAccumulatedSuspendedTickChangedEvent", [state](Request&, Response& rsp) {
+            return event_handle(state->suspended_event, rsp);
         });
     });
 }
@@ -114,6 +147,9 @@ Ptr application(const std::shared_ptr<State>& state) {
         s.add_cmd(22, "SetTerminateResult", [state](Request& req, Response&) -> uint32_t {
             if (req.in_size < 4) return kernel::kInvalidCombination;
             std::lock_guard lock(state->mu); state->terminate_result = req.arg<uint32_t>(0); return 0;
+        });
+        s.add_cmd(130, "GetGpuErrorDetectedSystemEvent", [state](Request&, Response& rsp) {
+            return event_handle(state->gpu_error_event, rsp);
         });
     });
 }
@@ -194,8 +230,29 @@ Ptr proxy(const std::shared_ptr<State>& state) {
         s.add_cmd(1, "GetSelfController", [state](Request&, Response& r) -> uint32_t { r.push_object(self(state)); return 0; });
         s.add_cmd(2, "GetWindowController", [state](Request&, Response& r) -> uint32_t { r.push_object(window(state)); return 0; });
         s.add_cmd(3, "GetAudioController", [state](Request&, Response& r) -> uint32_t { r.push_object(audio(state)); return 0; });
+        s.add_cmd(4, "GetDisplayController", [](Request&, Response& r) -> uint32_t {
+            // SDK startup obtains this handle before using any capture operation.
+            // There is no capture backend yet; every operation fails explicitly.
+            r.push_object(make_iface("IDisplayController", [](Service& display) {
+                for (uint32_t command = 0; command <= 28; ++command) {
+                    if (command == 19) continue;
+                    display.add_cmd(command, "CaptureUnavailable", [](Request&, Response&) -> uint32_t {
+                        return kernel::kNotImplemented;
+                    });
+                }
+            })); return 0;
+        });
         s.add_cmd(11, "GetLibraryAppletCreator", [](Request&, Response& r) -> uint32_t { r.push_object(library_creator()); return 0; });
         s.add_cmd(20, "GetApplicationFunctions", [state](Request&, Response& r) -> uint32_t { r.push_object(application(state)); return 0; });
+        s.add_cmd(1000, "GetDebugFunctions", [](Request&, Response& r) -> uint32_t {
+            // Keep a typed endpoint for the SDK, without exposing host shell actions.
+            r.push_object(make_iface("IDebugFunctions", [](Service& debug) {
+                for (const auto command : {0u, 1u, 10u, 20u, 30u, 31u, 40u, 100u, 101u, 300u})
+                    debug.add_cmd(command, "DebugOperationUnavailable", [](Request&, Response&) -> uint32_t {
+                        return kernel::kNotImplemented;
+                    });
+            })); return 0;
+        });
         s.add_cmd(40, "GetPerformanceFunctions", [](Request&, Response& r) -> uint32_t {
             r.push_object(make_iface("IPerformanceFunctions", [](Service& g) {
                 g.add_cmd(0, "IsCpuOverclockEnabled", [](Request&, Response& out) -> uint32_t { out.push<uint8_t>(0); return 0; });
@@ -235,6 +292,19 @@ void register_am() {
 }
 void am_reset() { std::lock_guard lock(state_mu); state.reset(); }
 namespace amctl {
+LifecyclePolicy lifecycle_policy() { auto s = current(); std::lock_guard lock(s->mu); return s->lifecycle; }
+bool record_suspended_ticks(uint64_t elapsed) {
+    auto s = current(); std::lock_guard lock(s->mu);
+    if (elapsed > UINT64_MAX - s->suspended_ticks) return false;
+    if (!elapsed) return true;
+    s->suspended_ticks += elapsed; s->suspended_event->signaled = true; kernel::notify_waitable_changed();
+    if (s->lifecycle.restart_message) s->queue(16);
+    return true;
+}
+void signal_gpu_error() {
+    auto s = current(); std::lock_guard lock(s->mu);
+    s->gpu_error_event->signaled = true; kernel::notify_waitable_changed();
+}
 void set_docked(bool docked) {
     auto s = current(); std::lock_guard lock(s->mu);
     if (s->docked == docked) return;

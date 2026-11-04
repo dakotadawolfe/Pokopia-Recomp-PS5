@@ -895,7 +895,7 @@ The five new cases cover shared buffer lifetime, A/X input and B/C output
 descriptors, zero initialization, atomic range failures, empty buffers, size
 limits, guest permissions, unavailable applets and volume-state isolation.
 
-The SDK probe now traces each requested service and command. It passes eight
+At this checkpoint, the SDK probe traces each requested service and command. It passes eight
 application-proxy calls and retrieves the window resource ID, then stops before
 `GetDisplayController`. The SDK obtains the storage-capable creator and audio
 controller; it does not use their storage/volume commands during this bounded
@@ -911,12 +911,71 @@ missing interface. No unknown service or unhandled command was used. The
 production SVC archive builds, and all four ABI 4 game archives pass verification.
 The Windows runtime suite was not run.
 
-The **233-case native application** is built locally and installed, with every
-package file readback-verified. Native launch verification is pending. Its
+The **233-case native application passed with zero failures** on 2026-11-04.
+Report `app-platform-1793784998-309.log` records the display-controller boundary
+and main status zero. The process exited, and the user confirmed returning home.
+Every package file was readback-verified before that launch. Its
 executable is 130,347,955 bytes; SHA-256:
 `eb9610dee11f44e2326c84e357ddc083b001f4a766646327a4fcc651ebff0c21`.
-The passing 228-case package is retained privately for rollback. This diagnostic
+The passing package is retained privately for rollback. This diagnostic
 still stops during SDK initialization and does not launch gameplay.
+
+## Applet lifecycle and SDK stack mapping
+
+The application proxy can now return typed display/debug endpoints during SDK
+setup. Their operations explicitly return errors: no capture images, GPU buffers,
+debug actions or host-shell operations are supplied. The SDK probe fails if it
+actually uses either endpoint. Obtaining these handles is protocol progress, not
+a renderer implementation.
+
+The PS5 applet backend stores focus/suspend policy and the next-program exit
+notification request. `SetRequestExitToLibraryAppletAtExecuteNextProgramEnabled`
+takes no argument; it enables the stored flag. Suspended-time accounting and the
+GPU-error event have host-facing entry points in `nxrt/am_ps5.h`. Tick updates
+check overflow before changing state, signal shared readable events and queue a
+resume notification only when requested. GPU-error handles share a latched event.
+Reset keeps old sessions and event readers isolated from the next application.
+Fatal sections now nest and reject unmatched leaves.
+
+The shell, scheduler and renderer still need to call these entry points. The
+accounting API does not suspend workers, and the error event does not detect
+hardware faults by itself. Command layouts follow the
+[Applet Manager interface research](https://switchbrew.org/wiki/AM_services#ISelfController).
+
+The final SVC payload passed **79 cases, zero failures**, then exited:
+`svc-runtime-1793785624-318.log`; ELF SHA-256
+`403b5768199be393f027cc826463000b87c68eca8cf59e1ace8da10fab00ba49`.
+The six new cases cover unavailable display/debug operations, lifecycle state,
+suspended ticks and notifications, overflow/reset isolation, fatal-section
+nesting and GPU-error event ownership.
+
+The bounded SDK probe now checks CMIF result codes at the call site, including
+domain replies. It reaches the SDK's 4 KiB stack-mapping request after obtaining
+the suspend and GPU-error events. It validates the source page, destination region
+and requested size, then stops before `MapMemory` executes. This is not a mapping
+implementation, SDK worker launch or completed initialization. The early probes
+exposed command 900's missing handler, an incorrect argument assumption, the GPU
+event dependency and finally unported SVC 0x04; those runs are not passes.
+
+The final two-case SDK payload passed and exited:
+`game-images-1793785827-322.log`; ELF SHA-256
+`1bff74ecc0b8d8447770bcc5e9b464b2a8f449c6aa08b2757bcf3b20b39ed1e0`.
+It completed 77 system calls and intercepted the 78th: a 0x1000-byte mapping
+from SDK address `0x7500e14000` to `0x7caa2f0000` in the stack region. No display
+or debug operation was invoked. All preceding checked CMIF requests succeeded,
+and no unhandled service command was used. The first rtld callback returned;
+later callbacks and title startup have not executed. The next memory work must
+preserve guest page ownership and permissions across PS5's larger host pages.
+
+The production PS5 SVC archive builds, and all four ABI 4 game archives pass the
+module verifier. The Windows runtime suite was not run.
+
+The **239-case native application** is built locally and installed, with every
+package file readback-verified. Native launch verification is pending. Its
+executable is 130,448,787 bytes; SHA-256:
+`8aa3e8ba8fca49cc7e93738779074a6f237018f2957ee6856f44aea1c036c80f`.
+The passing 233-case package is retained privately for rollback. The installed
+diagnostic stops before SDK stack remapping and does not launch gameplay.
 
 ## Repository ownership
 

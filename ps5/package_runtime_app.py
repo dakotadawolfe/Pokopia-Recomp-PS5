@@ -82,7 +82,7 @@ def main():
     (args.build / "native-app-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Native runtime test package: {app}")
     if suite.get("executes_game_sdk"):
-        detail = "this diagnostic includes rtld and SDK code, stopping before the display-controller interface."
+        detail = "this diagnostic includes rtld and SDK code, stopping before SDK stack remapping."
     elif suite.get("executes_game_rtld"):
         detail = "this diagnostic includes the recompiled rtld and stops at the SDK handoff."
     else:

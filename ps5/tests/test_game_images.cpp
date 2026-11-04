@@ -142,7 +142,7 @@ struct ProbeStop {};
 std::array<nxrt::SvcHandler, nxrt::kSvcCount> rtld_handlers{};
 unsigned rtld_calls = 0;
 uint64_t rtld_handoff_handle = 0;
-bool sdk_display_boundary = false;
+bool sdk_map_boundary = false;
 #ifdef NXRT_TEST_SDK
 nxrt::GuestFn sdk_start = nullptr;
 std::array<nxrt::GuestFn, 3> sdk_callbacks{};
@@ -167,6 +167,18 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
     if (++rtld_calls > 10000) { std::puts("RTLD_STOP system-call limit"); throw ProbeStop{}; }
     const uint64_t a = c->x[0], b = c->x[1], d = c->x[2];
 #ifdef NXRT_TEST_SDK
+    if constexpr (Number == 0x04) {
+        const auto* sdk = nxrt::module_by_name("sdk");
+        if (!sdk || b != sdk->base() + 0xe14000 || d != mem::kPage ||
+            (a & (mem::kPage - 1)) || a < mem::kStackBase || a - mem::kStackBase > mem::kStackSize - d ||
+            !mem::SubpageMap::allows(b, d, 3) || mem::is_mapped(a, d)) {
+            std::puts("SDK_STOP unexpected stack mapping request"); throw ProbeStop{};
+        }
+        sdk_map_boundary = true;
+        std::printf("SDK_BOUNDARY MapMemory dst=%llx src=%llx size=%llx caller=%s; stopped before mapping or worker creation\n",
+            static_cast<unsigned long long>(a), static_cast<unsigned long long>(b),
+            static_cast<unsigned long long>(d), sdk->describe(c->x[30]).c_str()); throw Handoff{};
+    }
     constexpr bool allowed = Number == 1 || Number == 2 || Number == 3 || Number == 6 || Number == 0xc ||
         Number == 0xd || Number == 0xe || Number == 0xf || Number == 0x10 || Number == 0x16 ||
         Number == 0x1e || Number == 0x1f || Number == 0x21 || Number == 0x22 || Number == 0x24 ||
@@ -186,6 +198,10 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
             std::printf("RTLD_DEBUG %.*s\n", static_cast<int>(n), reinterpret_cast<const char*>(a));
     }
 #ifdef NXRT_TEST_SDK
+    bool check_cmif_result = false;
+    size_t cmif_header = 0;
+    std::string ipc_target;
+    uint32_t ipc_command = UINT32_MAX;
     if constexpr (Number == 0x21) {
         const auto session = nxrt::kernel::handle_as<nxrt::ipc::KSession>(a);
         if (session && mem::SubpageMap::allows(c->tpidrro, 0x100, 3)) {
@@ -213,10 +229,9 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
                 }
                 if (target && command != UINT32_MAX)
                     std::printf("SDK_REQUEST service=%s command=%u\n", target->name().c_str(), command);
-                if (target && target->name() == "IApplicationProxy" && command == 4) {
-                    sdk_display_boundary = true;
-                    std::puts("SDK_BOUNDARY requested GetDisplayController; stopped before interface creation; display and title startup not executed");
-                    throw Handoff{};
+                if (target && magic == 0x49434653) {
+                    check_cmif_result = true; cmif_header = header;
+                    ipc_target = target->name(); ipc_command = command;
                 }
             }
         }
@@ -224,6 +239,18 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
 #endif
     rtld_handlers[Number](c);
 #ifdef NXRT_TEST_SDK
+    if (check_cmif_result && c->x[0] == 0) {
+        nxrt::hipc::Message reply;
+        if (!nxrt::hipc::parse(reinterpret_cast<const uint32_t*>(c->tpidrro), 64, reply) ||
+            reply.raw.size() < cmif_header + 12) throw ProbeStop{};
+        uint32_t magic = 0, result = 0;
+        std::memcpy(&magic, reply.raw.data() + cmif_header, 4);
+        std::memcpy(&result, reply.raw.data() + cmif_header + 8, 4);
+        if (magic != 0x4f434653 || result) {
+            std::printf("SDK_STOP service=%s command=%u result=%08x reply_magic=%08x\n",
+                ipc_target.c_str(), ipc_command, result, magic); throw ProbeStop{};
+        }
+    }
     if constexpr (Number == 0x1f) {
         std::printf("SDK_PORT %s result=%llx handle=%llx\n", c->x[0] == 0 ? reinterpret_cast<const char*>(b) : "(rejected)",
             static_cast<unsigned long long>(c->x[0]), static_cast<unsigned long long>(c->x[1]));
@@ -231,6 +258,9 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
     if constexpr (Number == 0x21 || Number == 0x22) {
         std::printf("SDK_IPC %s\n", nxrt::ipc::ipc_summary().c_str());
         for (const auto& stats : nxrt::ipc::service_stats()) {
+            if (stats.requests && (stats.name == "IDisplayController" || stats.name == "IDebugFunctions")) {
+                std::printf("SDK_STOP unbacked endpoint used: %s\n", stats.name.c_str()); throw ProbeStop{};
+            }
             if (!stats.unhandled.empty()) {
                 for (const auto& [cmd, count] : stats.unhandled)
                     std::printf("SDK_STOP service=%s command=%u calls=%llu\n", stats.name.c_str(), cmd, static_cast<unsigned long long>(count));
@@ -281,7 +311,7 @@ extern "C" void nx_catch_call(Ctx* c, void (*)(Ctx*, uint64_t)) {
     std::printf("SDK_STOP guest exception frame fn=%llx\n", static_cast<unsigned long long>(c->fn));
     throw ProbeStop{};
 }
-NXTEST(decrypted_sdk_reaches_display_boundary_after_applet_interface_setup) {
+NXTEST(decrypted_sdk_reaches_stack_mapping_after_applet_event_setup) {
 #else
 NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
 #endif
@@ -342,7 +372,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         });
     }
     REQUIRE(imports == 2 && start_imports == 1);
-    nxrt::svc_init(); nxrt::svc_reset_counters(); rtld_calls = 0; rtld_handoff_handle = 0; sdk_display_boundary = false;
+    nxrt::svc_init(); nxrt::svc_reset_counters(); rtld_calls = 0; rtld_handoff_handle = 0; sdk_map_boundary = false;
     install_rtld_svcs(std::make_index_sequence<nxrt::kSvcCount>{}); cleanup.installed = true;
     const auto main_handle = nxrt::kernel::main_thread_adopt(0x100000, "rtld-probe"); REQUIRE(main_handle);
     auto* context = nxrt::kernel::current_ctx(); REQUIRE(context);
@@ -356,24 +386,29 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     }
     CHECK(handoff);
 #ifdef NXRT_TEST_SDK
-    CHECK(sdk_display_boundary); CHECK_EQ(rtld_handoff_handle, main_handle);
+    CHECK(sdk_map_boundary); CHECK_EQ(rtld_handoff_handle, main_handle);
     CHECK_EQ(sdk_callback_returns[0], 1u); CHECK_EQ(sdk_callback_returns[1], 0u); CHECK_EQ(sdk_callback_returns[2], 0u);
     CHECK(nxrt::ipc::stub_names_requested().empty());
     bool saw_sm = false, saw_logger = false, saw_applet = false, saw_proxy = false, saw_window = false;
+    bool saw_common = false, saw_self = false, saw_application = false;
     for (const auto& stats : nxrt::ipc::service_stats()) {
         CHECK(!stats.stub); CHECK(stats.unhandled.empty());
         if (stats.name == "sm:" && stats.requests >= 3) saw_sm = true;
         if (stats.name == "lm" && stats.requests >= 1) saw_logger = true;
         if (stats.name == "appletOE" && stats.requests == 1) saw_applet = true;
-        if (stats.name == "IApplicationProxy" && stats.requests == 8) saw_proxy = true;
+        if (stats.name == "IApplicationProxy" && stats.requests == 10) saw_proxy = true;
         if (stats.name == "IWindowController" && stats.requests == 1) saw_window = true;
+        if (stats.name == "ICommonStateGetter" && stats.requests == 1) saw_common = true;
+        if (stats.name == "ISelfController" && stats.requests == 1) saw_self = true;
+        if (stats.name == "IApplicationFunctions" && stats.requests == 1) saw_application = true;
     }
     CHECK(saw_sm); CHECK(saw_logger); CHECK(saw_applet); CHECK(saw_proxy); CHECK(saw_window);
+    CHECK(saw_common); CHECK(saw_self); CHECK(saw_application);
 #else
     CHECK_EQ(rtld_handoff_handle, main_handle);
 #endif
     CHECK(rtld_calls > 0); CHECK_EQ(nxrt::svc_unknown_total(), 0u);
-    std::printf("SDK_RESULT display_boundary=%u\n", sdk_display_boundary);
+    std::printf("SDK_RESULT map_boundary=%u\n", sdk_map_boundary);
     std::printf("RTLD_RESULT handoff=%u svc_calls=%u lifted_functions=%d; no gameplay executed\n", handoff, rtld_calls, nxmod_rtld.nfns);
 }
 #endif
