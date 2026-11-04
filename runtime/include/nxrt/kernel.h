@@ -81,9 +81,18 @@ struct KTransferMemory : KObject {
     ObjType type() const override { return ObjType::TransferMemory; }
 };
 
+struct KProcess : KObject {
+    uint64_t id = 0;
+    ObjType type() const override { return ObjType::Process; }
+};
+#ifndef _WIN32
+// One guest process per runtime instance; identity is retained until kernel reset.
+std::shared_ptr<KProcess> current_process();
+#endif
+
 // ---- handle table ------------------------------------------------------------------------------------------------------------
 uint32_t handle_add(std::shared_ptr<KObject> o);          // 0 when the table is full; handles start at 0x10000 (Horizon-like opaque values)
-std::shared_ptr<KObject> handle_get(uint32_t h);          // resolves kPseudoCurrentThread to the calling guest thread
+std::shared_ptr<KObject> handle_get(uint32_t h);          // resolves current-thread and, on POSIX, current-process pseudo handles
 void handle_close(uint32_t h);
 size_t handle_count();
 template <class T>

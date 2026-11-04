@@ -6,11 +6,13 @@
 #include "nxrt/memory.h"
 #include "nxrt/svc.h"
 #include "nxrt/log.h"
+#include "nxrt/services_api.h"
 #include <array>
 #include <cstring>
 #include <stdexcept>
 
 namespace nxrt::services { void register_logfault(); void logfault_reset(); uint32_t logfault_destination(); }
+namespace nxrt::services { void register_am(); void am_reset(); }
 
 NXTEST_GROUP(svc_ipc_ps5)
 namespace {
@@ -196,4 +198,105 @@ NXTEST(ipc_log_rejects_unreadable_buffers_and_drops_short_packets) {
     REQUIRE(capture.lines.size() == 1); CHECK(capture.lines[0].find("shorter") != std::string::npos);
     REQUIRE(mem::protect(f.base + 0x1000, 0x1000, mem::Prot::None));
     CHECK_EQ(f.send(logger, m), k::kInvalidMemoryState); CHECK_EQ(capture.lines.size(), size_t{1});
+}
+
+NXTEST(ipc_copies_resolve_process_identity_and_preserve_sender_ownership) {
+    Fixture f; uint32_t received = 0; uint64_t pid = 0;
+    std::shared_ptr<k::KProcess> retained;
+    ipc::register_service("copy", [&] {
+        auto s = std::make_shared<ipc::Service>("copy");
+        s->add_cmd(0, "RetainProcess", [&](ipc::Request& req, ipc::Response&) -> uint32_t {
+            if (req.in_copy.size() != 1) return k::kInvalidHandle;
+            received = req.in_copy[0]; pid = req.pid;
+            retained = k::handle_as<k::KProcess>(received); return retained ? 0 : k::kInvalidHandle;
+        }); return s;
+    });
+    const auto h = f.connect("copy"); const auto original = k::handle_add(k::current_process());
+    for (const auto source : {original, k::kPseudoCurrentProcess}) {
+        auto m = request(0); m.copy = {source}; m.has_pid = true; m.pid = UINT64_MAX;
+        const auto count = k::handle_count(); CHECK_EQ(f.send(h, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+        CHECK(received != source); CHECK(!k::handle_get(received)); CHECK_EQ(k::handle_count(), count);
+        CHECK(retained == k::current_process()); CHECK_EQ(pid, retained->id); CHECK(k::handle_get(source) != nullptr);
+    }
+    k::handle_close(original); CHECK(retained == k::current_process());
+}
+NXTEST(ipc_pseudo_moves_fail_and_copy_allocation_rolls_back) {
+    Fixture f; const auto h = f.connect("test");
+    for (auto pseudo : {k::kPseudoCurrentProcess, k::kPseudoCurrentThread}) {
+        auto m = request(7); m.move = {pseudo}; CHECK_EQ(f.send(h, m), k::kInvalidHandle);
+    }
+    auto object = std::make_shared<k::KEvent>(); std::vector<uint32_t> handles;
+    for (;;) { const auto handle = k::handle_add(object); if (!handle) break; handles.push_back(handle); }
+    REQUIRE(!handles.empty()); k::handle_close(handles.back()); handles.pop_back();
+    const auto count = k::handle_count(); auto m = request(7); m.copy = {k::kPseudoCurrentProcess, k::kPseudoCurrentProcess};
+    CHECK_EQ(f.send(h, m), k::kOutOfHandles); CHECK_EQ(k::handle_count(), count); CHECK_EQ(f.calls, 0u);
+    for (auto handle : handles) k::handle_close(handle);
+}
+namespace {
+struct AmFixture : Fixture {
+    uint32_t am = 0;
+    AmFixture() { nxrt::services::am_reset(); nxrt::services::register_am(); am = connect("appletOE"); }
+    ~AmFixture() { nxrt::services::am_reset(); }
+    uint32_t open(bool tipc = false) {
+        auto m = request(10, tipc); push(m.raw, uint64_t{0}); m.copy = {k::kPseudoCurrentProcess}; m.has_pid = true;
+        if (send(am, m)) return 0;
+        auto r = reply(tipc); return word(r.raw, tipc ? 0 : 8) == 0 && r.move.size() == 1 ? r.move[0] : 0;
+    }
+    uint32_t child(uint32_t parent, unsigned command) {
+        if (send(parent, request(command))) return 0;
+        auto r = reply(); return word(r.raw, 8) == 0 && r.move.size() == 1 ? r.move[0] : 0;
+    }
+    uint32_t receive(uint32_t common) {
+        if (send(common, request(1))) return UINT32_MAX;
+        auto r = reply(); return word(r.raw, 8) == 0 ? word(r.raw, 16) : UINT32_MAX;
+    }
+};
+}
+NXTEST(applet_proxy_requires_current_process_and_supports_cmif_and_tipc) {
+    AmFixture f; REQUIRE(f.am);
+    for (bool tipc : {false, true}) { const auto p = f.open(tipc); REQUIRE(p); k::handle_close(p); }
+    auto m = request(0); push(m.raw, uint64_t{0}); m.has_pid = true;
+    CHECK_EQ(f.send(f.am, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kInvalidHandle);
+    m.copy = {k::handle_add(std::make_shared<k::KEvent>())};
+    CHECK_EQ(f.send(f.am, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kInvalidHandle);
+    m.copy = {k::kPseudoCurrentProcess}; m.has_pid = false;
+    CHECK_EQ(f.send(f.am, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kInvalidHandle);
+}
+NXTEST(applet_messages_signal_shared_events_and_follow_notification_flags) {
+    AmFixture f; const auto proxy = f.open(); REQUIRE(proxy);
+    const auto common = f.child(proxy, 0), self = f.child(proxy, 1); REQUIRE(common && self);
+    CHECK_EQ(f.send(common, request(0)), k::kOk); auto r = f.reply(); REQUIRE(r.copy.size() == 1);
+    auto event = k::handle_as<k::KEvent>(r.copy[0]); REQUIRE(event); CHECK(!event->writable); CHECK(event->signaled());
+    CHECK_EQ(f.receive(common), 15u); CHECK(!event->signaled());
+    CHECK_EQ(f.receive(common), UINT32_MAX); CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 3));
+    nxrt::services::amctl::set_docked(false); CHECK(!event->signaled());
+    for (unsigned cmd : {11, 12}) { auto m = request(cmd); push(m.raw, uint8_t{1}); CHECK_EQ(f.send(self, m), k::kOk); }
+    nxrt::services::amctl::set_docked(true); CHECK(event->signaled());
+    CHECK_EQ(f.receive(common), 30u); CHECK(event->signaled()); CHECK_EQ(f.receive(common), 31u); CHECK(!event->signaled());
+    nxrt::services::amctl::set_focus(false); CHECK(event->signaled()); CHECK_EQ(f.receive(common), 15u);
+    CHECK_EQ(f.send(common, request(9)), k::kOk); CHECK_EQ(word(f.reply().raw, 16) & 0xffu, 2u);
+    CHECK_EQ(f.send(common, request(130)), k::kOk); CHECK_EQ(f.receive(common), 95u); CHECK(!event->signaled());
+}
+NXTEST(applet_reset_keeps_old_sessions_isolated_and_unported_commands_fail) {
+    AmFixture f; const auto p = f.open(); REQUIRE(p); const auto old = f.child(p, 0); REQUIRE(old);
+    CHECK_EQ(f.receive(old), 15u); nxrt::services::am_reset();
+    const auto next = f.open(); REQUIRE(next); const auto fresh = f.child(next, 0); REQUIRE(fresh);
+    nxrt::services::amctl::set_focus(false);
+    CHECK_EQ(f.receive(old), UINT32_MAX); CHECK_EQ(f.receive(fresh), 15u); CHECK_EQ(f.receive(fresh), 15u);
+    CHECK_EQ(f.send(p, request(3)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kStubService);
+    CHECK(!ipc::has_service("appletAE"));
+}
+NXTEST(applet_graphics_scale_reports_the_fixed_guest_profile) {
+    AmFixture f; const auto p = f.open(); REQUIRE(p); const auto scale = f.child(p, 60); REQUIRE(scale);
+    CHECK_EQ(f.send(scale, request(10)), k::kOk); auto reply = f.reply();
+    CHECK_EQ(word(reply.raw, 8), 0u); CHECK_EQ(word(reply.raw, 16), 10u);
+    CHECK_EQ(word(reply.raw, 20), 0u); CHECK_EQ(word(reply.raw, 24), 0u); CHECK_EQ(word(reply.raw, 28), 0u);
+    CHECK_EQ(f.send(scale, request(999)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kStubService);
+}
+NXTEST(applet_performance_service_cannot_claim_host_overclocking) {
+    AmFixture f; const auto p = f.open(); REQUIRE(p); const auto performance = f.child(p, 40); REQUIRE(performance);
+    CHECK_EQ(f.send(performance, request(0)), k::kOk); CHECK_EQ(word(f.reply().raw, 16) & 0xffu, 0u);
+    auto m = request(1); push(m.raw, uint8_t{1}); CHECK_EQ(f.send(performance, m), k::kOk);
+    CHECK_EQ(word(f.reply().raw, 8), k::kNotImplemented);
+    m = request(1); push(m.raw, uint8_t{0}); CHECK_EQ(f.send(performance, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
 }

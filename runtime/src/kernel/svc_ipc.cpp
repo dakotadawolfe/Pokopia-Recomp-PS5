@@ -32,8 +32,35 @@ uint32_t checked_send(::Ctx* c, uint32_t session, uint64_t address, uint64_t siz
     };
     if (!allows(message.send, 1) || !allows(message.ptrs, 1) || !allows(message.recv, 2) ||
         !allows(message.recv_list, 2) || !allows(message.exch, 3)) return kernel::kInvalidMemoryState;
-    for (auto handle : message.copy) if (!kernel::handle_get(handle)) return kernel::kInvalidHandle;
-    for (auto handle : message.move) if (!kernel::handle_get(handle)) return kernel::kInvalidHandle;
+    std::vector<std::shared_ptr<kernel::KObject>> copied;
+    for (auto handle : message.copy) {
+        auto object = kernel::handle_get(handle);
+        if (!object) return kernel::kInvalidHandle;
+        copied.push_back(std::move(object));
+    }
+    for (auto handle : message.move) {
+        if (handle == kernel::kPseudoCurrentProcess || handle == kernel::kPseudoCurrentThread || !kernel::handle_get(handle))
+            return kernel::kInvalidHandle;
+    }
+    struct CopyHandles {
+        std::vector<uint32_t> handles;
+        ~CopyHandles() { for (auto h : handles) kernel::handle_close(h); }
+    } received;
+    received.handles.reserve(copied.size());
+    for (size_t i = 0; i < copied.size(); ++i) {
+        const auto handle = kernel::handle_add(copied[i]);
+        if (!handle) return kernel::kOutOfHandles;
+        received.handles.push_back(handle); message.copy[i] = handle;
+    }
+    // Rewrite only the validated special header. Rebuilding a parsed message
+    // would add CMIF padding a second time and move its receive-list descriptors.
+    size_t special_word = 3;
+    if (message.has_pid) {
+        const auto pid = kernel::current_process()->id;
+        words[special_word++] = static_cast<uint32_t>(pid);
+        words[special_word++] = static_cast<uint32_t>(pid >> 32);
+    }
+    for (auto handle : message.copy) words[special_word++] = handle;
     const auto result = ipc::send_sync_request(c, session, reinterpret_cast<uint64_t>(words.data()), size);
     if (result == kernel::kOk) std::memcpy(reinterpret_cast<void*>(address), words.data(), size);
     return result;

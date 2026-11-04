@@ -128,6 +128,18 @@ NXTEST(info_svc_thread_identity_tracks_the_adopted_guest_and_closed_handle) {
     k::handle_close(handle); CHECK_EQ(call(0x25, handle).rc, k::kInvalidHandle);
     CHECK_EQ(call(0x25, k::kPseudoCurrentThread).value, id);
 }
+NXTEST(info_svc_process_copies_keep_identity_until_kernel_reset) {
+    Fixture f; nxrt::config_set("process", "pid", "97");
+    auto process_object = k::current_process();
+    const auto copy = k::handle_add(process_object); REQUIRE(copy);
+    CHECK_EQ(call(0x24, copy).value, 97u); CHECK_EQ(call(0x7c, copy).value, 2u);
+    CHECK_EQ(info(18, copy).value, 0x0100000000001234ull);
+    nxrt::config_set("process", "pid", "99");
+    CHECK_EQ(call(0x24, process).value, 97u); CHECK_EQ(call(0x6f, 2, 0, 0).value, 97u);
+    k::handle_close(copy); CHECK_EQ(call(0x24, copy).rc, k::kInvalidHandle);
+    k::kernel_reset(); CHECK(k::current_process() != process_object); CHECK_EQ(k::current_process()->id, 99u);
+    const auto stale = k::handle_add(process_object); CHECK_EQ(call(0x24, stale).rc, k::kInvalidHandle);
+}
 NXTEST(info_svc_reports_missing_accounting_as_unimplemented) {
     Fixture f; const auto handle = k::main_thread_adopt(0x10000); REQUIRE(handle);
     for (unsigned type : {9, 10}) CHECK_EQ(info(type, 0).rc, k::kNotImplemented);

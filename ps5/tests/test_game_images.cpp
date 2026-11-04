@@ -27,7 +27,7 @@
 #include <thread>
 #include <utility>
 namespace nxrt { void svc_memory_reset_for_tests(); void svc_info_reset_for_tests(); }
-namespace nxrt::services { void register_logfault(); void logfault_reset(); }
+namespace nxrt::services { void register_logfault(); void logfault_reset(); void register_am(); void am_reset(); }
 #endif
 
 NXTEST_GROUP(game_images)
@@ -142,7 +142,7 @@ struct ProbeStop {};
 std::array<nxrt::SvcHandler, nxrt::kSvcCount> rtld_handlers{};
 unsigned rtld_calls = 0;
 uint64_t rtld_handoff_handle = 0;
-bool sdk_applet_boundary = false;
+bool sdk_library_boundary = false;
 #ifdef NXRT_TEST_SDK
 nxrt::GuestFn sdk_start = nullptr;
 std::array<nxrt::GuestFn, 3> sdk_callbacks{};
@@ -188,21 +188,32 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
 #ifdef NXRT_TEST_SDK
     if constexpr (Number == 0x21) {
         const auto session = nxrt::kernel::handle_as<nxrt::ipc::KSession>(a);
-        if (session && session->svc->name() == "sm:" && mem::SubpageMap::allows(c->tpidrro, 0x100, 3)) {
+        if (session && mem::SubpageMap::allows(c->tpidrro, 0x100, 3)) {
             nxrt::hipc::Message message;
             if (nxrt::hipc::parse(reinterpret_cast<const uint32_t*>(c->tpidrro), 64, message)) {
-                uint32_t magic = 0, command = UINT32_MAX;
-                if (message.raw.size() >= 24) {
-                    std::memcpy(&magic, message.raw.data(), 4); std::memcpy(&command, message.raw.data() + 8, 4);
+                auto target = session->svc;
+                size_t header = 0;
+                uint32_t command = UINT32_MAX, magic = 0;
+                const auto read_word = [&](size_t off) {
+                    uint32_t value = UINT32_MAX;
+                    if (off + 4 <= message.raw.size()) std::memcpy(&value, message.raw.data() + off, 4);
+                    return value;
+                };
+                if (nxrt::hipc::is_tipc(message.type)) command = message.type - nxrt::hipc::kTipcBase;
+                else if (message.type == nxrt::hipc::kInvoke2MethodOld || message.type == nxrt::hipc::kInvoke2Method) {
+                    if (session->domain) {
+                        // This bounded probe cannot start guest workers; no other caller mutates the domain.
+                        if (!session->dom || message.raw.size() < 32 || message.raw[0] != 1) throw ProbeStop{};
+                        const auto object = session->dom->objects.find(read_word(4));
+                        if (object == session->dom->objects.end()) throw ProbeStop{};
+                        target = object->second; header = 16;
+                    }
+                    magic = read_word(header);
+                    if (magic == 0x49434653) command = read_word(header + 8);
                 }
-                const bool cmif = message.type == nxrt::hipc::kInvoke2MethodOld || message.type == nxrt::hipc::kInvoke2Method;
-                const bool wants_applet = cmif && magic == 0x49434653 && command == 1 &&
-                    std::memcmp(message.raw.data() + 16, "appletOE", 8) == 0;
-                const bool tipc_applet = message.type == nxrt::hipc::kTipcBase + 1 && message.raw.size() >= 8 &&
-                    std::memcmp(message.raw.data(), "appletOE", 8) == 0;
-                if (wants_applet || tipc_applet) {
-                    sdk_applet_boundary = true;
-                    std::puts("SDK_BOUNDARY requested appletOE; stopped before service lookup; applet manager and title startup not executed");
+                if (target && target->name() == "IApplicationProxy" && command == 11) {
+                    sdk_library_boundary = true;
+                    std::puts("SDK_BOUNDARY requested GetLibraryAppletCreator; stopped before interface creation; library applets and title startup not executed");
                     throw Handoff{};
                 }
             }
@@ -217,6 +228,13 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
     }
     if constexpr (Number == 0x21 || Number == 0x22) {
         std::printf("SDK_IPC %s\n", nxrt::ipc::ipc_summary().c_str());
+        for (const auto& stats : nxrt::ipc::service_stats()) {
+            if (!stats.unhandled.empty()) {
+                for (const auto& [cmd, count] : stats.unhandled)
+                    std::printf("SDK_STOP service=%s command=%u calls=%llu\n", stats.name.c_str(), cmd, static_cast<unsigned long long>(count));
+                throw ProbeStop{};
+            }
+        }
         const auto missing = nxrt::ipc::stub_names_requested();
         if (!missing.empty()) {
             for (const auto& name : missing) std::printf("SDK_STOP unported service=%s fn=%llx lr=%llx\n", name.c_str(),
@@ -237,7 +255,7 @@ struct RtldCleanup {
     bool installed = false;
     ~RtldCleanup() {
         if (installed) for (unsigned n = 0; n < rtld_handlers.size(); ++n) nxrt::svc_register(n, rtld_handlers[n]);
-        nxrt::kernel::main_thread_release(); nxrt::kernel::kernel_reset(); nxrt::ipc::registry_reset();
+        nxrt::kernel::main_thread_release(); nxrt::kernel::kernel_reset(); nxrt::ipc::registry_reset(); nxrt::services::am_reset();
         nxrt::modules_unload_all(); nxrt::nxmodules_clear(); nxrt::hle_clear(); nxrt::hle_restore_current(nullptr);
         nxrt::svc_info_reset_for_tests(); nxrt::svc_memory_reset_for_tests(); mem::shutdown();
         nxrt::game::set_current(previous);
@@ -261,7 +279,7 @@ extern "C" void nx_catch_call(Ctx* c, void (*)(Ctx*, uint64_t)) {
     std::printf("SDK_STOP guest exception frame fn=%llx\n", static_cast<unsigned long long>(c->fn));
     throw ProbeStop{};
 }
-NXTEST(decrypted_sdk_reaches_applet_boundary_after_service_and_logger_initialization) {
+NXTEST(decrypted_sdk_reaches_library_applet_boundary_after_application_proxy_setup) {
 #else
 NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
 #endif
@@ -271,7 +289,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     nxrt::svc_memory_reset_for_tests(); nxrt::svc_info_reset_for_tests(); mem::shutdown();
     nxrt::game::set_current(&game);
 #ifdef NXRT_TEST_SDK
-    nxrt::services::logfault_reset(); nxrt::services::register_logfault();
+    nxrt::services::logfault_reset(); nxrt::services::register_logfault(); nxrt::services::am_reset(); nxrt::services::register_am();
 #endif
     REQUIRE(mem::init({.heap_reserve = 12ull << 30}));
     nxrt::Module* rtld = nullptr;
@@ -322,7 +340,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         });
     }
     REQUIRE(imports == 2 && start_imports == 1);
-    nxrt::svc_init(); nxrt::svc_reset_counters(); rtld_calls = 0; rtld_handoff_handle = 0; sdk_applet_boundary = false;
+    nxrt::svc_init(); nxrt::svc_reset_counters(); rtld_calls = 0; rtld_handoff_handle = 0; sdk_library_boundary = false;
     install_rtld_svcs(std::make_index_sequence<nxrt::kSvcCount>{}); cleanup.installed = true;
     const auto main_handle = nxrt::kernel::main_thread_adopt(0x100000, "rtld-probe"); REQUIRE(main_handle);
     auto* context = nxrt::kernel::current_ctx(); REQUIRE(context);
@@ -336,21 +354,23 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     }
     CHECK(handoff);
 #ifdef NXRT_TEST_SDK
-    CHECK(sdk_applet_boundary); CHECK_EQ(rtld_handoff_handle, main_handle);
+    CHECK(sdk_library_boundary); CHECK_EQ(rtld_handoff_handle, main_handle);
     CHECK_EQ(sdk_callback_returns[0], 1u); CHECK_EQ(sdk_callback_returns[1], 0u); CHECK_EQ(sdk_callback_returns[2], 0u);
     CHECK(nxrt::ipc::stub_names_requested().empty());
-    bool saw_sm = false, saw_logger = false;
+    bool saw_sm = false, saw_logger = false, saw_applet = false, saw_proxy = false;
     for (const auto& stats : nxrt::ipc::service_stats()) {
         CHECK(!stats.stub); CHECK(stats.unhandled.empty());
-        if (stats.name == "sm:" && stats.requests >= 2) saw_sm = true;
+        if (stats.name == "sm:" && stats.requests >= 3) saw_sm = true;
         if (stats.name == "lm" && stats.requests >= 1) saw_logger = true;
+        if (stats.name == "appletOE" && stats.requests == 1) saw_applet = true;
+        if (stats.name == "IApplicationProxy" && stats.requests == 3) saw_proxy = true;
     }
-    CHECK(saw_sm); CHECK(saw_logger);
+    CHECK(saw_sm); CHECK(saw_logger); CHECK(saw_applet); CHECK(saw_proxy);
 #else
     CHECK_EQ(rtld_handoff_handle, main_handle);
 #endif
     CHECK(rtld_calls > 0); CHECK_EQ(nxrt::svc_unknown_total(), 0u);
-    std::printf("SDK_RESULT applet_boundary=%u\n", sdk_applet_boundary);
+    std::printf("SDK_RESULT library_boundary=%u\n", sdk_library_boundary);
     std::printf("RTLD_RESULT handoff=%u svc_calls=%u lifted_functions=%d; no gameplay executed\n", handoff, rtld_calls, nxmod_rtld.nfns);
 }
 #endif

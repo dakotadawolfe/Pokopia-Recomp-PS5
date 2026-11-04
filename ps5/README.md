@@ -136,7 +136,8 @@ module registration, hooks, NSO loading and linking. The kernel component adds
 guest thread objects, handles, TLS, timing and synchronization queues. The SVC
 component connects 35 handlers to the generated-code ABI: thread, event,
 synchronization, timing, debug strings, boot memory, process information and
-three synchronous IPC calls. The service manager and log manager are connected.
+three synchronous IPC calls. The service manager, log manager and initial
+application-proxy interfaces are connected.
 Memory mapping, other services, guest exceptions, write tracking and rendering still need integration
 before the core can run the game.
 The optional Windows frame recorder and stack sampler are disabled in the PS5
@@ -285,10 +286,10 @@ The runtime suite also builds as the native title **Pokopia Runtime Tests**,
 contains original ARM fixtures and runtime tests. Optional loader and SDK probes
 also include recompiled Pokopia modules and require the user's decrypted images.
 It uses the native application CRT, kernel provider, C++ libraries and companion
-`libc.prx`, rather than the payload CRT. Its current 218 cases comprise 77 platform
+`libc.prx`, rather than the payload CRT. Its current 226 cases comprise 77 platform
 cases, six thread-lifetime/exception cases, seven application-heap cases, 30 memory
-API cases, 16 loader cases, 22 guest-kernel cases and 60 SVC cases. The optional
-decrypted game-image check brings the total to 219; either loader probe makes 220.
+API cases, 16 loader cases, 22 guest-kernel cases and 68 SVC cases. The optional
+decrypted game-image check brings the total to 227; either loader probe makes 228.
 
 The app supplies C++ thread-local destructor registration and wraps statically
 linked `pthread_create` calls. Worker cleanup handlers drain C++ destructors before
@@ -327,8 +328,8 @@ its [scan API](https://github.com/drakmor/ShadowMountPlus/blob/1.7/docs/api.md).
 Launch **Pokopia Runtime Tests** from the PS5 home screen. This headless suite
 normally displays a blank screen while running and exits when finished. It writes
 `/data/pokopia-recomp/tests/app-platform-<time>-<pid>.log`, containing
-`context=native-app title=PPSA98731`. The current baseline has 218 cases; enabling
-the game-image check makes 219, and the optional rtld or SDK probe makes 220. Only the expected complete report with zero
+`context=native-app title=PPSA98731`. The current baseline has 226 cases; enabling
+the game-image check makes 227, and the optional rtld or SDK probe makes 228. Only the expected complete report with zero
 failures, together with a clean application exit, establishes success. Registration,
 FSELF inspection and payload-suite results do not establish application runtime
 behavior. Native game boot and gameplay remain separate checks.
@@ -391,7 +392,7 @@ a clean return home. Executable SHA-256:
 The optional next check maps the real `main`, `sdk`, `subsdk0` and `rtld` NSOs at
 their compiled addresses. It does not register or execute the lifted game code,
 call game constructors, apply host relocations, access RomFS or touch saves.
-The normal 218-case suite still needs no game files. To build the additional
+The normal 226-case suite still needs no game files. To build the additional
 case, supply the dump as the third argument:
 
 ```sh
@@ -412,7 +413,7 @@ Stage only the four named files from that manifest under
 and retain a `source-manifest.json` in the parent directory. Preserve any existing
 unidentified input folder. Original PC files remain unchanged. The app package
 does not bundle these files; its manifest records `requires_game_images: true`
-and `expected_cases: 219`. Omitting the third build argument restores the normal
+and `expected_cases: 227`. Omitting the third build argument restores the normal
 suite. The standalone diagnostic target is `ps5_game_image_tests`.
 
 On 2026-11-04 the standalone diagnostic passed and exited: all four modules were
@@ -760,10 +761,10 @@ domain requests, error replies, logger lifetime and fragmented log packets.
 The production PS5 SVC archive and host SVC archive compile. Host platform/TLS
 checks passed earlier in this change; the Windows runtime suite was not run.
 
-The SDK probe links the verified local SDK archive and continues from the real
-rtld into `nn::init::Start`. It executes the first rtld callback, registers with
-`sm:`, opens `lm` and obtains a logger. It deliberately stops before dispatching
-the SDK's request for `appletOE`, the unported applet manager. Unexpected imports,
+The first SDK probe linked the verified local SDK archive and continued from the real
+rtld into `nn::init::Start`. It executed the first rtld callback, registered with
+`sm:`, opened `lm` and obtained a logger. It deliberately stopped before dispatching
+the SDK's request for `appletOE`, which was unported at that milestone. Unexpected imports,
 unsupported system calls, stub services, unhandled commands or the watchdog
 deadline fail the probe. This boundary is a diagnostic stop, not an applet-manager
 implementation or proof that SDK initialization has completed.
@@ -784,18 +785,84 @@ bash ps5/build_runtime_app.sh /path/to/native-tools /path/to/private/app-build /
 
 The script requires a module build belonging to this checkout, rebuilds `pkp_sdk`
 and verifies all four archives before linking. The package manifest records
-`executes_game_sdk: true` and `expected_cases: 220`. Keep this package and its
-generated code private. The native executable is 130,071,891 bytes; SHA-256:
+`executes_game_sdk: true` and the current expected case count. Keep this package
+and its generated code private. The first SDK native executable was 130,071,891 bytes; SHA-256:
 `c11c0c2e7cd775fc2a94aec0bd1662874a55b547af01a46010afefd5568134f1`.
-The package is installed and all files were readback-verified against the local
-manifest. The passing 207-case package is retained privately for rollback.
-The 220-case native-app launch remains pending console verification.
+The **220-case native application passed with zero failures** on 2026-11-04.
+Report `app-platform-1793782991-268.log` records the SDK boundary and main status
+zero. The process exited and the user confirmed returning home. Its package is
+retained privately for rollback.
 
 Remaining IPC limitations include user buffers larger than 4 KiB, asynchronous
-requests, guest-hosted servers, process pseudo-handle transfer, and mapping
+requests, guest-hosted servers, and mapping
 lifetime coordination during concurrent unmaps. The buffer snapshot does not
-pin descriptor backing or provide fault recovery. The next SDK step requires
-real applet-manager state and process-handle support, not generic success stubs.
+pin descriptor backing or provide fault recovery.
+
+## Process handles and the application proxy
+
+The POSIX kernel now owns one guest process object per runtime lifetime. The
+current-process pseudo handle resolves to it, and ordinary copies work with
+`GetProcessId`, process information and process-scoped `GetInfo` queries. Its PID
+is fixed when first used and reset with the kernel; old objects cannot become
+the next process just because a handle number is reused. This is a single-process
+model, not guest process creation, termination or scheduling.
+
+The PS5 IPC entry point now stamps the caller's PID into messages that request
+it and gives services temporary receiver-side copies of incoming handles.
+Services retain shared object ownership when needed; the temporary handles are
+closed after dispatch, including error paths. Failed allocation rolls back any
+copies already made, and pseudo handles cannot be moved. The special header is
+edited in the validated snapshot without rebuilding its CMIF padding. This follows
+the [Atmosphere handle-table model](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/include/mesosphere/kern_k_handle_table.hpp)
+and the process-copy request used by [libnx applet initialization](https://github.com/switchbrew/libnx/blob/master/nx/source/services/applet.c).
+Moved ordinary handles and concurrent handle-table mutation retain the existing
+runtime limitations; this is not a full multi-process IPC kernel.
+
+`am_ps5.cpp` implements the initial `appletOE` application proxy separately from
+the Windows backend. Opening it validates the copied process object and PID.
+Its interfaces own the message queue, readable events, focus/mode notification
+state, foreground ownership and application state. Reset starts a fresh state;
+already-open sessions keep their old state until released. The diagnostic starts
+in focus and docked. PS5 shell focus, suspend and exit callbacks still need wiring.
+
+The graphics-scale query returns the fixed full-quality guest value used by the
+existing runtime. It does not establish rendering quality or performance on PS5.
+The performance interface reports CPU overclocking disabled and explicitly
+rejects attempts to enable it; no PS5 clock changes are made. Command names for
+these Switch 2 interfaces follow the
+[Applet Manager interface research](https://switchbrew.org/wiki/AM_services#IPerformanceFunctions).
+Library applets, display/audio controllers, saves and system-app proxies remain
+unported. Unknown commands return errors; this backend supplies no generic
+success objects for those missing interfaces.
+
+The expanded SVC diagnostic passed **68 cases, zero failures**, and exited:
+`svc-runtime-1793783666-279.log`; ELF SHA-256
+`1b4b3d7b5dfd6f3d03ea6558290736931034b26138f0bcb9b00469d14ba9195b`.
+New tests exercise process identity/copy lifetime, PID stamping, handle exhaustion
+rollback, rejected pseudo moves, application-proxy validation, shared events,
+message ordering, notification flags, reset isolation and fixed platform queries.
+The host platform and TLS suites pass. The Windows runtime suite was not run.
+
+The SDK probe now stops before `IApplicationProxy::GetLibraryAppletCreator`.
+Before that stop it must open the application proxy and obtain three subsidiary
+interfaces, including graphics-scale and performance, with no unknown commands.
+This remains a bounded initialization check, not complete SDK startup or gameplay.
+
+The two-case payload passed and exited:
+`game-images-1793783824-280.log`; ELF SHA-256
+`d9512c224542e14004699cb61e28eceb8ac5b0d113c800b5e0374c187d64f819`.
+It records 64 completed system calls and intercepts the 65th before the missing
+interface is created. The first rtld callback returns; later callbacks and title
+startup have not run. The initial exploratory runs stopped on unported proxy
+commands 60, 40 and 11; those reports are not counted as passing runs.
+
+The **228-case native application** was built locally with executable SHA-256
+`5cf3dff54105762c1b98235a7aad1d28a9d2e1c725d0eaa635c129e612351004`
+(130,245,843 bytes). It is installed and all package files were readback-verified;
+the passing 220-case package is retained for rollback. The 228-case launch remains
+pending native-app verification. The
+production PS5 SVC archive compiles, and all four ABI 4 game archives pass the
+module verifier. The game-derived artifacts remain private.
 
 ## Repository ownership
 

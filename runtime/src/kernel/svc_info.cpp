@@ -35,7 +35,9 @@ constexpr uint64_t kTotalMemoryAvailable = 0xCD500000ull;       // chosen value:
 constexpr uint64_t kUsedMemoryOverhead = 0x4000000ull;          // chosen value: 64 MiB added to the heap size for "used"
 constexpr uint64_t kEntropyDefaultSeed = 0x1234567890ABCDEFull; // chosen value
 constexpr uint64_t kGoldenRatio64 = 0x9E3779B97F4A7C15ull;      // used to separate the four RandomEntropy subtypes
+#ifdef _WIN32
 constexpr uint64_t kDefaultProcessId = 0x51;                    // chosen value (config [process] pid)
+#endif
 constexpr uint32_t kInfoThreadTickCountOld = 0xF0000002u;       // ThreadTickCount id on firmware 1.0.0-12.1.0 (Switchbrew)
 constexpr uint32_t kInfoThreadTickCount = 25;                   // ThreadTickCount id on firmware 12.1.0+ (Switchbrew table)
 constexpr uint64_t kProcessStateStarted = 2;                    // Switchbrew ProcessState 2 = Started (not debugged)
@@ -82,7 +84,7 @@ uint32_t get_info(uint32_t type, uint32_t handle, uint64_t sub, uint64_t& out) {
         case 20: case 21: case 22: case 23: case 28: case 29: case 30:
         case 31: case 32: case 33: case 36: case 37: case 38:
             if (sub) return kInvalidCombination;
-            if (handle != kernel::kPseudoCurrentProcess) return kernel::kInvalidHandle;
+            if (kernel::handle_as<kernel::KProcess>(handle) != kernel::current_process()) return kernel::kInvalidHandle;
             break;
         case 8: case 9:
             if (handle) return kernel::kInvalidHandle;
@@ -222,7 +224,14 @@ uint32_t get_system_info(uint32_t type, uint64_t sub, uint64_t& out) {
             return kInvalidCombination;
         case 2:                                                // InitialProcessIdRange: subtype 0 lower bound, 1 upper bound
             // nxrt choice: the range is the single pid GetProcessId reports.
-            if (sub == 0 || sub == 1) { out = static_cast<uint64_t>(config_get_int("process", "pid", kDefaultProcessId)); return kernel::kOk; }
+            if (sub == 0 || sub == 1) {
+#ifdef _WIN32
+                out = static_cast<uint64_t>(config_get_int("process", "pid", kDefaultProcessId));
+#else
+                out = kernel::current_process()->id;
+#endif
+                return kernel::kOk;
+            }
             return kInvalidCombination;
         default:
             return kInvalidCombination;
@@ -286,14 +295,24 @@ void resource_peak_value(::Ctx* c) {
 
 #endif
 
-// GetProcessId(process handle): only the pseudo handle of the current process is accepted (no other process objects exist yet).
+// GetProcessId: POSIX accepts both the current-process pseudo handle and its copies.
 void get_process_id(::Ctx* c) {
-    if (static_cast<uint32_t>(reg(c, 1)) != kernel::kPseudoCurrentProcess) {
+#ifdef _WIN32
+    const bool valid = static_cast<uint32_t>(reg(c, 1)) == kernel::kPseudoCurrentProcess;
+#else
+    const auto process = kernel::handle_as<kernel::KProcess>(static_cast<uint32_t>(reg(c, 1)));
+    const bool valid = process == kernel::current_process();
+#endif
+    if (!valid) {
         reg(c, 1) = 0;
         svc_ret(c, kernel::kInvalidHandle);
         return;
     }
+#ifdef _WIN32
     reg(c, 1) = static_cast<uint64_t>(config_get_int("process", "pid", static_cast<int64_t>(kDefaultProcessId)));
+#else
+    reg(c, 1) = process->id;
+#endif
     svc_ret(c, kernel::kOk);
 }
 
@@ -309,10 +328,10 @@ void get_thread_id(::Ctx* c) {
     svc_ret(c, kernel::kOk);
 }
 
-// GetProcessInfo(process handle, ProcessInfoType): type 0 is ProcessState. The handle is not checked (no process objects yet).
+// GetProcessInfo(process handle, ProcessInfoType): type 0 is ProcessState.
 void get_process_info(::Ctx* c) {
 #ifndef _WIN32
-    if (static_cast<uint32_t>(reg(c, 1)) != kernel::kPseudoCurrentProcess) {
+    if (kernel::handle_as<kernel::KProcess>(static_cast<uint32_t>(reg(c, 1))) != kernel::current_process()) {
         reg(c, 1) = 0; return svc_ret(c, kernel::kInvalidHandle);
     }
 #endif

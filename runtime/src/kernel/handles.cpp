@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "nxrt/gauge.h"
+#include "nxrt/config.h"
 #include "nxrt/kernel.h"
 
 namespace nxrt::kernel {
@@ -14,7 +15,21 @@ namespace {
 std::shared_mutex g_lock;
 std::unordered_map<uint32_t, std::shared_ptr<KObject>> g_handles;
 uint32_t g_next = 0x10000;
+#ifndef _WIN32
+std::shared_ptr<KProcess> g_process;
+#endif
 }  // namespace
+
+#ifndef _WIN32
+std::shared_ptr<KProcess> current_process() {
+    std::unique_lock lock(g_lock);
+    if (!g_process) {
+        g_process = std::make_shared<KProcess>();
+        g_process->id = static_cast<uint64_t>(config_get_int("process", "pid", 0x51));
+    }
+    return g_process;
+}
+#endif
 
 uint32_t handle_add(std::shared_ptr<KObject> o) {
     if (!o) return 0;
@@ -32,6 +47,9 @@ uint32_t handle_add(std::shared_ptr<KObject> o) {
 }
 
 std::shared_ptr<KObject> handle_get(uint32_t h) {
+#ifndef _WIN32
+    if (h == kPseudoCurrentProcess) return current_process();
+#endif
     if (h == kPseudoCurrentThread) {
         KThread* t = current_thread();
         return t ? t->self.lock() : nullptr;
@@ -63,7 +81,13 @@ size_t handle_count() {
 
 void handles_reset() {
     std::unordered_map<uint32_t, std::shared_ptr<KObject>> old;
+#ifndef _WIN32
+    std::shared_ptr<KProcess> old_process;
+#endif
     std::unique_lock lock(g_lock);
+#ifndef _WIN32
+    old_process = std::move(g_process);
+#endif
     old.swap(g_handles);
     g_next = 0x10000;
     lock.unlock();

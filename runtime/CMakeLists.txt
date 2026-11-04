@@ -49,6 +49,7 @@ list(FILTER NXRT_SOURCES EXCLUDE REGEX "/src/gfx/")   # the graphics shell is it
 list(FILTER NXRT_SOURCES EXCLUDE REGEX "/src/mem/(host_vm_posix|ps5_vm|subpage|guest_region|shared_heap|memory_ps5)\\.cpp$")
 list(FILTER NXRT_SOURCES EXCLUDE REGEX "/src/os/host_thread_posix\\.cpp$")
 list(FILTER NXRT_SOURCES EXCLUDE REGEX "/src/kernel/(thread_posix|time_posix)\\.cpp$")
+list(FILTER NXRT_SOURCES EXCLUDE REGEX "/src/services/am_ps5\\.cpp$")
 add_library(nxrt STATIC ${NXRT_SOURCES})
 target_include_directories(nxrt PUBLIC include)
 if(EXISTS "${NXRT_RECOMP_INCLUDE}")
