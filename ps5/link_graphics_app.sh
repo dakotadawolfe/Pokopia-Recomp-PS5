@@ -36,15 +36,24 @@ for flag in "${radv_link_flags[@]}"; do
     [[ $flag == --defsym=__cxa_thread_atexit_impl=* ]] || flags+=("$flag")
 done
 inputs=()
+system_imports=()
+system_libc=()
 for argument in "$@"; do
     case "$argument" in
         -Xlinker|-nostartfiles|-nodefaultlibs|-pthread|-lpthread|-ldl|-lrt|-lm) ;;
+        *.so|-lSce*) system_imports+=("$argument") ;;
+        */target/lib/libc.a) system_libc+=("$argument") ;;
         -Wl,*) IFS=, read -r -a parts <<< "${argument#-Wl,}"; inputs+=("${parts[@]}") ;;
         *) inputs+=("$argument") ;;
     esac
 done
+# The companion's compatibility exports must not satisfy C++ ABI references
+# before the real static runtime is searched. Mixing its personality/globals
+# with the SDK throw/unwind implementation crashes at the first host exception.
+# Keep the SDK's libc after the system imports: its payload-only syscall
+# adapters otherwise displace the native application's public kernel imports.
 : "${PS5_PAYLOAD_SDK:?Native application SDK is required}"
 "$PS5_PAYLOAD_SDK/bin/prospero-lld" "${flags[@]}" \
     --defsym=__dlopen=0 --defsym=__dlsym=0 --defsym=__dladdr=0 --defsym=__dlclose=0 --defsym=__dlerror=0 \
     --gc-sections --error-limit=0 -Map="$output.map" -o "$output" \
-    "${inputs[@]}" "${radv_link_inputs[@]}"
+    "${inputs[@]}" "${radv_link_inputs[@]}" "${system_imports[@]}" "${system_libc[@]}"

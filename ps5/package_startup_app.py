@@ -29,7 +29,10 @@ def check_nonlocal(path, host_aliases=False):
             raise ValueError("Unconverted startup executable needs symbols for verification")
         # Keep only the required records from the large recompiled symbol table.
         # get_symbol_by_name builds a second index of every game symbol.
-        names = ("nxrt_ps5_setjmp", "nxrt_ps5_longjmp", "__wrap_setjmp", "__wrap_longjmp")
+        native_eh = ("__gxx_personality_v0", "__cxa_throw", "__cxa_begin_catch", "__cxa_end_catch",
+                     "__cxa_rethrow", "__cxa_get_globals", "__cxa_get_globals_fast",
+                     "_Unwind_RaiseException", "_Unwind_Resume")
+        names = ("nxrt_ps5_setjmp", "nxrt_ps5_longjmp", "__wrap_setjmp", "__wrap_longjmp") + native_eh
         records = {name: [] for name in names}
         for symbol in table.iter_symbols():
             if symbol.name in records:
@@ -46,6 +49,12 @@ def check_nonlocal(path, host_aliases=False):
                 if (len(targets) != 1 or targets[0]["st_shndx"] == "SHN_UNDEF" or
                         targets[0]["st_value"] != entries[0]["st_value"]):
                     raise ValueError(f"Shader compiler jump {alias} does not resolve to {name}")
+        if host_aliases:
+            for name in native_eh:
+                entries = records[name]
+                if (len(entries) != 1 or not isinstance(entries[0]["st_shndx"], int) or
+                        entries[0]["st_size"] == 0):
+                    raise ValueError(f"Native graphics needs the complete static C++ exception runtime: {name}")
 
 
 def main():

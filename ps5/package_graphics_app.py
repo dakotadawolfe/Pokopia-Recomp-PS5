@@ -39,6 +39,7 @@ def main():
             "exception_selftest_cases": 38,
             "host_nonlocal_selftest_cases": 1,
             "host_nonlocal_aliases_verified": True,
+            "native_cpp_exception_runtime_verified": True,
         }
     app = args.build / "package" / TITLE
     copies = {

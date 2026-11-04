@@ -118,7 +118,7 @@ the subsequent full translation. No game shader has been exercised on PS5 yet.
 Local qualification also includes 23 instruction-decoder checks under Address
 and Undefined Behavior Sanitizers, preflight of all fifteen required SDK
 exports, full native linking, FSELF inspection, and verified host jump aliases.
-The combined candidate is 278,049,217 bytes with SHA-256
+The initial combined candidate is 278,049,217 bytes with SHA-256
 `76821ebc9ed67fda10dc215117ab36b6c680c222d05b22b28bf669ec1ce6d3db`.
 Its native ELF is 283,817,276 bytes, SHA-256
 `60ababa4cc7da79b7cf48c9ec41fdca9f20dc5f839d12595174b1388596c40ba`.
@@ -133,9 +133,42 @@ game folder and original assets were untouched.
 
 The owned transfer helper (PID 91) was closed, its payload slot removed, and
 port 2121 verified closed. `game-renderer-console.json` records cleanup. No app
-launch was performed automatically. The combined game/renderer path is awaiting
-its first user-driven console run; installation does not establish runtime
-success or gameplay.
+launch was performed automatically.
+
+## Native exception linkage correction
+
+The first combined run, `game-native-1793827615-101.log`, reached the host
+nonlocal-jump check and several guest exception checks, then crashed in
+`host_exception_removes_nested_guest_catch_frames`. It did not reach the folder
+picker, NVN backend installation or game dispatch. The synthetic guest error
+messages before that final case are expected test inputs, not game failures.
+
+Binary comparison identified mixed exception linkage: the earlier successful
+native startup app defines `__gxx_personality_v0` and the C++ exception globals
+locally, while the combined build imported them but linked its throw/unwind
+functions statically. The graphics link now searches the real static C++
+runtime before system import stubs. The SDK libc archive stays after system
+imports so payload-only syscall adapters cannot displace native kernel imports.
+The native and RADV SDK copies of libc++, libc++abi and libunwind must all match.
+
+Packaging now requires all nine core C++ exception functions to be defined
+locally, in addition to the qualified nonlocal-jump implementation and aliases.
+The corrected ELF passes these checks; a negative fixture with its personality
+symbol renamed is rejected and removed afterward. This establishes corrected
+linkage, not a successful console retry.
+
+The correction is 278,224,929 bytes with SHA-256
+`79164e2877f3c7252dc335cb03f954b583c9c44b7d2f2f849348ae5cb5ec6656`.
+Native ELF: 284,010,836 bytes, SHA-256
+`897f65515e6594e5165aba6f2d35565f4b7f17647139b505d1668c94c7bd21c9`.
+The correction is installed after ShadowMountPlus confirmed the title was
+stopped and unmounted. `game-renderer-eh-install.json` records the previous
+executable backup and complete SHA-256 readback of both staged and installed
+files. The existing startup shader cache and app provenance are unchanged.
+The crash-report helper (PID 104) and replacement transfer helper (PID 93) were
+closed and their payload slots removed; `game-renderer-result-console.json`
+and `game-renderer-eh-console.json` record cleanup. The corrected build has
+not yet been launched on the console.
 
 ## Interpreting a run
 
