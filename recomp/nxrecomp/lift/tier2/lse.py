@@ -28,6 +28,7 @@ class LseOps:
         rs = [self.regop(i, o) for o in regs]
         addr = f"c->x[{Reg(i.reg_name(mem.mem.base)).n}]"
         bits = {"b": 8, "h": 16}.get(size, rs[0].bits)
+        addr = f"nx_checked_address({addr}, {bits // 8 * (2 if base == 'casp' else 1)}, 3)"
         t = u(bits)
         if base == "casp":  # casp x0, x1, x2, x3, [x4]: compare (x0, x1), store (x2, x3), old value to (x0, x1)
             s0, s1, t0, t1 = rs

@@ -98,7 +98,7 @@ class MiscOps:
     def i_dc(self, f, i, ops):
         if "zva" in i.op_str:  # zero a 64-byte block (DCZID_EL0 reports 64)
             r = Reg(i.op_str.split(",")[1].strip())
-            return f"std::memset(reinterpret_cast<void*>(c->x[{r.n}] & ~63ull), 0, 64);"
+            return f"std::memset(reinterpret_cast<void*>(nx_checked_address(c->x[{r.n}] & ~63ull, 64, 2)), 0, 64);"
         return ";"  # cache maintenance
 
     i_ic = i_nop

@@ -226,6 +226,42 @@ NXTEST(full_guest_reservations_touch_only_three_host_pages) {
 }
 
 #ifdef NXRT_TEST_PS5
+NXTEST(native_discard_splits_views_without_losing_shared_backing) {
+    namespace native = nxrt::ps5_vm;
+    const size_t page = vm::page_size();
+    FaultScope faults;
+    REQUIRE(faults.segv_set && faults.bus_set);
+    auto mapping = native::Reservation::reserve(3 * page, nxrt::mem::kMainBase);
+    auto alias = native::Reservation::reserve(3 * page, nxrt::mem::kAliasBase);
+    REQUIRE(mapping && alias);
+    {
+        auto backing = native::DirectMemory::allocate(3 * page);
+        REQUIRE(backing);
+        REQUIRE(mapping.map(0, backing, 0, 3 * page, vm::Access::ReadWrite));
+        REQUIRE(alias.map(0, backing, 0, 3 * page, vm::Access::ReadWrite));
+    }
+    auto* original = static_cast<unsigned char*>(mapping.data());
+    auto* shared = static_cast<unsigned char*>(alias.data());
+    original[0] = 21; original[page] = 31; original[2 * page] = 41;
+    CHECK(!mapping.discard(page / 2, page));
+    CHECK(!mapping.discard(2 * page, 2 * page));
+    REQUIRE(mapping.discard(page, page));
+    CHECK(!can_touch(original, page, false));
+    CHECK_EQ(original[0], 21); CHECK_EQ(original[2 * page], 41);
+    CHECK_EQ(shared[page], 31);
+    CHECK(!mapping.protect(0, 3 * page, vm::Access::None));
+    {
+        auto replacement = native::DirectMemory::allocate(page);
+        REQUIRE(replacement);
+        REQUIRE(mapping.map(page, replacement, 0, page, vm::Access::ReadWrite));
+        original[page] = 51;
+    }
+    CHECK_EQ(original[page], 51); CHECK_EQ(shared[page], 31);
+    REQUIRE(mapping.reset());
+    CHECK_EQ(shared[0], 21); CHECK_EQ(shared[2 * page], 41);
+    REQUIRE(alias.reset());
+}
+
 NXTEST(native_views_reject_overlap_and_keep_backing_until_last_view) {
     namespace native = nxrt::ps5_vm;
     const size_t page = vm::page_size();

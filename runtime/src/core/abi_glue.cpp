@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The runtime-provided half of the generated-code ABI (recomp/include/nxrecomp/ctx.h, ABI version 2, section "runtime-provided"):
-// call_indirect, host_import, guest_trap, guest_unimpl, guest_svc, guest_mrs, guest_msr, stx_diag. The rest of the section lives next
+// The runtime-provided half of the generated-code ABI (recomp/include/nxrecomp/ctx.h, section "runtime-provided"):
+// call_indirect, host_import, guest_trap, guest_unimpl, guest_svc, guest_mrs, guest_msr. Exclusive-store diagnostics live in
+// exclusive_diagnostics.cpp. The rest of the section lives next
 // to its subsystem: nx_site_inline / nx_site_midhook / nx_hook_entry in hooks.cpp, nx_catch_call in eh/catch_call.cpp, and the
 // registration of the lifted module tables (NxModule) in nxmodule.cpp.
 // Pattern from smo-recomp runtime/core/hostrt.c (host_import with in_import bookkeeping, stx_diag, guest_trap / guest_unimpl).
@@ -82,15 +83,6 @@ uint64_t guest_mrs(Ctx* c, uint32_t sysreg) {
 void guest_msr(Ctx* c, uint32_t sysreg, uint64_t value) {
     std::lock_guard<std::mutex> lk(nxrt::g_sysreg_lock);
     if (nxrt::g_sysregs_seen.insert(sysreg | 0x10000u).second) NXLOG_W("guest", "MSR to system register 0x%04x = 0x%llx (not modelled): ignored (in f_%llx)", sysreg, static_cast<unsigned long long>(value), static_cast<unsigned long long>(c->fn));
-}
-
-// Called on every failed exclusive store; reports a loop that never succeeds.
-void stx_diag(Ctx* c, uint64_t a, uint64_t expected, uint64_t seen, uint64_t v, int bits) {
-    uint64_t n = ++c->ex_fail;
-    if (n == 1000 || n == 100000)
-        NXLOG_W("guest", "STXR failing %llu times in f_%llx: addr=%llx expected=%llx seen=%llx new=%llx (%s%d)", static_cast<unsigned long long>(n),
-                static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(a), static_cast<unsigned long long>(expected),
-                static_cast<unsigned long long>(seen), static_cast<unsigned long long>(v), bits < 0 ? "monitor lost, " : "", bits < 0 ? -bits : bits);
 }
 
 }  // extern "C"

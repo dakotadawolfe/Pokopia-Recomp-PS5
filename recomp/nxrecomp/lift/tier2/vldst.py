@@ -40,6 +40,7 @@ class VecLdSt:
                              f"for (int j = 0; j < {lanes}; j++) r_.u{bits}[j] = e_; c->v[{r.n}] = r_; }}")
         elif nstruct == 1:
             size = bits * lanes // 8
+            parts.append(f"nx_check_memory(a, {size * len(rs)}, {2 if store else 1});")
             for k, r in enumerate(rs):
                 if store:
                     parts.append(f"std::memcpy(reinterpret_cast<void*>(a + {k * size}), &c->v[{r.n}], {size});")

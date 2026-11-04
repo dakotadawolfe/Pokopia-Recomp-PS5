@@ -367,7 +367,7 @@ class Fn:
                 rt2, rs = bits(w, 14, 10), bits(w, 20, 16)
                 if load:
                     if size == 2:
-                        return ('{ uint64_t a = %s; uint64_t v = __atomic_load_n((uint64_t *)(uintptr_t)a, __ATOMIC_ACQUIRE); '
+                        return ('{ uint64_t a = %s; nx_check_memory(a, 8, 1); uint64_t v = __atomic_load_n((uint64_t *)(uintptr_t)a, __ATOMIC_ACQUIRE); '
                                 'c->ex_addr = a; c->ex_val = v; %s %s }' % (XS(rn), SET(rt, 0, '(uint32_t)v'), SET(rt2, 0, '(uint32_t)(v >> 32)')))
                     return ('{ uint64_t a = %s; uint64_t lo, hi; ldxp128(c, a, &lo, &hi); %s %s }'
                             % (XS(rn), SET(rt, 1, 'lo'), SET(rt2, 1, 'hi')))
@@ -380,8 +380,8 @@ class Fn:
                 # AArch64 orders STLR before a later LDAR (RCsc); x86 lets a later load pass a plain (release) store, so STLR is a
                 # seq_cst store (xchg): store-then-check handshakes (job systems, sleep/wake flags) otherwise see stale values.
                 if load:
-                    return SET(rt, 1, '__atomic_load_n((uint%d_t *)(uintptr_t)%s, __ATOMIC_ACQUIRE)' % (nb, XS(rn)))
-                return '__atomic_store_n((uint%d_t *)(uintptr_t)%s, (uint%d_t)%s, __ATOMIC_SEQ_CST);' % (nb, XS(rn), nb, R(rt, size == 3))
+                    return SET(rt, 1, '__atomic_load_n((uint%d_t *)(uintptr_t)nx_checked_address(%s, %d, 1), __ATOMIC_ACQUIRE)' % (nb, XS(rn), nb // 8))
+                return '__atomic_store_n((uint%d_t *)(uintptr_t)nx_checked_address(%s, %d, 2), (uint%d_t)%s, __ATOMIC_SEQ_CST);' % (nb, XS(rn), nb // 8, nb, R(rt, size == 3))
             if load:                                     # ldxr / ldaxr: remember address and value
                 return '{ uint64_t a = %s; c->ex_addr = a; c->ex_val = rd%d(a); %s }' % (XS(rn), nb, SET(rt, 1, 'c->ex_val'))
             # stxr / stlxr: succeeds only if the value is still the one loaded (compare-and-swap)

@@ -2,6 +2,7 @@
 set(core_root "${CMAKE_CURRENT_LIST_DIR}/../runtime")
 add_library(nxrt_ps5_core STATIC
     "${core_root}/src/core/dispatch.cpp" "${core_root}/src/core/abi_glue.cpp"
+    "${core_root}/src/core/exclusive_diagnostics.cpp"
     "${core_root}/src/core/nxmodule.cpp" "${core_root}/src/core/hooks.cpp"
     "${core_root}/src/loader/module.cpp" "${core_root}/src/loader/nso.cpp")
 target_include_directories(nxrt_ps5_core PUBLIC "${core_root}/include"

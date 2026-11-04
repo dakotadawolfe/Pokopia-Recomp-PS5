@@ -372,6 +372,7 @@ static inline void v_tbl(Ctx *c, int rd, int rn, int len, int rm, int q, int tbx
  * element i of register k lives at memory element (i * n + k). */
 static inline void v_ldn(Ctx *c, uint64_t a, int rt, int n, int sz, int q) {
     int count = (q ? 16 : 8) >> sz, es = 1 << sz;
+    nx_check_memory(a, (size_t)(count * n * es), 1);
     V128 r[4];
     for (int k = 0; k < n; k++) { r[k].d[0] = 0; r[k].d[1] = 0; }
     for (int i = 0; i < count; i++)
@@ -384,6 +385,7 @@ static inline void v_ldn(Ctx *c, uint64_t a, int rt, int n, int sz, int q) {
 }
 static inline void v_stn(Ctx *c, uint64_t a, int rt, int n, int sz, int q) {
     int count = (q ? 16 : 8) >> sz, es = 1 << sz;
+    nx_check_memory(a, (size_t)(count * n * es), 2);
     for (int i = 0; i < count; i++)
         for (int k = 0; k < n; k++) {
             uint64_t v = vget(&c->v[(rt + k) & 31], sz, i);

@@ -39,6 +39,9 @@ public:
     bool map(size_t offset, const DirectMemory& backing, size_t backing_offset,
              size_t size, host_vm::Access access);
     bool protect(size_t offset, size_t size, host_vm::Access access);
+    // Restore an inaccessible reservation without opening an address-space
+    // hole. Backing remains alive wherever another view still references it.
+    bool discard(size_t offset, size_t size);
     bool reset();
 private:
     struct View { size_t offset, size; std::shared_ptr<Backing> backing; };

@@ -9,8 +9,12 @@ The initial upstream revision is `2c29515b23a6d78d967775fd7e9f24f50402cca7`.
 - Load decrypted ExeFS and RomFS from `C:/Games/pokopia` during local preparation.
   An explicit input path can point to an existing dump elsewhere. Do not request
   keys or firmware; this application consumes extracted game files.
-- Produce a native PS5 application and its executable, using the existing
-  homebrew SDK, RADV and native presentation work where appropriate.
+- Produce a native PS5 application launched through ShadowMountPlus, using
+  the existing homebrew SDK, RADV and native presentation work where appropriate.
+  Deliver the complete title folder with `eboot.bin`, `sce_sys` metadata and
+  required runtime modules. Keep the native application ELF and symbols for
+  debugging. Payload Manager ELFs are development diagnostics; their successful
+  execution does not establish a working ShadowMountPlus application launch.
 - Target steady 60 real frames per second, with frame generation off. Establish
   one fixed graphics profile against the base PS5 hardware, then validate it on
   other PS5 models. Do not expose resolution, upscaling, GPU accuracy, performance
@@ -96,20 +100,27 @@ all generated game code and archives under the supplied private build directory.
 It reads the original dump without copying or changing it. The module bases,
 hook sites, floating-point contraction setting and generated-code optimization
 level match upstream. Their runtime memory layout remains to be implemented.
+After compilation, `check_modules.py` inspects the ABI symbol inside each game
+archive, checks the generated function/unit counts and rejects emitted
+`guest_unimpl` calls. It writes hashes and coverage counts to
+`module-verification.json` inside the private build directory. This check does
+not execute the game or establish complete function discovery.
 
 The component target produces `libpkp_main.a`, `libpkp_sdk.a`,
 `libpkp_subsdk0.a`, `libpkp_rtld.a`, `libnxrt_ps5_platform.a` and
 `libnxrt_ps5_core.a`. These are link inputs, not a finished game executable.
 The platform library contains synchronization, logging, configuration, the
-gauge registry and native memory primitives. The core library contains dispatch, the generated-code ABI,
+gauge registry, native memory primitives and sparse fixed guest regions.
+The core library contains dispatch, the generated-code ABI,
 module registration, hooks, NSO loading and linking. Memory, guest threads,
 services, exceptions and rendering still need platform implementations before
 the core can run the game.
 
-The platform check runs 48 cases on the host: 17 upstream cases for mutexes,
+The platform check runs 57 cases on the host: 17 upstream cases for mutexes,
 condition variables, events and semaphores, 23 upstream cases for logging and
-configuration, and eight memory cases. The PS5 build runs 49 cases, including
-an additional native direct-memory ownership test. It writes a report
+configuration, eight memory cases and nine subpage cases. The PS5 build runs
+66 cases, including two additional direct-memory ownership/release tests and
+seven sparse guest-region cases. It writes a report
 to `/data/pokopia-recomp/tests/platform-<time>-<pid>.log`; individual temporary
 test files are removed by the tests. Windows retains its native synchronization
 primitives; the PS5 backend uses the target C++ threading runtime and a monotonic
@@ -122,11 +133,11 @@ checks translation coverage of the discovered functions, not execution or
 complete discovery of every possible runtime code path.
 
 On 2026-11-03 all four game archives and both runtime component archives built
-locally with the PS5 SDK. The 48 host platform cases passed. The PS5 suite was
-uploaded, readback-verified and executed: **49 cases, zero failures**, followed
+locally with the PS5 SDK. The current 57 host platform cases passed. The PS5 suite was
+uploaded, readback-verified and executed: **66 cases, zero failures**, followed
 by a clean process exit. Test ELF SHA-256:
-`9993227bdc44477b9eafff7bbc1ef1a2b630decdcf9186d064f8da2576e769ea`.
-The saved report is `platform-1793764792-102.log` in the private `work/ps5/`
+`3cb93fc2c8c80e61960d5ff159e8e80c69aea44d6a15b9702de05144320682e3`.
+The saved report is `platform-1793766832-109.log` in the private `work/ps5/`
 directory. This establishes platform behavior, not game boot or performance.
 
 ## Native memory foundation
@@ -139,7 +150,9 @@ runtime allocations; large PS5 regions use `nxrt/ps5_vm.h` instead.
 The PS5 implementation reserves virtual ranges with
 `sceKernelReserveVirtualRange` and attaches direct-memory allocations only to
 owned, previously unbacked subranges. Every view retains its backing until the
-view is unmapped. Protection changes require complete backing and host-page
+view is unmapped. Discarding a subrange atomically restores its reservation;
+split views and independent aliases retain their backing. This avoids opening
+an address-space hole between unmapping and reserving. Protection changes require complete backing and host-page
 alignment. The guest heap must initialize new physical pages before exposing
 them to game code.
 
@@ -147,9 +160,8 @@ Hardware findings that determine the implementation:
 
 - Host protection pages are 16 KiB. A successful `mprotect` for 4 KiB also
   protected the neighboring guest page. The low-level wrappers reject that
-  request instead of silently rounding it. Guest 4 KiB permission handling and
-  write tracking remain to be ported; changing the guest page constant is not
-  a solution.
+  request instead of silently rounding it. The subpage policy below preserves
+  guest permissions; integration with the guest heap and write tracker remains.
 - The second ordinary 4 GiB anonymous reservation returned `ENOMEM`. Native
   reservations successfully held the 4 GiB stack region, 4 GiB kernel region
   and 12 GiB heap region simultaneously at their original guest addresses.
@@ -170,8 +182,45 @@ reported zero failures; the final platform suite exercises the production
 wrappers rather than substitutes. All target results so far are payload-process
 tests, not a launched homebrew game application.
 
-Next: connect these primitives to the guest memory and loader contracts,
-resolve 4 KiB guest permissions and write tracking, and partition the RADV
+`nxrt/subpage.h` records permissions at 4 KiB granularity and applies their
+union to each 16 KiB host page. A 32 MiB flag table covers the guest address
+space. Generated scalar, vector, atomic and cache-zero memory operations check
+that table; only pages with mixed permissions enter the locked permission
+check. Cross-page and long accesses check the entire range before writing.
+Permission updates mark affected host pages first, coalesce native protection
+runs, and restore earlier runs if a later native operation fails.
+
+PS5 builds use ABI 4, which has the same CPU/module layouts as ABI 3 but requires
+these memory helpers. Runtime registration rejects a stale ABI 3 game archive.
+Windows keeps ABI 3 and its existing hardware protection path. The Windows
+source list explicitly excludes the PS5/POSIX memory implementation files.
+
+The platform build uses host Clang 18 and the configured recompiler Python to
+assemble and lift an original eight-function, 17-instruction ARM fixture. The
+console suite checks its memory/register results and permission faults for
+ordered loads/stores, exclusive operations, CAS, swap, vector stores and cache
+zeroing. Other cases cover neighboring 4 KiB pages, boundary-crossing writes,
+rollback, larger accesses and concurrent readers. These tests need no game dump.
+
+`nxrt/guest_region.h` combines the native allocator and subpage policy for fixed
+module, stack and kernel regions. It allocates backing in 2 MiB blocks, clears
+new memory through a private alias before exposing the primary view, and tracks
+committed guest pages separately from their permissions. Recommitting a live
+page preserves its contents. Decommitting clears that guest page, preserves
+neighbors, and reclaims blocks with no remaining committed pages. The console
+tests verified these behaviors, including a 4 GiB reservation with only 4 MiB
+of backing for two distant pages. This owner deliberately does not implement
+heap aliases, whose decommit semantics must retain shared contents.
+
+The policy, helpers and fixed-region owner are now hardware-tested, but are not
+yet connected to the complete guest heap/loader backend. Runtime/HLE buffer accesses also need
+their permission checks during that integration. Guard overhead has not been
+measured in Pokopia. The loader now propagates a failed protection operation
+instead of marking that module linked; that error path still needs its native
+loader integration test.
+
+Next: connect the allocation and permission layers to the guest memory and
+loader contracts, port write tracking, and partition the RADV
 address arena before initializing graphics. The existing RADV arena spans
 `0x4000000000` through `0x8000000000` and overlaps the lifted game layout.
 Do not combine the allocators until their ranges have been separated and tested.

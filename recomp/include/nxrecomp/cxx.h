@@ -35,6 +35,7 @@ using ::adds64; using ::adds32; using ::logic64; using ::logic32; using ::set_nz
 
 template <typename T>
 NX_INLINE T ld(uint64_t a) {
+    nx_check_memory(a, sizeof(T), 1);
     T v;
     std::memcpy(&v, reinterpret_cast<const void*>(a), sizeof(T));
     return v;
@@ -42,11 +43,13 @@ NX_INLINE T ld(uint64_t a) {
 
 template <typename T>
 NX_INLINE void st(uint64_t a, T v) {
+    nx_check_memory(a, sizeof(T), 2);
     std::memcpy(reinterpret_cast<void*>(a), &v, sizeof(T));
 }
 
 template <typename T>
 NX_INLINE T ld_acq(uint64_t a) {
+    nx_check_memory(a, sizeof(T), 1);
     return __atomic_load_n(reinterpret_cast<T*>(a), __ATOMIC_ACQUIRE);
 }
 
@@ -54,12 +57,14 @@ NX_INLINE T ld_acq(uint64_t a) {
 // (xchg) stops the later load from passing it.
 template <typename T>
 NX_INLINE void st_rel(uint64_t a, T v) {
+    nx_check_memory(a, sizeof(T), 2);
     __atomic_store_n(reinterpret_cast<T*>(a), v, __ATOMIC_SEQ_CST);
 }
 
 // Exclusive monitor: LDXR remembers (address, value); STXR succeeds if memory still holds that value.
 template <typename T>
 NX_INLINE T ldxr(Ctx *c, uint64_t a) {
+    nx_check_memory(a, sizeof(T), 1);
     T v = __atomic_load_n(reinterpret_cast<T*>(a), __ATOMIC_ACQUIRE);
     c->ex_addr = a;
     c->ex_val = v;
@@ -70,6 +75,7 @@ template <typename T>
 NX_INLINE uint32_t stxr(Ctx *c, uint64_t a, T v) {
     if (c->ex_addr != a) return 1;
     c->ex_addr = ~0ull;
+    nx_check_memory(a, sizeof(T), 3);
     T expected = static_cast<T>(c->ex_val);
     return __atomic_compare_exchange_n(reinterpret_cast<T*>(a), &expected, v, false, __ATOMIC_SEQ_CST,
                                        __ATOMIC_SEQ_CST)
@@ -87,6 +93,7 @@ NX_INLINE void ldxp(Ctx *c, uint64_t a, T& lo, T& hi) {
         uint64_t v = ldxr<uint64_t>(c, a);
         lo = T(v), hi = T(v >> 32);
     } else {
+        nx_check_memory(a, 16, 1);
         unsigned __int128 v = __atomic_load_n(reinterpret_cast<unsigned __int128*>(a), __ATOMIC_ACQUIRE);
         c->ex_addr = a;
         c->ex_val = uint64_t(v), c->ex_val_hi = uint64_t(v >> 64);
@@ -101,6 +108,7 @@ NX_INLINE uint32_t stxp(Ctx *c, uint64_t a, T lo, T hi) {
     } else {
         if (c->ex_addr != a) return 1;
         c->ex_addr = ~0ull;
+        nx_check_memory(a, 16, 3);
         unsigned __int128 expected = (unsigned __int128)c->ex_val_hi << 64 | c->ex_val;
         unsigned __int128 v = (unsigned __int128)hi << 64 | lo;
         return __atomic_compare_exchange_n(reinterpret_cast<unsigned __int128*>(a), &expected, v, false,

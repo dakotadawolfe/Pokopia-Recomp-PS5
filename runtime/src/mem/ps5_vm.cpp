@@ -147,4 +147,23 @@ bool Reservation::reset() {
     views_.clear(); // Release backing only after all of this reservation's views.
     return true;
 }
+bool Reservation::discard(size_t offset, size_t size) {
+    if (!within(offset, size, size_)) { errno = EINVAL; return false; }
+    std::vector<View> remaining;
+    remaining.reserve(views_.size() + 1);
+    for (const auto& view : views_) {
+        const size_t end = view.offset + view.size;
+        if (view.offset >= offset + size || end <= offset) remaining.push_back(view);
+        else {
+            if (view.offset < offset) remaining.push_back({view.offset, offset - view.offset, view.backing});
+            if (end > offset + size) remaining.push_back({offset + size, end - offset - size, view.backing});
+        }
+    }
+    void* expected = static_cast<unsigned char*>(address_) + offset;
+    void* at = expected;
+    if (error(sceKernelReserveVirtualRange(&at, size, MAP_FIXED, host_vm::page_size()))) return false;
+    if (at != expected) std::abort();
+    views_.swap(remaining); // Last references drop only after the views are gone.
+    return true;
+}
 } // namespace nxrt::ps5_vm

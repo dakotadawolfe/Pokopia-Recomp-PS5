@@ -75,7 +75,7 @@ struct LoaderAccess {
     static bool parse_dynamic(Module& m, const uint8_t* d, size_t n, std::string* err);
     static void load_static_symtab(Module& m, const uint8_t* d, size_t n, const elf::Ehdr& eh);
     static bool link(Module& m, bool guest_relinks = false);
-    static void protect(Module& m);
+    static bool protect(Module& m);
     static bool has_relr(const Module& m) { return m.relr_ && m.relr_sz_; }
     static uint64_t resolve(Module& m, const std::vector<elf::Sym>& raw, uint32_t symidx, bool* is_weak_null);
 };
@@ -479,7 +479,7 @@ bool LoaderAccess::link(Module& m, bool guest_relinks) {
         NXLOG_I(kTag, "%s: %zu relocated slots restored to the image's values for the guest's dynamic linker", m.name_.c_str(), written.size());
     }
     if (m.tls_.present() && !g_tls.present()) g_tls = m.tls_;
-    protect(m);
+    if (!protect(m)) return false;
     m.linked_ = true;
     const RelocStats& s = m.stats_;
     NXLOG_I(kTag, "linked %s: %zu relocations (relative %zu, abs64 %zu, glob_dat %zu, jump_slot %zu, tls %zu, unhandled %zu); targets: own %zu, other module %zu, host data %zu, hle %zu, weak null %zu, stub %zu",
@@ -488,7 +488,7 @@ bool LoaderAccess::link(Module& m, bool guest_relinks) {
 }
 
 // Page protections from the segment flags (union per page), then RELRO pages become read-only.
-void LoaderAccess::protect(Module& m) {
+bool LoaderAccess::protect(Module& m) {
     using namespace elf;
     const uint64_t lo = m.base_ - m.bias_;
     const size_t pages = static_cast<size_t>(m.size_ / mem::kPage);
@@ -511,12 +511,17 @@ void LoaderAccess::protect(Module& m) {
                        : (f & PF_X) ? ((f & PF_W) ? mem::Prot::RWX : mem::Prot::RX)
                        : (f & PF_W) ? mem::Prot::RW : mem::Prot::R;
         uint64_t addr = m.base_ + p * mem::kPage, len = (q - p) * mem::kPage;
-        mem::protect(addr, len, pr);
+        if (!mem::protect(addr, len, pr)) {
+            NXLOG_E(kTag, "%s: cannot apply protection at %llx (+%llx)", m.name_.c_str(),
+                    static_cast<unsigned long long>(addr), static_cast<unsigned long long>(len));
+            return false;
+        }
         // svcQueryMemory reports Horizon permission bits (R = 1, W = 2, X = 4), not the ELF ones (X = 1, W = 2, R = 4).
         const uint32_t hp = ((f & PF_R) ? 1u : 0u) | ((f & PF_W) ? 2u : 0u) | ((f & PF_X) ? 4u : 0u);
         if (has[p]) mem::vm_set(addr, len, (f & PF_W) ? mem::kMemCodeData : mem::kMemCode, hp);
         p = q;
     }
+    return true;
 }
 
 // ---- public API --------------------------------------------------------------------------------------------------------
@@ -560,9 +565,10 @@ bool module_link_all() {
 
 bool module_protect_all() {
     std::lock_guard<std::recursive_mutex> lk(g_lock);
+    bool ok = true;
     for (auto& m : g_modules)
-        if (!m->linked()) LoaderAccess::protect(*m);
-    return true;
+        if (!m->linked()) ok = LoaderAccess::protect(*m) && ok;
+    return ok;
 }
 
 size_t module_register_functions(Module* m, const FuncEntry* table, size_t count) {

@@ -19,14 +19,19 @@
 #ifndef NXRECOMP_CTX_H
 #define NXRECOMP_CTX_H
 
+#ifdef NXRECOMP_SUBPAGE_CHECKS
+#define NXRECOMP_ABI_VERSION 4   /* Requires the subpage-checked memory helpers. */
+#else
 #define NXRECOMP_ABI_VERSION 3   /* 2: host_import takes a globally unique import id; NxModule.index
                                   * 3: DynSym.value is always a guest address; NxEh.types are final addresses and NxEh.type_syms /
                                   *    NxEh.specs are new; every module also defines `const uint32_t nxmod_<name>_abi` */
+#endif
 
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
+#include "memory.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -155,8 +160,8 @@ typedef struct NxModule {
 /* ======================================================================================================== */
 
 #define NX_DEF_MEM(bits) \
-    static inline uint##bits##_t rd##bits(uint64_t a) { uint##bits##_t v; memcpy(&v, (void *)(uintptr_t)a, sizeof v); return v; } \
-    static inline void wr##bits(uint64_t a, uint##bits##_t v) { memcpy((void *)(uintptr_t)a, &v, sizeof v); }
+    static inline uint##bits##_t rd##bits(uint64_t a) { uint##bits##_t v; nx_check_memory(a, sizeof v, 1); memcpy(&v, (void *)(uintptr_t)a, sizeof v); return v; } \
+    static inline void wr##bits(uint64_t a, uint##bits##_t v) { nx_check_memory(a, sizeof v, 2); memcpy((void *)(uintptr_t)a, &v, sizeof v); }
 NX_DEF_MEM(8) NX_DEF_MEM(16) NX_DEF_MEM(32) NX_DEF_MEM(64)
 
 /* STXR: store only if the location still holds the value the matching LDXR read (compare-and-swap). Returns 0 on
@@ -165,6 +170,7 @@ NX_DEF_MEM(8) NX_DEF_MEM(16) NX_DEF_MEM(32) NX_DEF_MEM(64)
     static inline uint32_t stx##bits(Ctx *c, uint64_t a, uint##bits##_t v) { \
         if (c->ex_addr != a) { stx_diag(c, a, 0, 0, v, -bits); return 1; } \
         c->ex_addr = ~0ull; \
+        nx_check_memory(a, sizeof v, 3); \
         { uint##bits##_t exp_ = (uint##bits##_t)c->ex_val; \
           if (__atomic_compare_exchange_n((uint##bits##_t *)(uintptr_t)a, &exp_, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) { c->ex_fail = 0; return 0; } \
           stx_diag(c, a, c->ex_val, exp_, v, bits); } \
@@ -175,6 +181,7 @@ NX_DEF_STX(8) NX_DEF_STX(16) NX_DEF_STX(32) NX_DEF_STX(64)
 /* Exclusive pairs. 32-bit pair: one 64-bit access through ex_addr / ex_val and stx64. 64-bit pair: a 128-bit access,
  * compared and swapped as a whole (the monitor keeps the high half in ex_val_hi). Needs -mcx16 on x64 (cmpxchg16b). */
 static inline void ldxp128(Ctx *c, uint64_t a, uint64_t *lo, uint64_t *hi) {
+    nx_check_memory(a, 16, 1);
     unsigned __int128 v = __atomic_load_n((unsigned __int128 *)(uintptr_t)a, __ATOMIC_ACQUIRE);
     c->ex_addr = a; c->ex_val = (uint64_t)v; c->ex_val_hi = (uint64_t)(v >> 64);
     *lo = (uint64_t)v; *hi = (uint64_t)(v >> 64);
@@ -183,12 +190,13 @@ static inline uint32_t stxp32(Ctx *c, uint64_t a, uint32_t lo, uint32_t hi) { re
 static inline uint32_t stxp64(Ctx *c, uint64_t a, uint64_t lo, uint64_t hi) {
     if (c->ex_addr != a) { stx_diag(c, a, 0, 0, lo, -128); return 1; }
     c->ex_addr = ~0ull;
+    nx_check_memory(a, 16, 3);
     unsigned __int128 e = ((unsigned __int128)c->ex_val_hi << 64) | c->ex_val, n = ((unsigned __int128)hi << 64) | lo;
     return __atomic_compare_exchange_n((unsigned __int128 *)(uintptr_t)a, &e, n, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 0 : 1;
 }
 
-static inline V128 rdv(uint64_t a, int n) { V128 v; v.d[0] = 0; v.d[1] = 0; memcpy(&v, (void *)(uintptr_t)a, (size_t)n); return v; }
-static inline void wrv(uint64_t a, const V128 *v, int n) { memcpy((void *)(uintptr_t)a, v, (size_t)n); }
+static inline V128 rdv(uint64_t a, int n) { V128 v; v.d[0] = 0; v.d[1] = 0; nx_check_memory(a, (size_t)n, 1); memcpy(&v, (void *)(uintptr_t)a, (size_t)n); return v; }
+static inline void wrv(uint64_t a, const V128 *v, int n) { nx_check_memory(a, (size_t)n, 2); memcpy((void *)(uintptr_t)a, v, (size_t)n); }
 static inline void vzero(V128 *v) { v->d[0] = 0; v->d[1] = 0; }
 
 /* ======================================================================================================== */

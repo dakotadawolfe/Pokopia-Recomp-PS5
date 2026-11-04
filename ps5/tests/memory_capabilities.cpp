@@ -184,6 +184,16 @@ int main() {
                 auto* b = static_cast<volatile unsigned char*>(alias);
                 a[0] = 19; b[page] = 37;
                 check("native_alias_writes", b[0] == 19 && a[page] == 37, failures);
+                void* empty = primary;
+                const int replaced = sceKernelReserveVirtualRange(&empty, 65536, MAP_FIXED, static_cast<size_t>(page));
+                std::printf("native_replace_owned rc=%08x actual=%p\n", static_cast<unsigned>(replaced), empty);
+                check("native_replace_owned_mapping", replaced == 0 && empty == primary, failures);
+                if (replaced == 0 && empty == primary) {
+                    check("native_discard_primary_faults", !can_write(a), failures);
+                    check("native_discard_preserves_alias", b[0] == 19 && can_write(b), failures);
+                } else if (replaced == 0) {
+                    munmap(empty, 65536);
+                }
             }
             // Unmap both views before releasing the physical allocation.
             for (unsigned i : {2u, 3u}) {

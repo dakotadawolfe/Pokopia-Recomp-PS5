@@ -34,7 +34,7 @@ class XPac:
         a, wb = self.address(i, mem, after)
         parts = [f"uint64_t a = {a};"]
         if zero:
-            parts.append(f"std::memset(reinterpret_cast<void*>(a & ~15ull), 0, {nbytes});")
+            parts.append(f"std::memset(reinterpret_cast<void*>(nx_checked_address(a & ~15ull, {nbytes}, 2)), 0, {nbytes});")
         parts.append(wb)
         return "{ " + " ".join(p for p in parts if p) + " }"
 

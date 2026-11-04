@@ -35,4 +35,7 @@ nxrecomp_add_module(pkp_subsdk0 INPUT "${PKP_EXEFS}/subsdk0" NAME subsdk0 INDEX 
 nxrecomp_add_module(pkp_rtld INPUT "${PKP_EXEFS}/rtld" NAME rtld INDEX 3 BASE 0x7700000000
     GAME pkp SHARDS 1 JOBS ${PKP_LIFT_JOBS} OUTDIR "${CMAKE_BINARY_DIR}/lift/rtld")
 add_custom_target(pkp_modules ALL DEPENDS pkp_main pkp_sdk pkp_subsdk0 pkp_rtld)
+foreach(module pkp_main pkp_sdk pkp_subsdk0 pkp_rtld)
+    target_compile_definitions(${module} PUBLIC NXRECOMP_SUBPAGE_CHECKS=1)
+endforeach()
 add_custom_target(pkp_native_components DEPENDS pkp_modules nxrt_ps5_platform nxrt_ps5_core)
