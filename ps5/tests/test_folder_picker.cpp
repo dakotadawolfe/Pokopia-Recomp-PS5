@@ -8,12 +8,19 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <sys/stat.h>
 #include <unistd.h>
 NXTEST_GROUP(folder_picker)
 #ifdef NXRT_PICKER_NO_REALPATH
 // Model the native libc shim so host checks cannot hide an accidental return
 // to canonical()/realpath() in production folder navigation.
 extern "C" char* __wrap_realpath(const char*, char*) { errno = ENOSYS; return nullptr; }
+static bool deny_lstat = false;
+extern "C" int __real_lstat(const char*, struct stat*);
+extern "C" int __wrap_lstat(const char* path, struct stat* metadata) {
+    if (deny_lstat) { errno = EPERM; return -1; }
+    return __real_lstat(path, metadata);
+}
 #endif
 namespace {
 namespace fs = std::filesystem;
@@ -25,8 +32,14 @@ struct Fixture {
         auto pattern = ((base ? fs::path(base) : fs::temp_directory_path()) / "nxrt-picker-XXXXXX").string();
         if (!mkdtemp(pattern.data())) throw std::runtime_error("cannot create picker fixture");
         path = fs::path(pattern).lexically_normal();
+#ifdef NXRT_PICKER_NO_REALPATH
+        deny_lstat = true;
+#endif
     }
     ~Fixture() {
+#ifdef NXRT_PICKER_NO_REALPATH
+        deny_lstat = false; // Host fixture cleanup is outside the app's API surface.
+#endif
         if (path.filename().string().starts_with("nxrt-picker-")) { std::error_code ec; fs::remove_all(path, ec); }
     }
     std::vector<StorageRoot> roots() const { return {{"TEST STORAGE", path.string()}}; }

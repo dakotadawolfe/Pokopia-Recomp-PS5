@@ -140,7 +140,7 @@ function(pkp_add_graphics_probe target)
         target_link_libraries(${target} PRIVATE nxrt_ps5_gfx)
         target_sources(${target} PRIVATE "${root}/ps5/gfx/picker_draw.cpp"
             "${root}/ps5/app/folder_picker.cpp" "${root}/ps5/app/folder_picker_paths.cpp"
-            "${root}/ps5/app/folder_picker_pad.cpp")
+            "${root}/ps5/app/folder_picker_pad.cpp" "${root}/ps5/app/picker_storage_audit.cpp")
         target_link_libraries(${target} PRIVATE "${sdk}/target/lib/libScePad.so" "${sdk}/target/lib/libSceUserService.so")
     endif()
     # Our cleanup wrapper calls RADV's stack wrapper, then the real kernel API.

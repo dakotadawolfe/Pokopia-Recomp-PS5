@@ -90,8 +90,9 @@ ordering, invalid files/builds, atomic bounded configuration, remembered/missing
 storage messages, unplug-before-confirmation, package status, cancellation,
 scroll/repeat and confirmation debounce. Synthetic test directories are removed
 after each case. The PS5 standalone target compiles and links. Production file
-operations `open`, `write`, `fsync`, `close`, `rename`, `unlink`, `mkdir`, `stat`
-and `lstat` are native `libkernel` imports, not unchecked raw syscall stubs.
+operations `open`, `fstat`, `write`, `fsync`, `close`, `rename`, `unlink`, `mkdir`
+and `stat` are native `libkernel` imports. Import presence alone does not prove
+an operation is allowed in native application context.
 
 The integrated native picker/renderer package is built separately by the graphics
 target. Selecting a folder currently leads to the renderer test scene; it does
@@ -107,17 +108,49 @@ pad and cancelled cleanly, but reported no accessible storage. Report
 `std::filesystem::canonical` therefore could not resolve any root. The same
 operation worked in the payload context, which uses a different libc path.
 
-The picker now normalizes absolute path text and walks each component with the
-kernel's `lstat`, requiring real directories and rejecting symlinks before
-checking storage boundaries. No privilege or mount changes are involved.
-Host tests wrap `realpath` to return null, so this native dependency cannot
-silently reappear behind passing host checks. The new case also checks missing
-paths, relative paths, parent traversal and symlink rejection.
+The first correction used `lstat`. It passed eight cases in payload context
+(`platform-1793793311-429.log`) but still failed inside the native application
+(`graphics-runtime-1793794102-440.log`). A native audit then established that
+`lstat` returns `EPERM` for every tested path while `stat` and `opendir` work
+for `/data` and `/mnt/usb0`. Payload success did not cover this restriction.
 
-The updated eight-case suite passed on console in payload context, report
-`platform-1793793311-429.log`; its temporary fixtures were removed. The rebuilt
-native app has no `realpath` import, passes FSELF integrity validation and was
-readback-verified after installation. Its `eboot.bin` is 19,642,913 bytes,
-SHA-256 `c9d6b3d2984dc2a88113a6e455e2620d950e7fef0c1eec71ad259d67fe184450`.
-Native storage browsing, confirmation and persistence still need the next
-on-screen test. Per-root availability is now included in its diagnostic log.
+The picker now normalizes absolute paths and walks each component with
+`open(O_DIRECTORY | O_NOFOLLOW)` followed by `fstat`. NSO and asset checks use
+opened descriptors too; asset traversal no longer relies on recursive
+`symlink_status` calls. Real directories and storage boundaries remain required;
+no privileges or mounts are changed. Host tests simulate both a null-returning
+`realpath` and denied `lstat` and retain missing-path, parent and symlink cases.
+
+Native report `graphics-runtime-1793794634-461.log` confirms that production
+path checks recognize `/data` and USB0 and reject absent USB1 through USB7.
+In the same native process, a synthetic extracted game passes layout validation,
+picker navigation/confirmation, configuration save and remembered-location
+reload. Its seven temporary files and four directories are removed, followed by
+`PICKER_AUDIT_END native=true status=PASS` and normal application exit. All eight
+host cases also pass with the restricted-API simulation.
+
+The installed executable is 19,652,449 bytes, SHA-256
+`e9ea79967824e29e6227b5267e5404519ad39407f61d724bb47bdc293462295d`.
+The diagnostic trigger was removed and its absence verified. Selecting the
+user's actual game folder and running the subsequent renderer scene still need
+the next controller test; no real game assets were modified or selected.
+
+## Repeating the native audit
+
+The diagnostic app runs a bounded storage audit instead of opening the picker
+only when `/data/pokopia-recomp/tests/picker-storage-audit` contains exactly
+`PICKER_STORAGE_AUDIT` followed by a newline. The audit creates only its own
+`picker-audit-<pid>` fixture under the tests directory and refuses an existing
+fixture. Always remove the trigger after collecting the native report.
+
+`launch_graphics_app.c` launches only installed title `PPSA98732` and refuses
+when another application is running. Build it locally with the payload SDK:
+
+```sh
+"$PS5_PAYLOAD_SDK/bin/prospero-clang" ps5/launch_graphics_app.c \
+  -lSceSystemService -lSceUserService -o /path/to/private/launch-graphics-app.elf
+```
+
+Run the helper with `console_probe.py`, then collect `graphics-runtime-*.log`.
+The launcher exiting does not establish native-app success: check the app's
+own final audit marker, clean exit and process disappearance independently.

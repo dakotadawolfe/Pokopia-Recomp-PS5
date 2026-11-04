@@ -9,6 +9,7 @@
 #include "nxrt/memory.h"
 #include "nxrt/ps5_vm.h"
 #include "../app/folder_picker.h"
+#include "../app/picker_storage_audit.h"
 #include "../gfx/picker_draw.h"
 #include <algorithm>
 #include <array>
@@ -63,6 +64,8 @@ bool verify_first_frame(const std::vector<uint8_t>& image, uint32_t width, uint3
 
 extern "C" int pkp_graphics_runtime_probe() {
     using namespace nxrt;
+    const int audit = app::run_picker_storage_audit();
+    if (audit >= 0) return audit;
     std::puts("RUNTIME_SCENE_BEGIN device=real renderer=real scene=shader-texture game_code=false NVN_replay=false");
     LogOptions logging;
     logging.path = "";

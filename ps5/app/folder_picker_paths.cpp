@@ -26,20 +26,31 @@ bool beneath(const fs::path& path, const fs::path& root) {
     for (; b != root.end(); ++a, ++b) if (a == path.end() || *a != *b) return false;
     return true;
 }
-bool directory(const fs::path& path) { std::error_code ec; return fs::is_directory(path, ec) && !ec; }
+bool opened_metadata(const fs::path& path, struct stat& metadata, bool directory_only = false) {
+    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK |
+                                     (directory_only ? O_DIRECTORY : 0));
+    if (fd < 0) return false;
+    const int result = fstat(fd, &metadata);
+    const int closed = close(fd);
+    return result == 0 && closed == 0;
+}
+bool directory(const fs::path& path) {
+    struct stat metadata{};
+    return opened_metadata(path, metadata, true) && S_ISDIR(metadata.st_mode);
+}
 fs::path checked_directory(const std::string& text) {
     if (!path_text(text)) return {};
     auto normalized = fs::path(text).lexically_normal();
     if (normalized != normalized.root_path() && normalized.filename().empty()) normalized = normalized.parent_path();
     fs::path current;
     // The native loader's libc shim exports realpath as a null-returning stub.
-    // Walk actual kernel metadata instead. Symlinks are not storage shortcuts:
-    // rejecting them also keeps navigation inside the selected storage root.
+    // Native apps also deny lstat. Inspect opened descriptors without following
+    // symlinks, including every parent, to retain the storage-root boundary.
     for (const auto& component : normalized) {
         if (component.empty()) continue;
         current /= component;
         struct stat metadata{};
-        if (lstat(current.c_str(), &metadata) != 0 || !S_ISDIR(metadata.st_mode)) return {};
+        if (!opened_metadata(current, metadata, true) || !S_ISDIR(metadata.st_mode)) return {};
     }
     return normalized;
 }
@@ -47,10 +58,9 @@ uint32_t word(const uint8_t* bytes) {
     return uint32_t(bytes[0]) | uint32_t(bytes[1]) << 8 | uint32_t(bytes[2]) << 16 | uint32_t(bytes[3]) << 24;
 }
 bool nso_header(const fs::path& path, std::string* build_id = nullptr) {
-    std::error_code ec;
-    if (fs::symlink_status(path, ec).type() != fs::file_type::regular || ec) return false;
-    const auto size = fs::file_size(path, ec);
-    if (ec || size < 0x100) return false;
+    struct stat metadata{};
+    if (!opened_metadata(path, metadata) || !S_ISREG(metadata.st_mode) || metadata.st_size < 0x100) return false;
+    const uint64_t size = static_cast<uint64_t>(metadata.st_size);
     std::ifstream file(path, std::ios::binary);
     std::array<uint8_t, 0x100> header{};
     if (!file.read(reinterpret_cast<char*>(header.data()), header.size()) || std::memcmp(header.data(), "NSO0", 4)) return false;
@@ -67,13 +77,16 @@ bool nso_header(const fs::path& path, std::string* build_id = nullptr) {
     return true;
 }
 bool has_asset(const fs::path& root) {
-    std::error_code ec;
-    fs::recursive_directory_iterator it(root, fs::directory_options::none, ec), end;
-    for (size_t count = 0; !ec && it != end && count < 10000; it.increment(ec), ++count) {
-        const auto type = it->symlink_status(ec).type();
-        if (ec) return false;
-        if (type == fs::file_type::regular && it->path().filename() != ".listing") {
-            if (it->file_size(ec) > 0 && !ec) {
+    std::vector<fs::path> pending{root};
+    size_t visited = 0;
+    while (!pending.empty() && visited < 10000) {
+        const auto path = pending.back(); pending.pop_back();
+        std::error_code ec;
+        for (fs::directory_iterator it(path, ec), end; !ec && it != end && visited < 10000; it.increment(ec), ++visited) {
+            struct stat metadata{};
+            if (!opened_metadata(it->path(), metadata)) continue;
+            if (S_ISDIR(metadata.st_mode)) pending.push_back(it->path());
+            else if (S_ISREG(metadata.st_mode) && metadata.st_size > 0 && it->path().filename() != ".listing") {
                 std::ifstream file(it->path(), std::ios::binary);
                 char value = 0;
                 if (file.get(value)) return true;
@@ -152,7 +165,7 @@ LocationCheck check_game_location(const std::string& path, const std::vector<Sto
     std::error_code ec;
     std::vector<fs::path> updates;
     for (fs::directory_iterator it(selected / "updates", ec), end; !ec && it != end; it.increment(ec)) {
-        if (it->is_directory(ec) && directory(it->path() / "exefs")) updates.push_back(it->path());
+        if (directory(it->path()) && directory(it->path() / "exefs")) updates.push_back(it->path());
     }
     std::sort(updates.begin(), updates.end(), [](const auto& a, const auto& b) {
         const auto left = a.filename().string(), right = b.filename().string();

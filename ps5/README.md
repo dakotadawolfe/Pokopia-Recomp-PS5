@@ -1177,11 +1177,13 @@ The installed integration uses the real runtime `Device`, `Renderer` and texture
 The picker selects existing inputs and persists only the chosen path. Its
 console interaction and the runtime renderer still need a manual native launch.
 All 18 package files were readback-verified at `/data/homebrew/PPSA98732`.
-The first picker launch exposed a native libc `realpath` stub. The corrected
-picker uses kernel directory metadata and passed eight cases on the host and
-PS5 payload. The updated executable was installed and readback-verified:
-19,642,913 bytes, SHA-256
-`c9d6b3d2984dc2a88113a6e455e2620d950e7fef0c1eec71ad259d67fe184450`.
+The first picker launch exposed a native libc `realpath` stub, followed by a
+native-only denial of `lstat` that payload tests had missed. Descriptor-based
+directory/file checks now pass inside the actual native app: `/data` and USB0
+are recognized, and synthetic selection/save/reload/cleanup succeed. Eight host
+cases pass with both unavailable calls simulated. The installed executable was
+readback-verified: 19,652,449 bytes, SHA-256
+`e9ea79967824e29e6227b5267e5404519ad39407f61d724bb47bdc293462295d`.
 See [folder picker validation and native storage fix](FOLDER_PICKER.md).
 See [full game startup diagnostic](GAME_STARTUP_TRACE.md) for the independent
 four-module trace and its explicit stop conditions.
