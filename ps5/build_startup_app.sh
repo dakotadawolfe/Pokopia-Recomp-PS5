@@ -6,6 +6,9 @@ template=$(realpath "${1:?Usage: build_startup_app.sh NATIVE_ROOT BUILD_DIR DECR
 output=$(realpath -m "${2:?Separate startup build directory required}")
 input=$(realpath "${3:?Decrypted input required}")
 modules=$(realpath "${4:?Verified production module build required}")
+optimization=$(sed -n 's/^NX_POSIX_OPT:STRING=//p' "$modules/CMakeCache.txt")
+optimization=${optimization:--O1}
+[[ $optimization =~ ^-O[0123sz]$ ]] || exit 2
 : "${NX_PYTHON:?Set NX_PYTHON to the interpreter with recomp requirements}"
 revision=dd44bbdc75437332ed22e3ba95126733419ef25a
 [[ $(git -C "$template" rev-parse HEAD) == "$revision" ]] || exit 2
@@ -24,7 +27,7 @@ tool="$template/build/host/ps5-native-tool"
 test -x "$tool"
 cmake -S "$root/ps5/tests" -B "$output" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/toolchain/prospero.cmake" \
-    -DNX_PYTHON="$NX_PYTHON" -DPKP_NATIVE_APP_ROOT="$template" -DPKP_BUILD_NATIVE_APP=OFF \
+    -DNX_PYTHON="$NX_PYTHON" -DNX_POSIX_OPT="$optimization" -DPKP_NATIVE_APP_ROOT="$template" -DPKP_BUILD_NATIVE_APP=OFF \
     -DPKP_GAME_IMAGE_INPUT="$input" -DPKP_TEST_RTLD=ON -DPKP_TEST_SDK=ON \
     -DPKP_SDK_MODULE_BUILD="$modules" -DPKP_TEST_GAME_STARTUP=ON -DPKP_BUILD_NATIVE_GAME_STARTUP=ON \
     -DPKP_NATIVE_STARTUP_HEAP_LIMIT_MIB=512

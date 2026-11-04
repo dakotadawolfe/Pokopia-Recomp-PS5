@@ -25,6 +25,11 @@
 set(NXRECOMP_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH "recomp/ folder")
 set(NX_PYTHON "${NXRECOMP_ROOT}/../tools/.venv/Scripts/python.exe" CACHE FILEPATH "Python with the nxrecomp requirements")
 set(NX_OPT "/O1" CACHE STRING "optimisation flag of the lifted code (clang-cl syntax)")
+set(NX_POSIX_OPT "-O1" CACHE STRING "Optimisation flag for lifted code with non-MSVC compilers")
+set_property(CACHE NX_POSIX_OPT PROPERTY STRINGS -O0 -O1 -O2 -O3 -Os -Oz)
+if(NOT NX_POSIX_OPT MATCHES "^-O[0123sz]$")
+  message(FATAL_ERROR "NX_POSIX_OPT must be -O0, -O1, -O2, -O3, -Os or -Oz")
+endif()
 option(NX_USE_LAUNCHER "wrap lifted-code compiles in cmake/nx_cc_launcher.py (time-limit fallback to optnone / -O0)" OFF)
 
 file(GLOB NX_LIFTER_SOURCES CONFIGURE_DEPENDS
@@ -95,7 +100,7 @@ function(nxrecomp_add_module target)
   if(MSVC)   # clang-cl
     target_compile_options(${target} PRIVATE ${NX_OPT} /w /EHs-c- /GR- -fno-strict-aliasing -ffp-contract=off -mcx16)
   else()
-    target_compile_options(${target} PRIVATE -O1 -w -fno-exceptions -fno-rtti -fno-strict-aliasing -ffp-contract=off -mcx16)
+    target_compile_options(${target} PRIVATE ${NX_POSIX_OPT} -w -fno-exceptions -fno-rtti -fno-strict-aliasing -ffp-contract=off -mcx16)
   endif()
   if(NX_USE_LAUNCHER)
     set_target_properties(${target} PROPERTIES CXX_COMPILER_LAUNCHER "${NX_PYTHON};${NXRECOMP_ROOT}/cmake/nx_cc_launcher.py")

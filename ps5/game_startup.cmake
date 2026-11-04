@@ -33,6 +33,7 @@ if(PKP_BUILD_NATIVE_GAME_STARTUP)
     add_executable(ps5_game_startup_app EXCLUDE_FROM_ALL
         sync_main.cpp test_game_images.cpp game_trace_guards.cpp "${startup_header}"
         "${root}/ps5/app/folder_picker_paths.cpp" "${root}/ps5/app/heap.cpp"
+        "${root}/ps5/app/startup_checkpoint.cpp"
         "${native}/app_crt.cpp" "${root}/ps5/app/runtime.cpp"
         "${root}/ps5/app/thread_exit.cpp" "${root}/ps5/app/lifecycle.cpp")
     target_include_directories(ps5_game_startup_app PRIVATE "${root}/runtime/tests" "${game_expectations}" "${startup_expectations}")
@@ -46,7 +47,7 @@ if(PKP_BUILD_NATIVE_GAME_STARTUP)
         "LINKER:-T,${native}/ps5-pie.ld" "LINKER:-T,${root}/ps5/app/unwind.ld"
         "LINKER:--version-script,${root}/ps5/app/exports.map" "LINKER:--eh-frame-hdr"
         "LINKER:--no-dynamic-linker" "LINKER:-e,_start")
-    foreach(symbol pthread_create guest_mrs guest_msr guest_trap guest_unimpl call_indirect host_import
+    foreach(symbol _init_env pthread_create guest_mrs guest_msr guest_trap guest_unimpl call_indirect host_import
                    malloc calloc realloc free posix_memalign aligned_alloc memalign malloc_usable_size)
         target_link_options(ps5_game_startup_app PRIVATE "LINKER:--wrap,${symbol}")
     endforeach()

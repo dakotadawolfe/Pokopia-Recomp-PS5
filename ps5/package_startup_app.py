@@ -32,12 +32,18 @@ def main():
                  if line.startswith("PKP_NATIVE_STARTUP_HEAP_LIMIT_MIB:STRING=")]
     if len(threshold) != 1 or not threshold[0].isdigit() or not 1 <= int(threshold[0]) <= 12288:
         raise ValueError("Missing bounded native heap threshold")
+    optimization = [line.split("=", 1)[1] for line in cache.splitlines()
+                    if line.startswith("NX_POSIX_OPT:STRING=")]
+    if len(optimization) != 1 or optimization[0] not in ("-O0", "-O1", "-O2", "-O3", "-Os", "-Oz"):
+        raise ValueError("Missing or invalid generated-code optimization setting")
     check_fself(executable)
     with (args.build / "startup-fself-inspection.txt").open("w") as output:
         subprocess.run([str(args.tool), "self", "--inspect", "--file", str(executable)], stdout=output, check=True)
     manifest = {"title_id": "PPSA98732", "context": "native-app", "diagnostic": "full-game-startup",
                 "console_qualified": False,
                 "uses_saved_selection": True, "renderer": False, "gameplay_verified": False,
+                "generated_code_optimization": optimization[0],
+                "bootstrap_report": "/data/pokopia-recomp/tests/native-bootstrap.log",
                 "guest_heap_stop_threshold_bytes": int(threshold[0]) << 20,
                 "input_stamp": json.loads((args.build / "private-startup/startup-inputs.json").read_text()),
                 "libc_sha256": digest(args.template / "runtime/libc.prx"),

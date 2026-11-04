@@ -140,6 +140,49 @@ Startup build and packaging checks pass locally, as do the existing loader and
 SDK trace builds. Those checks do not establish that this large native image
 can boot. No new gameplay or controller test is ready.
 
+### Compact native startup candidate
+
+The next candidate compiles the same generated code with Clang `-Oz`. The
+default remains `-O1`; the optional third argument to `build_modules.sh` selects
+the optimization for a separate module build. The native startup script reads
+that build's setting and applies it to its generated fixtures as well:
+
+```sh
+export PS5_PAYLOAD_SDK=/path/to/pinned-native-tools/.deps/native/ps5-payload-sdk
+export NX_PYTHON=/path/to/python-with-recomp-requirements
+bash ps5/build_modules.sh /path/to/decrypted-game /path/to/modules-compact -Oz
+bash ps5/build_startup_app.sh /path/to/pinned-native-tools \
+  /path/to/native-compact /path/to/decrypted-game /path/to/modules-compact
+```
+
+On 2026-11-04, all four compact archives passed verification with ABI 4 and all
+200,586 functions retained. All 288 generated C++ and header files are
+byte-identical to the original module build. Archive sizes fell by 54–59%; the
+native FSELF fell from 803,998,515 to **257,655,843 bytes**. Its SHA-256 is
+`b24545c237fa9cd48390e82073765aae9b5d19a284dc4d20655d13dadf3d58b6`.
+The native ELF is 263,152,668 bytes, SHA-256
+`d65834f0d5525a94990576f1bc7f3a6fda1101de9d756be414488f0823ac63a7`.
+The host platform suite compiled with the same generated-code option passed
+68 cases with zero failures. Native packaging and structural checks also pass.
+
+The candidate keeps the 512 MiB diagnostic heap stop and adds kernel-file
+checkpoints immediately before and after `_init_env`, before `main` or C++
+constructors. These append PID-tagged, flushed records to
+`/data/pokopia-recomp/tests/native-bootstrap.log`. The normal per-run native
+report remains separate. Neither checkpoint is proof of completed game startup.
+
+This is a code-size/loading experiment, not a measured performance improvement
+or a confirmed fix for the earlier restarts. Console launch remains unverified;
+no menu, renderer or gameplay is included in this diagnostic. Private evidence
+is retained in `work/ps5/compact-module-verification.json`,
+`compact-source-comparison.json`, `compact-host-test.log`, and
+`game-native-compact-manifest.json`.
+
+The compact executable is installed in PPSA98732 and verified by complete
+SHA-256 readback (`work/ps5/game-native-compact-install.json`). The prior working
+picker executable is retained for restoration. The transfer helper and its
+temporary payload slot were closed and removed before the manual launch test.
+
 ## Evidence as of 2026-11-04
 
 - Local full target compiles and links. All four linked ABI constants equal 4;
