@@ -27,6 +27,7 @@ struct State {
     std::shared_ptr<kernel::EventState> message_event = std::make_shared<kernel::EventState>();
     std::shared_ptr<kernel::EventState> suspended_event = std::make_shared<kernel::EventState>();
     std::shared_ptr<kernel::EventState> gpu_error_event = std::make_shared<kernel::EventState>();
+    std::shared_ptr<kernel::EventState> resolution_event = std::make_shared<kernel::EventState>();
     std::deque<uint32_t> messages{focus_changed};
     bool docked = true, focused = true, foreground = false;
     bool operation_notify = false, performance_notify = false;
@@ -35,6 +36,8 @@ struct State {
     uint32_t fatal_depth = 0;
     uint64_t suspended_ticks = 0;
     amctl::LifecyclePolicy lifecycle;
+    amctl::StartupState startup;
+    int32_t display_width = 0, display_height = 0;
     uint32_t terminate_result = 0;
     float main_volume = 1.0f, library_volume = 1.0f;
     State() { message_event->signaled = true; }
@@ -55,6 +58,14 @@ uint32_t event_handle(const std::shared_ptr<kernel::EventState>& event, Response
     if (!handle) return kernel::kOutOfHandles;
     rsp.out_copy.push_back(handle); return 0;
 }
+uint32_t scalar_request(const Request& req, size_t bytes) {
+    if (!req.in_copy.empty() || !req.in_move.empty()) return kernel::kInvalidHandle;
+    if (!req.a.empty() || !req.b.empty() || !req.w.empty() || !req.x.empty() ||
+        !req.c.empty() || !req.in_services.empty()) return kernel::kInvalidCombination;
+    // Plain CMIF can retain trailing alignment bytes; only domain requests
+    // carry an exact input length. Do not interpret padding as arguments.
+    return req.in_size < bytes || (bytes && !req.in) ? kernel::kInvalidSize : 0;
+}
 Ptr common(const std::shared_ptr<State>& state) {
     return make_iface("ICommonStateGetter", [state](Service& s) {
         s.add_cmd(0, "GetEventHandle", [state](Request&, Response& rsp) {
@@ -74,6 +85,26 @@ Ptr common(const std::shared_ptr<State>& state) {
         });
         s.add_cmd(9, "GetCurrentFocusState", [state](Request&, Response& rsp) -> uint32_t {
             std::lock_guard lock(state->mu); rsp.push<uint8_t>(state->focused ? 1 : 2); return 0;
+        });
+        s.add_cmd(60, "GetDefaultDisplayResolution", [state](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 0)) return rc;
+            std::lock_guard lock(state->mu);
+            if (!state->display_width || !state->display_height) return kernel::kInvalidState;
+            rsp.push(state->display_width); rsp.push(state->display_height); return 0;
+        });
+        s.add_cmd(61, "GetDefaultDisplayResolutionChangeEvent", [state](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 0)) return rc;
+            return event_handle(state->resolution_event, rsp);
+        });
+        s.add_cmd(66, "SetCpuBoostMode", [state](Request& req, Response&) -> uint32_t {
+            if (const auto rc = scalar_request(req, sizeof(uint32_t))) return rc;
+            const auto mode = req.arg<uint32_t>(0);
+            if (mode > 1) return kernel::kOutOfRange;
+            std::lock_guard lock(state->mu); state->startup.cpu_boost_mode = mode; return 0;
+        });
+        s.add_cmd(67, "CancelCpuBoostMode", [state](Request& req, Response&) -> uint32_t {
+            if (const auto rc = scalar_request(req, 0)) return rc;
+            std::lock_guard lock(state->mu); state->startup.cpu_boost_mode = 0; return 0;
         });
         s.add_cmd(130, "EnableStartupLogoDisappearedMessage", [state](Request&, Response&) -> uint32_t {
             std::lock_guard lock(state->mu); state->queue(95); return 0;
@@ -163,6 +194,11 @@ Ptr application(const std::shared_ptr<State>& state) {
         s.add_cmd(22, "SetTerminateResult", [state](Request& req, Response&) -> uint32_t {
             if (req.in_size < 4) return kernel::kInvalidCombination;
             std::lock_guard lock(state->mu); state->terminate_result = req.arg<uint32_t>(0); return 0;
+        });
+        s.add_cmd(40, "NotifyRunning", [state](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 0)) return rc;
+            std::lock_guard lock(state->mu); state->startup.notified_running = true;
+            rsp.push<uint8_t>(1); return 0;
         });
         s.add_cmd(130, "GetGpuErrorDetectedSystemEvent", [state](Request&, Response& rsp) {
             return event_handle(state->gpu_error_event, rsp);
@@ -319,6 +355,16 @@ void register_am() {
 void am_reset() { std::lock_guard lock(state_mu); state.reset(); }
 namespace amctl {
 LifecyclePolicy lifecycle_policy() { auto s = current(); std::lock_guard lock(s->mu); return s->lifecycle; }
+StartupState startup_state() { auto s = current(); std::lock_guard lock(s->mu); return s->startup; }
+bool set_display_resolution(int32_t width, int32_t height) {
+    if (width <= 0 || height <= 0) return false;
+    auto s = current(); std::lock_guard lock(s->mu);
+    if (s->display_width == width && s->display_height == height) return true;
+    const bool changed = s->display_width && s->display_height;
+    s->display_width = width; s->display_height = height;
+    if (changed) { s->resolution_event->signaled = true; kernel::notify_waitable_changed(); }
+    return true;
+}
 bool record_suspended_ticks(uint64_t elapsed) {
     auto s = current(); std::lock_guard lock(s->mu);
     if (elapsed > UINT64_MAX - s->suspended_ticks) return false;

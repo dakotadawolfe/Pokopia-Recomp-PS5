@@ -271,8 +271,59 @@ was separately backed up and readback-verified in
 `game-renderer-memory-metadata.json`; startup shaders and the selected game
 folder are unchanged. The transfer helper (PID 97) and completed service-test
 payload (PID 98) are gone, both owned slots were removed and port 2121 is closed.
-`game-renderer-memory-console.json` records that cleanup. Native game validation
-of the revised budget is pending.
+`game-renderer-memory-console.json` records that cleanup.
+
+Report `game-native-1793830091-102.log` now confirms the revised budget in the
+native app. The actual 9,512,681,472-byte heap allocation succeeds in 586 ms and
+`nninitStartup` returns. The game then calls the real PS5 graphics initialization
+bridge: `GAME_GRAPHICS_READY backend=PS5-NVN`. Guest dispatch reaches this point
+and its next stop in 773 ms. The stop is the unimplemented ICommonStateGetter
+command 66, not a memory failure or native exception. The report ends normally
+with status 2. Submissions, draws and presents are all zero; no menu or game
+image is established by this result.
+
+## Applet startup and native display batch
+
+The PS5 application service now handles the normal/fast-load CPU hints and
+cancellation, application-running notification, default display resolution and
+its change event. The command layouts follow the primary
+[libnx applet client](https://github.com/switchbrew/libnx/blob/master/nx/source/services/applet.c)
+and the normal/fast-load values in
+[libnx APM definitions](https://github.com/switchbrew/libnx/blob/master/nx/include/switch/services/apm.h).
+This is a fixed native clock policy: accepting the guest's loading hint does
+not overclock the PS5 or reproduce Switch CPU/GPU frequency changes.
+
+Loading and running state belongs to the application, persists across sessions
+and resets independently of old session handles. Invalid modes, short inputs,
+foreign handles and unexpected buffers fail before mutation. The scalar input
+checks allow CMIF alignment padding rather than treating it as extra arguments.
+The running notification acknowledges application lifecycle state; it is not
+evidence that the game reached its menu.
+
+Display dimensions come from the initialized native renderer, before guest
+dispatch, and are refreshed after presentations. Queries fail until a valid
+size is supplied. Event handles share an actual event; a changed size signals
+it, while initial setup and duplicate sizes do not. Reset isolates previous
+sessions and event readers. The native report adds `GAME_DISPLAY` and
+`GAME_APPLET_STATE` to distinguish renderer output and guest loading policy.
+
+The full service payload passes **130 cases, zero failures** on PS5 in
+`svc-runtime-1793830400-117.log`, including four added cases covering these
+operations, invalid requests, event clearing and reset isolation. Payload
+SHA-256: `4547b6282ffe7a6e13815328ebb81c9a16bf0ec30370640ac46c205a53126c00`.
+The native build, exception/jump linkage gates and FSELF inspection also pass.
+FSELF: 278,341,889 bytes, SHA-256
+`2a99fc4e43e346e6d221ce4a6f32ba83e328049586c921da21757fa212c0e56e`.
+Native ELF: 284,127,388 bytes, SHA-256
+`552a222d69ee2ec1fd08bd025eefccfe21c5fae3a4d13b38a2e8a09677ec4a26`.
+The candidate is installed after confirming the owned title was stopped and
+unmounted. `game-renderer-applet-install.json` records the previous executable
+backup and complete staged/final SHA-256 readback. Package provenance and
+startup shaders are unchanged; no game assets were transferred. The collection
+helper (PID 104) and service-test process (PID 117) are gone, both owned slots
+were removed and port 2121 is closed. `game-renderer-budget-result-console.json`
+records their cleanup.
+Game execution beyond command 66 still requires a native app launch.
 
 ## Interpreting a run
 

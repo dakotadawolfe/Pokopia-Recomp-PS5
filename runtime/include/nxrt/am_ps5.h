@@ -12,6 +12,16 @@ struct LifecyclePolicy {
     bool exit_library_on_next_program = false;
 };
 LifecyclePolicy lifecycle_policy();
+struct StartupState {
+    // Guest loading hint: 0 = normal, 1 = fast load. The native PS5 profile
+    // keeps its clock policy fixed; this never requests a host overclock.
+    uint32_t cpu_boost_mode = 0;
+    bool notified_running = false;
+};
+StartupState startup_state();
+// Publish the renderer's actual output size. Invalid sizes leave state intact.
+// Establishing the initial size does not signal a change; later changes do.
+bool set_display_resolution(int32_t width, int32_t height);
 // Account a completed suspension measured in kernel::tick_hz() units. This does
 // not suspend workers. Returns false on overflow without changing state/events.
 bool record_suspended_ticks(uint64_t elapsed);

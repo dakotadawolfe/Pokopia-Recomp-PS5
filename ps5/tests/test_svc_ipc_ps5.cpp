@@ -452,6 +452,91 @@ NXTEST(applet_storage_accessors_share_bytes_and_outlive_the_storage_session) {
     const std::array<uint8_t, 16> expected{0, 0, 0, 0, 'P', 'S', '5', '!'};
     CHECK(std::memcmp(reinterpret_cast<void*>(data), expected.data(), expected.size()) == 0);
 }
+NXTEST(applet_loading_hint_is_shared_cancellable_and_reset_per_application) {
+    AmFixture f; const auto proxy = f.open();
+    const auto first = f.child(proxy, 0), second = f.child(proxy, 0); REQUIRE(first && second);
+    CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 0u);
+    for (uint32_t mode : {1u, 0u, 1u}) {
+        auto m = request(66); push(m.raw, mode);
+        REQUIRE(f.send(first, m) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+        CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, mode);
+    }
+    for (uint32_t mode : {2u, UINT32_MAX}) {
+        auto m = request(66); push(m.raw, mode);
+        REQUIRE(f.send(second, m) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kOutOfRange);
+        CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 1u);
+    }
+    REQUIRE(f.send(second, request(67)) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 0u);
+    auto m = request(66); push(m.raw, uint32_t{1}); REQUIRE(f.send(first, m) == k::kOk);
+    nxrt::services::am_reset(); CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 0u);
+    REQUIRE(f.send(first, m) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 0u);
+}
+NXTEST(applet_loading_hint_rejects_short_inputs_and_foreign_resources_without_mutation) {
+    AmFixture f; const auto common = f.child(f.open(), 0); REQUIRE(common);
+    const auto service = k::handle_as<ipc::KSession>(common)->svc;
+    uint32_t mode = 1; ipc::Request req; ipc::Response rsp;
+    req.cmd = 66; req.in = reinterpret_cast<const uint8_t*>(&mode);
+    for (size_t size : {0u, 1u, 2u, 3u}) {
+        req.in_size = size; CHECK_EQ(service->handle(req, rsp), k::kInvalidSize);
+    }
+    req.in_size = 4; req.in = nullptr; CHECK_EQ(service->handle(req, rsp), k::kInvalidSize);
+    req.in = reinterpret_cast<const uint8_t*>(&mode);
+    for (auto member : {&ipc::Request::in_copy, &ipc::Request::in_move}) {
+        (req.*member).push_back(k::kPseudoCurrentProcess);
+        CHECK_EQ(service->handle(req, rsp), k::kInvalidHandle); (req.*member).clear();
+    }
+    for (auto member : {&ipc::Request::a, &ipc::Request::b, &ipc::Request::w, &ipc::Request::x, &ipc::Request::c}) {
+        (req.*member).push_back({f.base, 4});
+        CHECK_EQ(service->handle(req, rsp), k::kInvalidCombination); (req.*member).clear();
+    }
+    req.in_services.push_back(service); CHECK_EQ(service->handle(req, rsp), k::kInvalidCombination);
+    CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 0u);
+    CHECK(rsp.out.empty() && rsp.out_copy.empty() && rsp.out_move.empty());
+    req.in_services.clear(); REQUIRE(service->handle(req, rsp) == k::kOk);
+    req.cmd = 67; req.in_copy.push_back(k::kPseudoCurrentProcess);
+    CHECK_EQ(service->handle(req, rsp), k::kInvalidHandle);
+    CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 1u);
+}
+NXTEST(applet_resolution_comes_from_renderer_and_change_events_share_real_state) {
+    AmFixture f; const auto common = f.child(f.open(), 0); REQUIRE(common);
+    REQUIRE(f.send(common, request(60)) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kInvalidState);
+    REQUIRE(f.send(common, request(61)) == k::kOk); auto reply = f.reply(); REQUIRE(reply.copy.size() == 1);
+    const auto first = reply.copy[0]; auto event = k::handle_as<k::KEvent>(first); REQUIRE(event);
+    CHECK(!event->writable && !event->signaled());
+    REQUIRE(f.send(common, request(61)) == k::kOk); reply = f.reply(); REQUIRE(reply.copy.size() == 1);
+    const auto second = reply.copy[0]; CHECK(k::handle_as<k::KEvent>(second)->state == event->state);
+    CHECK(!nxrt::services::amctl::set_display_resolution(0, 2160));
+    CHECK(!nxrt::services::amctl::set_display_resolution(3840, -1));
+    REQUIRE(nxrt::services::amctl::set_display_resolution(3840, 2160)); CHECK(!event->signaled());
+    REQUIRE(f.send(common, request(60)) == k::kOk); reply = f.reply();
+    CHECK_EQ(word(reply.raw, 8), 0u); CHECK_EQ(word(reply.raw, 16), 3840u); CHECK_EQ(word(reply.raw, 20), 2160u);
+    REQUIRE(nxrt::services::amctl::set_display_resolution(1920, 1080)); CHECK(event->signaled());
+    k::handle_close(first); f.c.x[0] = second; CHECK_EQ(call(f.c, 0x17), k::kOk);
+    REQUIRE(nxrt::services::amctl::set_display_resolution(1920, 1080)); CHECK(!event->signaled());
+    CHECK(!nxrt::services::amctl::set_display_resolution(-1, 1080)); CHECK(!event->signaled());
+    nxrt::services::am_reset(); REQUIRE(nxrt::services::amctl::set_display_resolution(1280, 720));
+    CHECK(!event->signaled()); REQUIRE(f.send(common, request(60)) == k::kOk); reply = f.reply();
+    CHECK_EQ(word(reply.raw, 16), 1920u); CHECK_EQ(word(reply.raw, 20), 1080u);
+    const auto fresh = f.child(f.open(), 0); REQUIRE(fresh);
+    REQUIRE(f.send(fresh, request(60)) == k::kOk); reply = f.reply();
+    CHECK_EQ(word(reply.raw, 16), 1280u); CHECK_EQ(word(reply.raw, 20), 720u);
+}
+NXTEST(applet_running_notification_is_idempotent_and_does_not_cross_reset) {
+    AmFixture f; const auto application = f.child(f.open(), 20); REQUIRE(application);
+    CHECK(!nxrt::services::amctl::startup_state().notified_running);
+    auto malformed = request(40); malformed.send.push_back({f.base + 0x1000, 4, 0});
+    REQUIRE(f.send(application, malformed) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kInvalidCombination);
+    CHECK(!nxrt::services::amctl::startup_state().notified_running);
+    for (unsigned n = 0; n != 2; ++n) {
+        REQUIRE(f.send(application, request(40)) == k::kOk); const auto reply = f.reply();
+        CHECK_EQ(word(reply.raw, 8), 0u); CHECK_EQ(word(reply.raw, 16) & 0xffu, 1u);
+        CHECK(nxrt::services::amctl::startup_state().notified_running);
+    }
+    nxrt::services::am_reset(); REQUIRE(f.send(application, request(40)) == k::kOk);
+    CHECK(!nxrt::services::amctl::startup_state().notified_running);
+}
 NXTEST(applet_storage_pointer_buffers_round_trip_and_invalid_offsets_do_not_partially_write) {
     AmFixture f; const auto p = f.open(), creator = f.child(p, 11), storage = f.storage(creator, 8);
     const auto accessor = f.child(storage, 0); REQUIRE(accessor); const auto data = f.base + 0x1000;

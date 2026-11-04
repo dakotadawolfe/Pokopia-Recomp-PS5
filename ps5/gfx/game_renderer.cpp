@@ -5,6 +5,7 @@
 #include "picker_draw.h"
 #include "../app/folder_picker.h"
 #include "nxrt/diag.h"
+#include "nxrt/am_ps5.h"
 #include "nxrt/config.h"
 #include "nxrt/dispatch.h"
 #include "nxrt/extras.h"
@@ -123,6 +124,8 @@ template<bool Extended> void luminance(Ctx* c) {
     c->x[0] = 0;
 }
 void frame() {
+    int width = 0, height = 0; platform::pixel_size(&width, &height);
+    services::amctl::set_display_resolution(width, height);
     const auto n = presents.fetch_add(1) + 1;
     if (n <= 3 || n % 60 == 0) std::printf("GAME_NVN_PRESENT n=%llu\n", static_cast<unsigned long long>(n));
 }
@@ -171,6 +174,9 @@ bool startup_status(std::string_view message) {
 bool install_game_bridge() {
     const auto* sdk = module_by_name("sdk");
     if (!sdk || !renderer || nvn::backend_installed()) return bridge_error("invalid backend installation order");
+    int width = 0, height = 0; platform::pixel_size(&width, &height);
+    if (!services::amctl::set_display_resolution(width, height)) return bridge_error("native display size is unavailable");
+    std::printf("GAME_DISPLAY width=%d height=%d\n", width, height);
     const auto check = sdk->find_symbol("_ZN2nn2gs3sdk30CheckGraphicsSystemInitializedEPKcm");
     const auto driver_check = sdk->find_symbol("_ZN2nv9InitCheckEv");
     std::array<uint32_t, 4> flag_code{}; std::array<uint32_t, 24> driver_code{};
@@ -218,6 +224,9 @@ bool install_game_bridge() {
     return true;
 }
 void report() {
+    const auto startup = services::amctl::startup_state();
+    std::printf("GAME_APPLET_STATE loading_mode=%u notified_running=%d host_clock_policy=fixed\n",
+        startup.cpu_boost_mode, startup.notified_running);
     const auto s = nvn::backend_stats();
     std::printf("GAME_RENDER_REPORT backend=%d initialized=%d submits=%llu draws=%llu presents=%llu\n",
         nvn::backend_installed(), initialized.load(), static_cast<unsigned long long>(s.submits),
