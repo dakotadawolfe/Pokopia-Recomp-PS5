@@ -1185,12 +1185,19 @@ cases pass with both unavailable calls simulated. The installed executable was
 readback-verified: 19,652,449 bytes, SHA-256
 `e9ea79967824e29e6227b5267e5404519ad39407f61d724bb47bdc293462295d`.
 See [folder picker validation and native storage fix](FOLDER_PICKER.md).
+The user's next controller run selected the existing USB update folder and
+passed all seven scene readback checks, with 300 presented animation frames,
+zero texture-byte mismatches and normal exit. This is native picker/rendering
+proof, not a game frame.
 See [full game startup diagnostic](GAME_STARTUP_TRACE.md) for the independent
 four-module trace and its explicit stop conditions.
 That full trace now reaches the real main module's `nninitStartup`; its first
 10.36 GiB heap request fails in the payload process. Native-app memory capacity
 and eager backing are the next memory questions, not evidence that the native
-PS5 application cannot fit the game.
+PS5 application cannot fit the game. A subsequent full native startup launch
+was followed by a user-confirmed console restart before its report could be
+collected. The native diagnostic now defaults to stopping before large heap
+allocations; see the startup document for its limits and recovery state.
 
 `console_probe.py` automates bounded diagnostic runs and report collection using
 an explicitly hashed FTP helper. It records ownership of helpers, temporary

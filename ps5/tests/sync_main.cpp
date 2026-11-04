@@ -6,7 +6,7 @@
 #include "nxrt/log.h"
 #include <cstdio>
 #include <exception>
-#if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP)
+#if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP) || defined(NXRT_GAME_STARTUP_NATIVE)
 #include "../app/heap.h"
 extern "C" int64_t sceKernelGetDirectMemorySize();
 extern "C" int sceKernelAvailableDirectMemorySize(int64_t, int64_t, size_t, int64_t*, size_t*);
@@ -40,7 +40,9 @@ int main() {
         if (mkdir(path, 0777) != 0 && errno != EEXIST) return 4;
     }
     char report[160];
-#ifdef NXRT_TEST_NATIVE_APP
+#ifdef NXRT_GAME_STARTUP_NATIVE
+    constexpr const char* prefix = "game-native";
+#elif defined(NXRT_TEST_NATIVE_APP)
     constexpr const char* prefix = "app-platform";
 #elif defined(NXRT_TEST_SHARED_HEAP)
     constexpr const char* prefix = "heap-platform";
@@ -93,8 +95,12 @@ int main() {
 #ifdef NXRT_TEST_NATIVE_APP
     std::puts("context=native-app title=PPSA98731");
 #endif
+#ifdef NXRT_GAME_STARTUP_NATIVE
+    std::puts("context=native-app title=PPSA98732 diagnostic=full-game-startup renderer=false");
+    if (fsync(fileno(stdout))) return 8;
+#endif
     nxrt::log_init({.path = "", .level = nxrt::LogLevel::Error, .to_stderr = false});
-#if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP)
+#if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP) || defined(NXRT_GAME_STARTUP_NATIVE)
     const int64_t limit = sceKernelGetDirectMemorySize();
     int64_t available_at = -1;
     size_t available_bytes = 0;
@@ -102,6 +108,9 @@ int main() {
     std::printf("APP_HEAP direct_limit=%lld available_rc=%08x largest_free=%zu at=%lld\n",
                 static_cast<long long>(limit), static_cast<unsigned>(available_rc), available_bytes,
                 static_cast<long long>(available_at));
+#ifdef NXRT_GAME_STARTUP_NATIVE
+    if (fsync(fileno(stdout))) return 8;
+#endif
 #endif
     for (const auto& test : nxtest::cases()) {
         std::printf("RUN %s\n", test.name);
@@ -115,7 +124,7 @@ int main() {
         }
         nxrt::sync::reset_all();
     }
-#if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP)
+#if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP) || defined(NXRT_GAME_STARTUP_NATIVE)
     const auto heap = nxrt::app_heap::stats();
     std::printf("APP_HEAP spaces=%zu backing_bytes=%zu live_blocks=%zu live_bytes=%zu\n",
                 heap.spaces, heap.backing_bytes, heap.live_blocks, heap.live_bytes);

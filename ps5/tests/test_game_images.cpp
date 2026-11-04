@@ -8,6 +8,13 @@
 #ifdef NXRT_GAME_STARTUP_TRACE
 #include "private_startup_inputs.h"
 #endif
+#ifdef NXRT_GAME_STARTUP_NATIVE
+#include "../app/folder_picker.h"
+#include <unistd.h>
+extern "C" [[noreturn]] void catchReturnFromMain(int);
+extern "C" int64_t sceKernelGetDirectMemorySize();
+extern "C" int sceKernelAvailableDirectMemorySize(int64_t, int64_t, size_t, int64_t*, size_t*);
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -168,7 +175,12 @@ constexpr bool startup_trace = false;
             "GAME_TRACE_END stopped at dependency or diagnostic limit; not a passing test or gameplay result" :
             "SDK_TRACE_END stopped at dependency or diagnostic limit; not a passing test or gameplay result");
         std::fflush(stdout); std::fflush(stderr);
+#ifdef NXRT_GAME_STARTUP_NATIVE
+        (void)fsync(fileno(stdout));
+        catchReturnFromMain(2); // Native applications must ask the shell to exit.
+#else
         std::_Exit(2); // Ends this diagnostic process and all of its guest workers.
+#endif
     }
     throw ProbeStop{};
 }
@@ -266,6 +278,23 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
     const unsigned call_number = ++rtld_calls;
     if (call_number > (game_startup_trace ? 10000u : startup_trace ? 1000u : 10000u)) { std::puts("RTLD_STOP system-call limit"); stop_probe(); }
     const uint64_t a = c->x[0], b = c->x[1], d = c->x[2];
+#ifdef NXRT_GAME_STARTUP_NATIVE
+    if constexpr (Number == 0x01) {
+        const auto limit = sceKernelGetDirectMemorySize();
+        int64_t at = -1; size_t bytes = 0;
+        const int rc = sceKernelAvailableDirectMemorySize(0, limit, 16384, &at, &bytes);
+        std::printf("GAME_HEAP requested=%llu native_limit=%lld largest_free=%zu query_rc=%08x diagnostic_limit_mib=%u\n",
+            static_cast<unsigned long long>(b), static_cast<long long>(limit), bytes,
+            static_cast<unsigned>(rc), unsigned(PKP_NATIVE_STARTUP_HEAP_LIMIT_MIB));
+        if (fsync(fileno(stdout))) {
+            std::puts("GAME_STOP cannot persist memory checkpoint"); stop_probe();
+        }
+        if (b > (uint64_t{PKP_NATIVE_STARTUP_HEAP_LIMIT_MIB} << 20)) {
+            std::puts("GAME_STOP heap request exceeds diagnostic threshold; no allocation attempted");
+            stop_probe();
+        }
+    }
+#endif
     if constexpr (startup_trace) {
         std::printf("SDK_TRACE_ENTER n=%u svc=%02zx thread=%x fn=%llx lr=%llx a=%llx b=%llx d=%llx\n",
             call_number, Number, nxrt::kernel::current_thread() ? nxrt::kernel::current_thread()->handle : 0,
@@ -498,6 +527,26 @@ NXTEST(decrypted_sdk_maps_its_stack_and_runs_a_worker_to_its_parent_mutex) {
 #else
 NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
 #endif
+    std::string exefs = "/data/pokopia-recomp/game/exefs";
+#ifdef NXRT_GAME_STARTUP_NATIVE
+    std::string selected, location_error;
+    const bool remembered = nxrt::app::load_picker_location("/data/pokopia-recomp/game-location.txt", selected, location_error);
+    if (!remembered) std::printf("GAME_LOCATION_FAIL reason=%s\n", location_error.c_str());
+    REQUIRE(remembered);
+    const auto location = nxrt::app::check_game_location(selected, nxrt::app::picker_storage_roots());
+    if (!location.usable) std::printf("GAME_LOCATION_FAIL reason=%s\n", location.message.c_str());
+    REQUIRE(location.usable);
+    // The current RomFS reader accepts one complete extracted tree. Refuse a
+    // multi-layer selection until overlay resolution is implemented.
+    if (location.game.romfs_layers.size() != 1) std::puts("GAME_LOCATION_FAIL multiple RomFS layers require overlay support");
+    REQUIRE(location.game.romfs_layers.size() == 1);
+    exefs = location.game.exefs;
+    nxrt::config_set("fs", "romfs", location.game.romfs_layers.front().c_str());
+    REQUIRE(nxrt::config_get_str("fs", "romfs") == location.game.romfs_layers.front());
+    std::printf("GAME_LOCATION root=%s exefs=%s romfs=%s assets_copied=false\n", location.game.root.c_str(),
+        exefs.c_str(), location.game.romfs_layers.front().c_str());
+    REQUIRE(fsync(fileno(stdout)) == 0);
+#endif
     nxrt::game::Info game{.platform = nxrt::game::Platform::Switch2};
 #ifdef NXRT_GAME_STARTUP_TRACE
     game.id = "pkp"; game.title = "Pokémon Pokopia";
@@ -524,7 +573,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     REQUIRE(mem::init({.heap_reserve = 12ull << 30}));
     nxrt::Module* rtld = nullptr;
     for (const auto& expected : game_image_inputs) {
-        const auto path = std::string("/data/pokopia-recomp/game/exefs/") + expected.name;
+        const auto path = exefs + "/" + expected.name;
         REQUIRE(check_file(path, expected));
         nxrt::LoadOptions options; options.name = expected.name; options.base = expected.base;
         std::string error; auto* module = nxrt::module_load_nso_file(path.c_str(), options, &error);

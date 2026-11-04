@@ -18,7 +18,7 @@ bash ps5/build_graphics_app.sh \
 
 The variables come from the public dependency/partition recipe in GRAPHICS_PORT.md. The local build directory is `/root/pokopia-recomp-ps5-graphics-runtime` in WSL `PS5ColdbootLab`. Packaging reuses title `PPSA98732`; it does not change the native runtime-test title or copy game assets. `graphics-app-manifest.json` is the authoritative hash receipt for the packaged files. Logs use `/data/pokopia-recomp/tests/graphics-runtime-<time>-<pid>.log`.
 
-The initial picker package displayed the UI and cancelled cleanly but exposed a libc `realpath` stub. Its first replacement then exposed native-only `lstat` denial. The [folder picker correction](FOLDER_PICKER.md#native-storage-path-correction) uses opened descriptors and now passes the actual native storage audit, including synthetic selection/save/reload/cleanup. The installed executable is **19,652,449 bytes**, SHA-256 `e9ea79967824e29e6227b5267e5404519ad39407f61d724bb47bdc293462295d`; native ELF SHA-256 `2219778fc2681a7921f5af7dad2e14d6efdfeaf7520be9016780f01805ab8eff`. It was readback-verified, and the audit trigger was removed after the native app exited. Choosing the user's game folder and running the shader/texture scene still require the next controller test.
+The initial picker package displayed the UI and cancelled cleanly but exposed a libc `realpath` stub. Its first replacement then exposed native-only `lstat` denial. The [folder picker correction](FOLDER_PICKER.md#native-storage-path-correction) uses opened descriptors and now passes the actual native storage audit, including synthetic selection/save/reload/cleanup. The installed executable is **19,652,449 bytes**, SHA-256 `e9ea79967824e29e6227b5267e5404519ad39407f61d724bb47bdc293462295d`; native ELF SHA-256 `2219778fc2681a7921f5af7dad2e14d6efdfeaf7520be9016780f01805ab8eff`. It was readback-verified, and the audit trigger was removed after the native app exited. The subsequent controller run selected the USB game folder and passed the shader/texture scene, as recorded below.
 
 ## What is implemented
 
@@ -31,7 +31,9 @@ The initial picker package displayed the UI and cancelled cleanly but exposed a 
 
 The current native scene uses existing embedded test shaders and generated test textures. It requires no private Pokopia data to render. The launch-time folder picker runs first on the same Device/Renderer; selecting a valid existing folder persists only its location for later game startup. Internal storage and connected USB drives are browsed with the native controller. Invalid/missing folders remain on the picker with an explanation. Cancel returns Home with `CANCELLED`, not a renderer PASS. A valid selection starts the diagnostic scene; it does not make game assets part of the executable or transfer them. `ps5/gfx/picker_draw.cpp` uses the pinned boilerplate's attributed bitmap font plus path punctuation, twelve rows and a two-line status area.
 
-The real renderer contains desktop-era unbounded Vulkan waits. A driver failure can therefore still need Options -> Close Game. The native package and shader/texture readback need their own console result; previous clear and host-import passes do not establish this path.
+The real renderer contains desktop-era unbounded Vulkan waits. A driver failure can therefore still need Options -> Close Game.
+
+The controller run in `graphics-runtime-1793815568-469.log` selected the existing USB update folder and completed the actual scene. All six sampled texture pixels matched exactly, the background sample passed, both mip levels were covered, and the later frame differed. The renderer presented 300/300 frames with zero errors and returned normally. The user independently reported the animated graphic followed by Home. This proves the native shader/texture scene and picker flow; it does not prove NVN command replay or a game frame.
 
 ## Measured NVN closure
 

@@ -28,7 +28,10 @@ int main(void) {
     if (user_result || user < 0) { printf("NATIVE_LAUNCH no_user init=%08x result=%08x\n", init, user_result); return 3; }
     Launch launch = {.size=sizeof(Launch), .user_id=user};
     const char* args[] = {NULL};
+    printf("NATIVE_LAUNCH requesting title=PPSA98732 user=%x\n", user);
+    if (fsync(fileno(stdout))) return 5;
     int result = sceLncUtilLaunchApp("PPSA98732", args, &launch);
     printf("NATIVE_LAUNCH title=PPSA98732 user=%x result=%08x; verify app log separately\n", user, result);
+    if (fsync(fileno(stdout))) return 5;
     return result < 0 ? 4 : 0;
 }

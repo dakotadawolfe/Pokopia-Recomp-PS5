@@ -64,6 +64,82 @@ file lengths, headers and complete-file CRCs against the locally hash-validated
 input before mapping them. Parent-side staging/readback SHA-256 remains separate
 evidence.
 
+## Native application diagnostic
+
+`build_startup_app.sh` builds the same four-module trace using the native CRT,
+direct-memory host allocator and shell exit path. It produces `startup.bin`,
+`startup.elf` and `startup-app-manifest.json` in a separate local build directory:
+
+```sh
+NX_PYTHON=/path/to/python-with-recomp-requirements \
+  bash ps5/build_startup_app.sh /path/to/pinned-native-tools \
+  /path/to/native-startup-build /path/to/decrypted-game /path/to/verified-modules
+```
+
+This temporary headless diagnostic uses the existing **PPSA98732** identity so
+it can read the folder choice saved by the graphics app. It does not open the
+picker or renderer. It revalidates that selection, reads the four NSOs directly
+from the chosen ExeFS and configures read-only RomFS from the chosen asset tree.
+There is no fallback to the old staged ExeFS directory. Multiple asset layers
+are rejected until overlay support exists. Files must match the build's full
+length, header and complete-file CRC before mapping; the deployment workflow
+also checks their full SHA-256 values against the private input stamp.
+
+Before replacing the executable, retain the working graphics package. The
+`replace_graphics_executable.py` tool checks the title marker, ShadowMountPlus
+unmounted state, installed executable hash and native libc hash, then backs up
+the executable, transfers to a unique staging name and verifies both staging
+and final SHA-256 readbacks. It changes only `eboot.bin`. Restore the graphics
+executable after collecting the native trace, using the same stopped-state
+checks and the diagnostic's hash as `--previous-sha256`.
+
+The one-shot `launch_graphics_app.c` helper can launch this diagnostic under
+the same title. Its report is separate from `game-native-<time>-<pid>.log`;
+inspect that native report and process disappearance before restoring the app.
+Unsupported paths still produce `GAME_TRACE_END`, which is a diagnostic stop,
+not a passing startup. Native stops use the shell exit request instead of the
+payload's `_Exit` syscall. No game assets are transferred or modified.
+
+The native link disables the generic GNU build-ID note. In this larger image,
+LLVM places that note next to writable data; the pinned native converter counts
+it as read-only content and rejects the layout for overlapping process parameter
+blocks. SHA-256 and the private module provenance stamp identify this artifact.
+Neither the pinned toolchain nor its native conversion checks are patched.
+
+The first native startup launch (803,998,083 bytes, SHA-256
+`df2788fe39443e40a6768ff6cde09345cd364ef251490f0daeb3f68879acd778`)
+was installed and readback-verified. Launching it was followed by the console
+restarting, confirmed by the user; all helper/service ports became unavailable.
+No native startup report had been collected at that point. This does not yet
+locate the failure at application loading, the heap request, or guest execution.
+
+Subsequent native diagnostics default to stopping before any guest heap request
+over 512 MiB, logging the requested size, native direct-memory limit and largest
+free extent. The game still sees its original resource limit; the diagnostic
+stops instead of shrinking its request or returning false success. The build
+script explicitly sets this threshold, and the manifest records it. This
+guard is not evidence that a smaller heap fixes the restart.
+
+The guarded, checkpoint-flushing candidate (803,998,515 bytes, SHA-256
+`e33af8cdc76fddf6021d5953b0f761fde5dbb563d5e855c855fd7c307c420b79`)
+also lost the console connection immediately on launch. After recovery, the
+durable helper report `native-launch-1793816688-95.log` ends at the launch
+request. ShadowMountPlus's retained `debug.log.1` shows the title's nullfs and
+data/USB mounts ready, followed by a shell-status polling error. No
+`game-native-*.log` exists, including the checkpoint flushed at the beginning
+of `main`. This narrows investigation to executable loading or earlier runtime
+initialization; it does not establish insufficient game RAM or a specific
+loader bug. The system error-history directory has no new entry for these runs.
+
+Both startup candidates are failed console artifacts; do not repeat their
+launches. The original picker/renderer executable was restored after each run
+and fully readback-verified. The final restoration receipt is
+`work/ps5/game-native-bounded-restore.json`, installed SHA-256
+`e9ea79967824e29e6227b5267e5404519ad39407f61d724bb47bdc293462295d`.
+Startup build and packaging checks pass locally, as do the existing loader and
+SDK trace builds. Those checks do not establish that this large native image
+can boot. No new gameplay or controller test is ready.
+
 ## Evidence as of 2026-11-04
 
 - Local full target compiles and links. All four linked ABI constants equal 4;

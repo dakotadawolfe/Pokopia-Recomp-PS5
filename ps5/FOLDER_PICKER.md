@@ -131,9 +131,13 @@ host cases also pass with the restricted-API simulation.
 
 The installed executable is 19,652,449 bytes, SHA-256
 `e9ea79967824e29e6227b5267e5404519ad39407f61d724bb47bdc293462295d`.
-The diagnostic trigger was removed and its absence verified. Selecting the
-user's actual game folder and running the subsequent renderer scene still need
-the next controller test; no real game assets were modified or selected.
+The diagnostic trigger was removed and its absence verified. The subsequent
+controller run selected `/mnt/usb0/Games/Pokopia/updates/655360` and saved its
+location. Report `graphics-runtime-1793815568-469.log` records that selection,
+seven successful pixel samples, 300 presented animation frames, zero renderer
+errors and normal application exit. All six texture samples had zero byte
+error. The user saw the animated graphic and returned Home. No game assets
+were copied or modified; the scene is still a renderer diagnostic.
 
 ## Repeating the native audit
 
