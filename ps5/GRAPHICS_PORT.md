@@ -1,6 +1,6 @@
 # Native graphics integration audit
 
-Source/artifact inspection and native diagnostics, 2026-11-04. Both the standalone display app and combined guest-memory/GPU diagnostic passed on the PS5. The real runtime Device/Renderer shader/texture scene now compiles, links and packages; its console result is pending. These diagnostics do not run game code. The later audit sections retain the source boundaries for integrating actual game rendering.
+Source/artifact inspection and native diagnostics, 2026-11-04. Both the standalone display app and combined guest-memory/GPU diagnostic passed on the PS5. The real runtime Device/Renderer shader/texture scene also passed on console. The full NVN backend now links; its bundled replay/conversion run remains pending. These diagnostics do not run game code. The later audit sections retain the source boundaries for integrating actual game rendering.
 
 ## Standalone diagnostic build
 
@@ -163,7 +163,16 @@ That protection change must be reconciled with guest page permissions and write 
 
 The existing game-renderer seam is `gfx::Device::create` then `gfx::Renderer::create`, followed by `nvn::install_backend(BackendDesc)` (`runtime/include/nxrt/nvn_backend.h:25`, implementation `runtime/src/gfx/nvn/nvn_gpu.cpp:980`). A null renderer cannot show frames. The backend starts its render worker and presentation pass at `nvn_gpu.cpp:821`; `nvn_present.cpp:89` acquires a frame and `:134` ends it. `platform.h` exposes Vulkan extension/surface creation separately from the desktop window implementation.
 
-The real PS5 Device/Renderer/VMA/volk/tiling/TestScene closure is now link-verified by `ps5/gfx_runtime.cmake`; see [RUNTIME_RENDERER_PORT.md](RUNTIME_RENDERER_PORT.md) for the native build, source boundaries and measured NVN compile inventory. The optional `nxrt_ps5_nvn_objects` audit target compiles 38 of 40 actual NVN translation units. It is not yet a linked NVN backend: the two Windows SEH workers, native write tracking, ASTC conversion, runtime/HLE dependencies and optional display-processing references still require integration. Fixed SDR/FIFO and no temporal processing are enforced for the current PS5 runtime scene.
+The real PS5 Device/Renderer/VMA/volk/tiling/TestScene closure is console-verified;
+see [RUNTIME_RENDERER_PORT.md](RUNTIME_RENDERER_PORT.md). All 40 NVN translation
+units now compile and link with actual texture workers, static conversion,
+tracking, runtime dispatch and diagnostics. The bundled replay test remains
+console-unverified; see [NVN_RUNTIME_PORT.md](NVN_RUNTIME_PORT.md). Fixed SDR/FIFO
+and no temporal processing remain the current PS5 policy.
+
+The following table records the original source audit boundaries. The worker,
+tracking, conversion and optional-processing link blockers are addressed by the
+new batch; their workload correctness and performance remain to be validated.
 
 Concrete blockers:
 

@@ -2,10 +2,12 @@
 // Uses: ARM astcenc 5.7.0 (Apache-2.0) through per-ISA DLLs, bc7e.ispc from bc7enc_rdo (Apache-2.0, Binomial LLC).
 #include "astc2bc7.h"
 
+#if !defined(A2B_STATIC_ASTC)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <intrin.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -23,7 +25,9 @@ namespace {
 
 // ---------------------------------------------------------------- astcenc DLL dispatch
 struct AstcApi {
+#if !defined(A2B_STATIC_ASTC)
     HMODULE module = nullptr;
+#endif
     const char* isa = nullptr;
     decltype(&astcenc_config_init) config_init = nullptr;
     decltype(&astcenc_context_alloc) context_alloc = nullptr;
@@ -36,6 +40,22 @@ AstcApi g_astc;
 std::mutex g_astc_mutex;
 std::once_flag g_bc7e_once;
 
+#if defined(A2B_STATIC_ASTC)
+a2b_status ensure_astc(const char* dll_dir) {
+    // A static build has no runtime library search path.
+    if (dll_dir && *dll_dir) return A2B_ERR_ARGS;
+    std::lock_guard<std::mutex> lock(g_astc_mutex);
+    if (!g_astc.config_init) {
+        g_astc.isa = "static-avx2";
+        g_astc.config_init = &astcenc_config_init;
+        g_astc.context_alloc = &astcenc_context_alloc;
+        g_astc.decompress = &astcenc_decompress_image;
+        g_astc.context_free = &astcenc_context_free;
+        g_astc.error_string = &astcenc_get_error_string;
+    }
+    return A2B_OK;
+}
+#else
 bool cpu_has_avx2() {
     int r[4];
     __cpuid(r, 0);
@@ -99,6 +119,7 @@ a2b_status ensure_astc(const char* dll_dir) {
         if (load_isa(dir, isa, g_astc)) return A2B_OK;
     return A2B_ERR_NO_ASTC_LIB;
 }
+#endif
 
 // ---------------------------------------------------------------- helpers
 template <class F>

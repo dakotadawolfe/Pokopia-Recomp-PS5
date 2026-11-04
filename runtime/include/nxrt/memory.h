@@ -49,6 +49,16 @@ bool decommit(uint64_t addr, uint64_t size);
 bool protect(uint64_t addr, uint64_t size, Prot p);
 uint64_t alloc_kernel(uint64_t size, uint64_t align = kPage);   // committed RW memory from the kernel region (bump allocator)
 bool is_mapped(uint64_t addr, uint64_t size);                // every byte of the range is committed and accessible (VirtualQuery)
+#if defined(NXRT_TARGET_PS5)
+// Copy from owned guest mappings while excluding unmap/protection changes.
+// Fails before writing dst if any source byte is unreadable or outside owned
+// heap/fixed mappings. This is a lifetime guarantee, not a guest-write lock.
+bool copy_readable(uint64_t addr, void* dst, uint64_t size);
+// Independent RW view over completely backed host pages. The Vulkan driver
+// grants GPU access to this view without changing guest-visible protections.
+// Release with heap_private_view_unmap after freeing the Vulkan import.
+void* heap_import_view(uint64_t offset, uint64_t size);
+#endif
 #ifndef _WIN32
 // MapMemory's exclusive stack ownership, implemented by page copies on PS5.
 // The SVC layer validates states/attributes. Buffers must be quiescent during

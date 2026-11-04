@@ -1218,9 +1218,16 @@ The current candidate adds its process/session bootstrap and TIPC error checks.
 All 43 IPC/service cases pass on the console. GPU, syncpoint, native-memory and
 display operations remain unported; a session handle is not rendering proof.
 The candidate retains the 11 GiB diagnostic heap threshold and 1 GiB
-pre-allocation headroom check. Its next native run is pending. See
+pre-allocation headroom check. Its subsequent native run completed SDK static
+initialization and received the graphics-supervisor handle, then reached its
+60-second diagnostic limit before supervisor boot. See
 [guest exception integration](GAME_STARTUP_TRACE.md#guest-exception-runtime) and
 [graphics supervisor bootstrap](GRAPHICS_SUPERVISOR.md).
+
+The renderer batch now links all 40 NVN backend units and bundles GPU transfer,
+render-target/presentation readback and real ASTC/BC7 checks in one native app.
+Host conversion passes 49,981 checks; the full native batch remains unverified.
+See [native NVN integration](NVN_RUNTIME_PORT.md) for exact scope and limitations.
 
 `console_probe.py` automates bounded diagnostic runs and report collection using
 an explicitly hashed FTP helper. It records ownership of helpers, temporary

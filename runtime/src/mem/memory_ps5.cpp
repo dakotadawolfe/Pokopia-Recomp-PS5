@@ -214,6 +214,20 @@ bool is_mapped(uint64_t address, uint64_t size) {
     if (!parts(first, end, ranges)) return size && SubpageMap::allows(address, size, 1);
     return std::all_of(ranges.begin(), ranges.end(), [](const Part& r) { return r.accessible(); });
 }
+bool copy_readable(uint64_t address, void* dst, uint64_t size) {
+    if (!size) return true;
+    if (!dst || size > SIZE_MAX) return false;
+    std::lock_guard lock(mutex);
+    uint64_t first, end;
+    if (!span(address, size, first, end)) return false;
+    std::vector<Part> ranges;
+    // Service-owned shared aliases have a different lifetime owner, so they
+    // cannot be borrowed under this mutex.
+    if (!parts(first, end, ranges) || !SubpageMap::allows(address, size, 1) ||
+        !std::all_of(ranges.begin(), ranges.end(), [](const Part& r) { return r.accessible(); })) return false;
+    std::memcpy(dst, reinterpret_cast<const void*>(address), static_cast<size_t>(size));
+    return true;
+}
 uint64_t alloc_kernel(uint64_t size, uint64_t alignment) {
     if (!initialised() && !init()) return 0;
     if (!alignment) alignment = kPage;
@@ -243,6 +257,7 @@ uint64_t heap_alias(uint64_t offset, uint64_t size, uint64_t at, Prot p) {
 }
 bool heap_alias_unmap(uint64_t at) { std::lock_guard lock(mutex); return heap && heap->unmap_alias(at); }
 void* heap_private_view(uint64_t offset, uint64_t size) { std::lock_guard lock(mutex); return heap && !stack_busy(kHeapBase + offset, size) ? heap->private_view(offset, size) : nullptr; }
+void* heap_import_view(uint64_t offset, uint64_t size) { std::lock_guard lock(mutex); return heap && !stack_busy(kHeapBase + offset, size) ? heap->private_view(offset, size, true) : nullptr; }
 bool heap_private_view_unmap(void* at) { std::lock_guard lock(mutex); return heap && heap->unmap_private(at); }
 size_t heap_alias_count() { std::lock_guard lock(mutex); return heap ? heap->alias_count() : 0; }
 void heap_alias_ranges(std::vector<std::pair<uint64_t, uint64_t>>& out) { std::lock_guard lock(mutex); if (heap) heap->alias_ranges(out); }

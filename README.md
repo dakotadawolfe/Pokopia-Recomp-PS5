@@ -3,8 +3,9 @@
 Native PS5 port in development, based on drakolordx7's Pokopia recompilation.
 The current build validates the native runtime, executes SDK startup and its
 first worker, and serves read-only RomFS storage on PS5. A separate native
-graphics diagnostic is ready for presentation testing. Game startup, asset
-staging and the game renderer still need integration.
+graphics diagnostic has passed shader/texture presentation. The full NVN
+backend now links, with a bundled command-replay/conversion diagnostic awaiting
+console validation. Game startup and rendering still need integration.
 There is no playable PS5 build yet.
 
 See [the PS5 project scope and current status](ps5/README.md). Builds run locally,

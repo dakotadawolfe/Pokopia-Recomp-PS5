@@ -17,6 +17,10 @@
 #include <cstdio>
 
 extern "C" int sceSystemServiceHideSplashScreen();
+#if defined(PKP_GRAPHICS_NVN_LINK)
+bool pkp_nvn_replay_probe(nxrt::gfx::Device&, nxrt::gfx::Renderer&);
+int pkp_texture_conversion_probe();
+#endif
 
 namespace {
 bool verify_first_frame(const std::vector<uint8_t>& image, uint32_t width, uint32_t height) {
@@ -66,17 +70,24 @@ extern "C" int pkp_graphics_runtime_probe() {
     using namespace nxrt;
     const int audit = app::run_picker_storage_audit();
     if (audit >= 0) return audit;
-    std::puts("RUNTIME_SCENE_BEGIN device=real renderer=real scene=shader-texture game_code=false NVN_replay=false");
+    std::puts("RUNTIME_SCENE_BEGIN device=real renderer=real scene=shader-texture game_code=false");
     LogOptions logging;
     logging.path = "";
     logging.stderr_all = true;
     log_init(logging);
     // Retain the production guest windows while the real renderer allocates.
+#if defined(PKP_GRAPHICS_NVN_LINK)
+    struct MemoryLifetime { ~MemoryLifetime() { mem::shutdown(); } } memory_lifetime;
+    if (!mem::init() || !mem::heap_create(mem::kHeapMax) || !mem::heap_commit(0, 8 << 20)) {
+        std::puts("RUNTIME_SCENE_FAIL operation=owned-guest-heap"); log_shutdown(); return 1;
+    }
+#else
     auto heap = ps5_vm::Reservation::reserve(mem::kHeapMax, mem::kHeapBase);
     auto alias = ps5_vm::Reservation::reserve(mem::kAliasSize, mem::kAliasBase);
     auto stack = ps5_vm::Reservation::reserve(mem::kStackSize, mem::kStackBase);
     auto kernel = ps5_vm::Reservation::reserve(mem::kKernelSize, mem::kKernelBase);
     if (!heap || !alias || !stack || !kernel) { std::puts("RUNTIME_SCENE_FAIL operation=guest-reservations"); return 1; }
+#endif
     extras::Settings settings;
     settings.hdr.mode = extras::HdrMode::Off;
     settings.upscale.mode = extras::UpscaleMode::Off;
@@ -148,7 +159,12 @@ extern "C" int pkp_graphics_runtime_probe() {
             static_cast<unsigned long long>(log_count(LogLevel::Error)));
     }
     if (device) device->wait_idle();
-    scene.reset(); renderer.reset(); device.reset();
+    scene.reset();
+#if defined(PKP_GRAPHICS_NVN_LINK)
+    if (ok && !cancelled) ok = pkp_nvn_replay_probe(*device, *renderer);
+    if (ok && !cancelled) ok = pkp_texture_conversion_probe() == 0;
+#endif
+    renderer.reset(); device.reset();
     platform::shutdown();
     ok &= log_count(LogLevel::Error) == 0 && !platform::has_window() && !platform::initialised();
     std::printf("RUNTIME_SCENE_RESULT status=%s frames=%u/300 error=%s gameplay_verified=false\n", ok ? (cancelled ? "CANCELLED" : "PASS") : "FAIL", completed, error.c_str());

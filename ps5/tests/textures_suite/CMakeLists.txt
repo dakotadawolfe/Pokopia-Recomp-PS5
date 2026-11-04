@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+cmake_minimum_required(VERSION 3.25)
+project(pokopia_texture_tests LANGUAGES C CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/../../textures.cmake")
+set(root "${CMAKE_CURRENT_LIST_DIR}/../../..")
+add_executable(ps5_texture_tests ../test_texture_conversion.cpp
+    "${pkp_bc7_SOURCE_DIR}/bc7decomp_ref.cpp")
+target_include_directories(ps5_texture_tests PRIVATE "${pkp_bc7_SOURCE_DIR}")
+target_link_libraries(ps5_texture_tests PRIVATE nxrt_ps5_textures)
+target_compile_features(ps5_texture_tests PRIVATE cxx_std_20)
+if(PS5)
+    target_compile_definitions(ps5_texture_tests PRIVATE NXRT_TARGET_PS5=1)
+    target_sources(ps5_texture_tests PRIVATE "${root}/ps5/app/thread_exit.cpp")
+    target_link_options(ps5_texture_tests PRIVATE "LINKER:--wrap,pthread_create")
+endif()
+enable_testing()
+add_test(NAME texture_conversion COMMAND ps5_texture_tests)

@@ -11,6 +11,9 @@
 #include "nxrt/gauge.h"
 #include "nvn_texdata.h"
 #include "nxrt/log.h"
+#if defined(NXRT_TARGET_PS5)
+#include "nxrt/memory.h"
+#endif
 #include "nvn_format.h"
 #include "nvn_gpu.h"
 
@@ -113,7 +116,15 @@ bool texture_gather_virtual(const Texture& t, std::vector<uint8_t>& out) {
     std::vector<VSeg> segs;
     if (!virtual_segments(t, segs)) return false;
     out.assign(static_cast<size_t>(t.storage_size), 0);
-    for (const VSeg& s : segs) std::memcpy(out.data() + s.at, s.ptr, static_cast<size_t>(s.len));
+    for (const VSeg& s : segs) {
+#if defined(NXRT_TARGET_PS5)
+        if (!mem::copy_readable(reinterpret_cast<uint64_t>(s.ptr), out.data() + s.at, s.len)) {
+            out.clear(); return false;
+        }
+#else
+        std::memcpy(out.data() + s.at, s.ptr, static_cast<size_t>(s.len));
+#endif
+    }
     return true;
 }
 
@@ -126,7 +137,11 @@ bool texture_read_virtual(const Texture& t, uint64_t at, uint64_t len, uint8_t* 
     for (const VSeg& s : segs) {
         const uint64_t a = std::max(at, s.at), b = std::min(at + len, s.at + s.len);
         if (a >= b) continue;
+#if defined(NXRT_TARGET_PS5)
+        if (!mem::copy_readable(reinterpret_cast<uint64_t>(s.ptr + (a - s.at)), dst + (a - at), b - a)) return false;
+#else
         std::memcpy(dst + (a - at), s.ptr + (a - s.at), static_cast<size_t>(b - a));
+#endif
         cov.emplace_back(a, b);
     }
     std::sort(cov.begin(), cov.end());
@@ -164,7 +179,16 @@ bool texture_hash_virtual(const Texture& t, uint64_t& hash) {
     std::vector<VSeg> segs;
     if (!virtual_segments(t, segs)) return false;
     uint64_t h = 0x9E3779B97F4A7C15ull ^ t.storage_size;
-    for (const VSeg& s : segs) h = hash_bytes(s.ptr, static_cast<size_t>(s.len)) ^ (h * 0xC2B2AE3D27D4EB4Full + s.at);   // the position of the segment is part of the hash
+    for (const VSeg& s : segs) {
+#if defined(NXRT_TARGET_PS5)
+        std::vector<uint8_t> snapshot(static_cast<size_t>(s.len));
+        if (!mem::copy_readable(reinterpret_cast<uint64_t>(s.ptr), snapshot.data(), s.len)) return false;
+        const auto* bytes = snapshot.data();
+#else
+        const auto* bytes = s.ptr;
+#endif
+        h = hash_bytes(bytes, static_cast<size_t>(s.len)) ^ (h * 0xC2B2AE3D27D4EB4Full + s.at);
+    }
     hash = h;
     return true;
 }

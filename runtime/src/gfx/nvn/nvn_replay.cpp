@@ -1392,6 +1392,7 @@ void shadows_after_dispatch() {
 
 Texture* g_su_tex = nullptr;                 // scene upscaler override (S14), see scene_upscale_for_draw
 VkImageView g_su_view = VK_NULL_HANDLE;
+#if !defined(NXRT_TARGET_PS5)
 Ref<Texture> g_tsr_depth;                   // temporal upscaling: the depth target of the G-buffer draw that gave this frame's camera
 uint64_t g_tsr_frame = 0;                    // temporal upscaling: tone-map draws so far (the jitter phase of the frame being drawn)
 // Temporal upscaling: a copy of a vertex slot 0 camera block with this frame's jitter added (extras::temporal_jitter_block). False: left alone.
@@ -1401,6 +1402,7 @@ bool tsr_jitter(uint32_t* words, size_t n_words) {
     const VkExtent3D e = tex_image_extent(d, 0);
     return extras::temporal_jitter_block(words, n_words, e.width, e.height, g_tsr_frame);
 }
+#endif
 
 VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
     std::vector<VkWriteDescriptorSet> writes;
@@ -1451,14 +1453,20 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                         BufRef br = resolve_read(bind.addr, bind.size, kReadUniform);
                         const VkDeviceSize align = device().properties().limits.minUniformBufferOffsetAlignment;
                         const float ufs = ufs_scale_for(d, idx);
+#if defined(NXRT_TARGET_PS5)
+                        constexpr bool tsr = false;
+#else
                         const bool tsr = d.nvn_stage == kVertex && idx == 0 && bind.size >= 272 && extras::temporal_wanted() && S.depth_tex;
+#endif
                         if (br.ok && (ufs != 1.0f || tsr)) {
                             // the game's scale on some floats of this block (nxrt/gfx_tuning.h): bound from a patched copy in the upload ring
                             const VkDeviceSize n = std::min<VkDeviceSize>({bind.size ? bind.size : 65536, br.avail, 65536});
                             UploadAlloc u = F->upload(n, std::max<VkDeviceSize>(align, 256));
                             if (u) {
                                 std::memcpy(u.ptr, host_ptr(bind.addr), n);
+#if !defined(NXRT_TARGET_PS5)
                                 if (tsr && n >= 272) tsr_jitter(reinterpret_cast<uint32_t*>(u.ptr), static_cast<size_t>(n / 4));   // temporal upscaling
+#endif
                                 const uint32_t mask = ufs != 1.0f ? nxrt::gfx::tuning().ufs_mask.load(std::memory_order_relaxed) : 0u;
                                 for (uint32_t i = 0; i < 32; ++i) {
                                     if (!(mask & (1u << i)) || (i + 1) * 4 > n) continue;
@@ -1924,6 +1932,7 @@ bool trigger_time_ok() {
 // to the target's size and the draw samples that instead. The override lives until the next draw.
 // Temporal upscaling (FSR 3 / DLSS / DLAA, src/gfx/extras/temporal.h): a G-buffer draw (4+ colour targets and a depth target) offers its vertex
 // uniform slot 0 as the camera block; the first valid one of the frame is kept with its depth target.
+#if !defined(NXRT_TARGET_PS5)
 void temporal_gbuffer_note() {
     if (S.ncolor < 4 || !S.depth_tex || !S.stage[kVertex] || extras::temporal_camera_ready()) return;
     const GState::Bind& u = S.ubo[kVertex][0];
@@ -1998,10 +2007,12 @@ void temporal_for_draw(const ProgLayout& pl) {
         g_su_view = out;
     }
 }
+#endif
 
 void scene_upscale_for_draw(const ProgLayout& pl) {
     g_su_tex = nullptr;
     g_su_view = VK_NULL_HANDLE;
+#if !defined(NXRT_TARGET_PS5)
     const ShaderInfo* fs = S.stage[kFragment];
     if (fs && extras::temporal_wanted() && S.ncolor > 0 && S.color_tex[0] && extras::hdr_is_tonemap(fs->spirv, fs->hash)) {
         temporal_for_draw(pl);
@@ -2035,6 +2046,9 @@ void scene_upscale_for_draw(const ProgLayout& pl) {
         }
         return;
     }
+#else
+    (void)pl;
+#endif
 }
 
 // Evaluation-only programs (NVN tessellates with the fixed SetInner/OuterTessellationLevels): a generated pass-through control shader
@@ -2138,7 +2152,9 @@ bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopology* top
     }
     const ProgLayout* pl = g_pl;
     if (!pl) return false;
+#if !defined(NXRT_TARGET_PS5)
     if (extras::temporal_wanted()) temporal_gbuffer_note();
+#endif
     if (g_dirty & (kDesc | kPipe)) {
         g_prog_writes = false;
         for (const BindingDesc& d : pl->bindings) g_prog_writes |= d.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || d.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;

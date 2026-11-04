@@ -28,7 +28,7 @@ public:
     uint64_t view_end(uint64_t address) const;
     uint64_t alias(uint64_t offset, uint64_t bytes, uint64_t at = 0, Prot protection = Prot::RW);
     bool unmap_alias(uint64_t address);
-    void* private_view(uint64_t offset, uint64_t bytes);
+    void* private_view(uint64_t offset, uint64_t bytes, bool require_backed = false);
     bool unmap_private(void* address);
     bool offset_of(uint64_t address, uint64_t* offset) const;
     void alias_ranges(std::vector<std::pair<uint64_t, uint64_t>>& out) const;

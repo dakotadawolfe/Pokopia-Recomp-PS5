@@ -104,6 +104,7 @@ void present_on_render_thread(Window* w, int index) {
         for (int32_t& c : crop) c = static_cast<int32_t>(std::lround(static_cast<float>(c) * sc));
     pp->set_flip_y(window_origin_mode() == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT);   // the game runs with the lower-left origin (mode 0)
     // HDR scene / HDR swapchain / FSR 1 or NIS / picture controls go through the output pass (S14); everything else is the plain present pass of the SDR path
+#if !defined(NXRT_TARGET_PS5)
     const extras::HdrState hs = extras::hdr_state();
     const extras::PictureLive pic = extras::picture_live();
     extras::OutputPass* op = output_pass();
@@ -129,8 +130,11 @@ void present_on_render_thread(Window* w, int index) {
         prm.pic[3] = pic.gamma;
         op->record(fi.cmd, fi.view, rend->format(), fi.extent, prm);
     } else {
+#endif
         pp->record(fi.cmd, fi.view, fi.extent, src, VkExtent2D{e.width, e.height}, crop, keep_aspect());
+#if !defined(NXRT_TARGET_PS5)
     }
+#endif
     { NXFT("present.end"); nxrt::HitchTimer ht(nxrt::kHpRenderPresentEnd); rend->end_frame(); }
 }
 

@@ -69,6 +69,14 @@ CMIF/domain/TIPC error decoding. Payload SHA-256:
 The native startup target and earlier bounded loader/SDK targets compile and
 link. This payload result does not establish native game graphics behavior.
 
+The subsequent native run, `game-native-1793822433-91.log`, completed SDK static
+initialization and received success for `ISelfController:2000`. It reached the
+60-second watchdog before a graphics-supervisor boot exchange was captured.
+The app returned status 2 and requested Home. That is an incomplete diagnostic,
+not a passed bootstrap or a game frame. The request logged while the watchdog
+was already stopping execution is insufficient evidence of a separate handle
+defect. Renderer work is now bundled separately in [NVN_RUNTIME_PORT.md](NVN_RUNTIME_PORT.md).
+
 The native candidate is 257,927,571 bytes, SHA-256
 `7bc505fef0f2cccaff320a42ba39c9f33ef9ae842267447a85d34ea2e9e018db`.
 It retains the same saved folder, 11 GiB heap threshold, 1 GiB allocation

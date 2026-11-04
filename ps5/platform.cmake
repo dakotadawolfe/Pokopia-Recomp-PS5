@@ -16,6 +16,7 @@ if(PS5)
     target_sources(nxrt_ps5_platform PRIVATE "${platform_root}/src/mem/ps5_vm.cpp"
         "${platform_root}/src/mem/guest_region.cpp" "${platform_root}/src/mem/shared_heap.cpp"
         "${platform_root}/src/mem/memory_ps5.cpp")
+    target_sources(nxrt_ps5_platform PRIVATE "${platform_root}/src/mem/write_watch_ps5.cpp")
 endif()
 find_package(Threads REQUIRED)
 target_link_libraries(nxrt_ps5_platform PUBLIC Threads::Threads)

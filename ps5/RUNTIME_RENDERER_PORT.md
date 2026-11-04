@@ -1,6 +1,6 @@
 # Native runtime renderer integration
 
-2026-11-04. The actual runtime `gfx::Device`, `gfx::Renderer`, VMA allocator, static volk loader, Tegra tiling library, and shader/texture `TestScene` compile and link into a native PS5 app. This replaces the standalone clear harness for the next renderer test. It is not yet NVN command replay or a game frame.
+2026-11-04. The actual runtime `gfx::Device`, `gfx::Renderer`, VMA allocator, static volk loader, Tegra tiling library, and shader/texture `TestScene` compile and link into a native PS5 app. The native shader/texture scene subsequently passed on the console. The newer full NVN link and bundled replay/conversion checks are documented in [NVN_RUNTIME_PORT.md](NVN_RUNTIME_PORT.md); their native execution remains pending, and no game frame is verified.
 
 The dedicated `PKP_GRAPHICS_RUNTIME_TEST=ON` mode uses the partitioned driver described in [GRAPHICS_PORT.md](GRAPHICS_PORT.md). Keep `PKP_GRAPHICS_MEMORY_TEST=OFF` and use a separate build directory. The build arguments and explicit archive hashes otherwise match the combined memory probe. `gfx_runtime.cmake` fetches the same pinned Vulkan-Headers/volk SDK 1.4.363.0 and VMA 3.4.0 sources as the desktop project, verifies all three archive hashes, and packages their licenses. No SDL, desktop launcher, ImGui or temporal-upscaler DLL is linked.
 
@@ -35,27 +35,14 @@ The real renderer contains desktop-era unbounded Vulkan waits. A driver failure 
 
 The controller run in `graphics-runtime-1793815568-469.log` selected the existing USB update folder and completed the actual scene. All six sampled texture pixels matched exactly, the background sample passed, both mip levels were covered, and the later frame differed. The renderer presented 300/300 frames with zero errors and returned normally. The user independently reported the animated graphic followed by Home. This proves the native shader/texture scene and picker flow; it does not prove NVN command replay or a game frame.
 
-## Measured NVN closure
+## NVN integration
 
-`ps5/nvn_compile_audit.cmake` inventories all 40 real NVN translation units explicitly and excludes `nvn_gpu_stub.cpp`. Its optional `nxrt_ps5_nvn_objects` target is outside the default app build. Run the audit with the same native SDK environment:
+The original compile audit identified 38 successful units and two Windows-only
+texture workers. That boundary is now resolved: all 40 units compile and link,
+with real static texture conversion, safe source snapshots, conservative memory
+tracking, HLE dispatch and diagnostics. The optional bundled native app adds
+NVN command replay and conversion checks after the established scene.
 
-```sh
-cmake --build /path/to/graphics-runtime-build --target nxrt_ps5_nvn_objects -- -k 0 -j 4
-```
-
-38 of 40 units compiled locally, including API entry points/builders/commands, memory pools, GPU texture handling, replay, pipeline construction, SPIR-V cache handling, and presentation. Two small portability changes preserve Windows behavior: `api_device.cpp` uses Clang atomic builtins with the original acquire/release ordering on PS5; `nvn_shaders.cpp` uses an explicit console data-directory fallback rather than `GetModuleFileNameA`. Configuration still overrides `/data/pokopia-recomp/shader_cache/spirv`.
-
-The target intentionally still fails on `nvn_texprep.cpp:5` and `nvn_tex_edit.cpp:4`, which include Windows APIs and wrap potentially unmapped guest texture storage in SEH. Removing exception guards would introduce unsafe background reads. The next implementation needs a memory-owner lifetime/snapshot contract, or an explicit synchronous texture path that keeps valid backing alive. These workers were not replaced with successful stubs.
-
-The local `nvn-compile-audit.log` records those failures. `nvn-link-inventory.json` subtracts symbols defined by the 38 objects and the real gfx/platform/volk libraries from their undefined symbols; it is an inventory, not a successful backend link. Remaining dependency groups are concrete:
-
-| Group | Remaining integration |
-| --- | --- |
-| Memory tracking | `mem::ww` region ownership, dirty tracking, validity, arming and guard faults; PS5 host pages are 16 KiB and guest pages 4 KiB. The pool references belong to optional device-local mirrors; a first UMA backend can explicitly exclude that optimization and retain the real imported-buffer path. The current source has not made that exclusion. |
-| Texture workers | `texprep` and `tex_edit` methods from the two blocked units. |
-| Texture conversion | Actual `a2b_encode_bc7` implementation/native dependencies or a validated complete offline cache; missing textures cannot be treated as success. |
-| Presentation processing | `OutputPass`, FSR1/NIS spatial types, HDR shader transforms, temporal lookup/evaluation references. Required core presentation must stay implemented; unsupported optional paths need explicit exclusion/rejection. |
-| Runtime glue | Real HLE registration/dispatch, host callback flags, progress/frame/thread diagnostics, and hitch counters. These should reuse the native runtime, not duplicate kernel/service implementations in graphics. |
-| Small portable sources | `gfx_tuning.cpp` and shader-backlog state need inclusion with their real owners. |
-
-No NVN backend executable has linked or run yet. The compiled object count does not establish renderer correctness, shader coverage, game textures, guest lifetime safety, or first-game-frame readiness.
+See [NVN_RUNTIME_PORT.md](NVN_RUNTIME_PORT.md) for source changes, reproducible
+build commands, the exact host/console evidence and remaining limitations.
+Compilation and linking do not establish game shader coverage or gameplay.

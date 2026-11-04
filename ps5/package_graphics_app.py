@@ -25,6 +25,7 @@ def main():
     provenance = json.loads((args.build / "graphics-provenance.json").read_text())
     memory_mode = provenance.get("diagnostic_mode") == "guest_gpu_memory"
     runtime_mode = provenance.get("diagnostic_mode") == "runtime_scene"
+    nvn_mode = provenance.get("nvn_replay_test", False)
     app = args.build / "package" / TITLE
     copies = {
         "sce_module/libc.prx": args.template / "runtime/libc.prx",
@@ -38,6 +39,9 @@ def main():
         copies["sce_sys/" + name] = args.template / "sce_sys" / name
     if runtime_mode:
         for name in ("volk-MIT.txt", "VMA-MIT.txt", "Vulkan-Headers.txt", "Vulkan-Headers-Apache-2.0.txt", "Vulkan-Headers-MIT.txt"):
+            copies["licenses/" + name] = args.build / "graphics-licenses" / name
+    if nvn_mode:
+        for name in ("astcenc-Apache-2.0.txt", "bc7enc-LICENSE.txt"):
             copies["licenses/" + name] = args.build / "graphics-licenses" / name
     expected = set(copies) | {"eboot.bin", "sce_sys/param.json", ".pokopia-graphics-test"}
     marker = app / ".pokopia-graphics-test"
@@ -64,6 +68,8 @@ def main():
     with (args.build / "graphics-fself-inspection.txt").open("w") as output:
         subprocess.run([str(args.tool), "self", "--inspect", "--file", str(app / "eboot.bin")], stdout=output, check=True)
     diagnostic = "native folder picker and runtime shader/texture scene" if runtime_mode else "guest memory import, coherence and display" if memory_mode else "GPU quadrant clear/present/readback"
+    if nvn_mode:
+        diagnostic = "native picker, shader scene, NVN buffer/texture replay and ASTC/BC7 conversion"
     manifest = {"title_id": TITLE, "context": "native-app", "diagnostic": diagnostic,
                 "console_verified": False, **provenance,
                 "files": {name: {"bytes": (app / name).stat().st_size, "sha256": sha(app / name)}
@@ -73,7 +79,9 @@ def main():
     if runtime_mode:
         print("Selects and saves an existing console or USB game-folder location without copying assets.")
         print("Runs the real runtime Device/Renderer with animated textured quads and verified texture/mip samples.")
-        print("Guest windows remain reserved. No NVN replay, game code or game assets; console validation remains required.")
+        if nvn_mode:
+            print("Also exercises NVN buffer copies, target clears, presentation/readback and ASTC/BC7 conversion.")
+        print("Guest windows remain reserved. No game code or game assets; console validation remains required.")
     elif memory_mode:
         print("Shows colored quadrants for about five seconds, verifies four pixels, then requests shell exit.")
         print("Tests actual guest address reservations and a guarded 16 KiB heap alias. No game code/assets.")

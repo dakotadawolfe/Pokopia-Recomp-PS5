@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Explicit NVN translation-unit inventory. This optional audit target is not
-# linked into the display or runtime scene app and does not assert link closure.
+# Explicit NVN translation-unit inventory. Alone this target checks compilation;
+# nvn_runtime.cmake also links every object when the bundled replay mode is on.
 set(nvn_root "${CMAKE_CURRENT_LIST_DIR}/../runtime/src/gfx/nvn")
 set(nvn_units
     api_blend_color api_builders api_cmd_state api_cmd_work api_cmdbuf api_depth_poly_ms

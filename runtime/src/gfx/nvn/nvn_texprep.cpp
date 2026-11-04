@@ -2,7 +2,11 @@
 // Background preparation of texture upload data. See nvn_texprep.h for the design and the correctness argument.
 #include "nvn_texprep.h"
 
+#if defined(NXRT_TARGET_PS5)
+#include "nxrt/memory.h"
+#else
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -83,16 +87,30 @@ const bool g_hitch_registered = (nxrt::hitch_add_counter("texprep_staged_kb", []
 State& S() { return *g_state; }
 
 bool prepare_guarded(const Texture& t, const TexCaps& caps, PreparedTexture& out, bool& crashed) {
+#if defined(NXRT_TARGET_PS5)
+    (void)crashed;
+    return prepare_texture(t, caps, out); // prepares an owned snapshot
+#else
     __try {
         return prepare_texture(t, caps, out);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         crashed = true;
         return false;
     }
+#endif
 }
 
 // Reads the storage under SEH: a page the game unmapped must not take the process down.
 bool hash_guarded(const Texture& t, uint64_t& h) {
+#if defined(NXRT_TARGET_PS5)
+    if (t.mem) {
+        std::vector<uint8_t> snapshot(static_cast<size_t>(t.storage_size));
+        if (!mem::copy_readable(reinterpret_cast<uint64_t>(t.mem), snapshot.data(), t.storage_size)) return false;
+        h = hash_bytes(snapshot.data(), snapshot.size());
+        return true;
+    }
+    return texture_hash_virtual(t, h);
+#else
     __try {
         if (t.mem) {
             h = hash_bytes(t.mem, static_cast<size_t>(t.storage_size));
@@ -102,6 +120,7 @@ bool hash_guarded(const Texture& t, uint64_t& h) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+#endif
 }
 
 uint64_t now_ns() { return ft::now_ns(); }
@@ -249,11 +268,15 @@ void worker_main() {
                 TexCaps full = s.caps;
                 full.cache_only = false;
                 full.encode_threads = 1;
+#if !defined(NXRT_TARGET_PS5)
                 const int prio = GetThreadPriority(GetCurrentThread());
                 SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
                 *res = PreparedTexture();
                 ok = prepare_guarded(*t, full, *res, crashed);
+#if !defined(NXRT_TARGET_PS5)
                 SetThreadPriority(GetCurrentThread(), prio);
+#endif
                 if (ok) s_transcoded.fetch_add(1, std::memory_order_relaxed);
             }
             ok = ok && hash_guarded(*t, h1) && h0 == h1;     // the storage must not have changed while the job read it

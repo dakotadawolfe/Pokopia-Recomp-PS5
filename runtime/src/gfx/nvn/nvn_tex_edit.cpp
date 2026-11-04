@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Texture pixel edit hook (nxrt/tex_edit.h): storage of the hooks, the edited data kept in memory, the background rebuild after a change.
 // prepare_texture (nvn_texdata.cpp) does the decode, the host edit and the encode; this file decides when.
+#if defined(NXRT_TARGET_PS5)
+#include "nxrt/memory.h"
+#else
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -72,19 +76,31 @@ bool hooks_copy(gfx::TexEditHooks& h) {
 
 // The host's match on the game's storage, under SEH (a page the game unmapped must not take the process down).
 uint64_t match_guarded(const gfx::TexEditHooks& h, const gfx::TexEditReq& r) {
+#if defined(NXRT_TARGET_PS5)
+    std::vector<uint8_t> snapshot(r.tiled_size);
+    if (!mem::copy_readable(reinterpret_cast<uint64_t>(r.tiled), snapshot.data(), snapshot.size())) return 0;
+    auto owned = r;
+    owned.tiled = snapshot.data();
+    return h.match(owned, h.user);
+#else
     __try {
         return h.match(r, h.user);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0;
     }
+#endif
 }
 
 bool prepare_guarded(const Texture& t, const TexCaps& caps, PreparedTexture& out) {
+#if defined(NXRT_TARGET_PS5)
+    return prepare_texture(t, caps, out);
+#else
     __try {
         return prepare_texture(t, caps, out);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+#endif
 }
 
 bool candidate(const Texture& t, void*) {
@@ -163,7 +179,9 @@ void worker_main() {
         s.cv_work.wait(lk, [&] { return s.want_rebuild; });
         s.want_rebuild = false;
         lk.unlock();
+#if !defined(NXRT_TARGET_PS5)
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
         rebuild_once();
         lk.lock();
     }

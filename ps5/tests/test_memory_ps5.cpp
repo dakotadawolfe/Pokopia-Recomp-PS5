@@ -3,10 +3,12 @@
 #include "nxrt/memory.h"
 #include "nxrt/guest_region.h"
 #include "nxrt/subpage.h"
+#include "nxrt/write_watch.h"
 #include "nxrecomp/ctx.h"
 #include "protect_fault.h"
 #include <atomic>
 #include <cerrno>
+#include <cstring>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -16,6 +18,109 @@ namespace {
 namespace mem = nxrt::mem;
 constexpr uint64_t base = mem::kMainBase, granule = mem::kAllocGranularity;
 struct Reset { Reset() { mem::shutdown(); } ~Reset() { test_fail_protect = 0; mem::shutdown(); } };
+}
+
+NXTEST(snapshot_copies_readable_pages_and_rejects_entire_invalid_span) {
+    Reset reset;
+    REQUIRE(mem::init()); REQUIRE(mem::reserve_fixed(base, granule, "snapshot"));
+    REQUIRE(mem::commit(base, granule));
+    std::vector<uint8_t> input(granule, 0x35), output(granule, 0xa7);
+    std::memcpy(reinterpret_cast<void*>(base), input.data(), input.size());
+    REQUIRE(mem::copy_readable(base, output.data(), output.size())); CHECK(output == input);
+    REQUIRE(mem::protect(base + mem::kPage, mem::kPage, mem::Prot::None));
+    output.assign(granule, 0xa7);
+    CHECK(!mem::copy_readable(base, output.data(), output.size()));
+    CHECK(output == std::vector<uint8_t>(granule, 0xa7));
+    CHECK(!mem::copy_readable(UINT64_MAX - 4, output.data(), 16));
+    CHECK(!mem::copy_readable(base, nullptr, 1));
+    CHECK(mem::copy_readable(0, nullptr, 0));
+    REQUIRE(mem::release_fixed(base));
+    CHECK(!mem::copy_readable(base, output.data(), mem::kPage));
+}
+
+NXTEST(gpu_import_views_reject_holes_and_preserve_primary_policy) {
+    Reset reset;
+    REQUIRE(mem::init()); REQUIRE(mem::heap_create(2 * granule));
+    CHECK(mem::heap_import_view(0, granule) == nullptr);
+    REQUIRE(mem::heap_commit(0, mem::kPage));
+    CHECK(mem::heap_import_view(0, granule) == nullptr);
+    REQUIRE(mem::heap_commit(0, granule)); wr32(mem::kHeapBase, 0x12345678);
+    REQUIRE(mem::protect(mem::kHeapBase, granule, mem::Prot::R));
+    void* imported = mem::heap_import_view(0, granule); REQUIRE(imported);
+    CHECK_EQ(*static_cast<uint32_t*>(imported), uint32_t{0x12345678});
+    *static_cast<uint32_t*>(imported) = 0x9abc;
+    CHECK_EQ(rd32(mem::kHeapBase), uint32_t{0x9abc});
+    CHECK(mem::SubpageMap::allows(mem::kHeapBase, granule, 1));
+    CHECK(!mem::SubpageMap::allows(mem::kHeapBase, granule, 3));
+    CHECK(mem::heap_private_view_unmap(imported));
+    CHECK(mem::heap_import_view(0, granule + mem::kPage) == nullptr);
+    CHECK(mem::heap_import_view(0, 2 * granule) == nullptr);
+    CHECK(mem::heap_import_view(0, UINT64_MAX) == nullptr);
+}
+
+NXTEST(snapshot_remains_owned_after_alias_unmap_and_heap_decommit) {
+    Reset reset;
+    REQUIRE(mem::init()); REQUIRE(mem::heap_create(granule)); REQUIRE(mem::heap_commit(0, granule));
+    const auto view = mem::heap_alias(0, granule); REQUIRE(view);
+    std::memset(reinterpret_cast<void*>(view), 0x6b, granule);
+    std::vector<uint8_t> copy(granule);
+    REQUIRE(mem::copy_readable(view, copy.data(), copy.size()));
+    REQUIRE(mem::heap_alias_unmap(view)); REQUIRE(mem::heap_decommit(0, granule));
+    CHECK(copy == std::vector<uint8_t>(granule, 0x6b));
+    CHECK(!mem::copy_readable(view, copy.data(), copy.size()));
+}
+
+NXTEST(snapshot_serializes_with_repeated_mapping_changes) {
+    Reset reset;
+    REQUIRE(mem::init()); REQUIRE(mem::reserve_fixed(base, granule, "snapshot-race"));
+    REQUIRE(mem::commit(base, granule));
+    std::memset(reinterpret_cast<void*>(base), 0x5c, granule);
+    std::atomic<bool> stop{false}; std::atomic<unsigned> reads{0}, bad{0};
+    std::thread reader([&] {
+        std::vector<uint8_t> copy(granule);
+        while (!stop.load()) {
+            if (mem::copy_readable(base, copy.data(), copy.size()) && copy != std::vector<uint8_t>(granule, 0x5c)) ++bad;
+            ++reads;
+        }
+    });
+    while (!reads.load()) std::this_thread::yield();
+    for (unsigned n = 0; n < 100; ++n) {
+        CHECK(mem::protect(base, granule, mem::Prot::None));
+        CHECK(mem::protect(base, granule, mem::Prot::RW));
+    }
+    stop.store(true); reader.join(); CHECK(reads.load() > 0); CHECK_EQ(bad.load(), 0u);
+}
+
+NXTEST(texture_tracker_detects_primary_and_alias_writes_without_page_guards) {
+    Reset reset;
+    REQUIRE(mem::init()); REQUIRE(mem::heap_create(granule)); REQUIRE(mem::heap_commit(0, granule));
+    const auto alias = mem::heap_alias(0, granule); REQUIRE(alias);
+    auto* region = mem::ww::region_create(mem::kHeapBase, granule); REQUIRE(region);
+    struct RegionOwner { mem::ww::Region* r; ~RegionOwner() { mem::ww::region_destroy(r); } } owner{region};
+    REQUIRE(mem::ww::arm(region, 0, 2));
+    CHECK(mem::ww::all_valid(region, 0, 2));
+    CHECK(!mem::ww::guard(region, 0, 1)); CHECK(!mem::ww::all_armed(region, 0, 1));
+    wr32(mem::kHeapBase + 8, 0x1234); wr32(alias + mem::kPage + 32, 0x5678);
+    CHECK(!mem::ww::page_valid(region, 0)); CHECK(!mem::ww::page_valid(region, 1));
+    std::vector<uint64_t> changed; mem::ww::take_written(region, changed);
+    CHECK(changed == std::vector<uint64_t>({0, 1}));
+    changed.clear(); mem::ww::take_written(region, changed); CHECK(changed.empty());
+    REQUIRE(mem::ww::arm(region, 0, 2)); CHECK(mem::ww::all_valid(region, 0, 2));
+    REQUIRE(mem::heap_alias_unmap(alias)); REQUIRE(mem::heap_decommit(0, granule));
+    mem::ww::take_written(region, changed); CHECK(changed == std::vector<uint64_t>({0, 1}));
+}
+
+NXTEST(texture_tracker_failed_arm_preserves_prior_snapshot) {
+    Reset reset;
+    REQUIRE(mem::init()); REQUIRE(mem::heap_create(granule)); REQUIRE(mem::heap_commit(0, granule));
+    auto* region = mem::ww::region_create(mem::kHeapBase, granule); REQUIRE(region);
+    struct RegionOwner { mem::ww::Region* r; ~RegionOwner() { mem::ww::region_destroy(r); } } owner{region};
+    REQUIRE(mem::ww::arm(region, 0, 1)); wr32(mem::kHeapBase, 9);
+    REQUIRE(mem::protect(mem::kHeapBase + mem::kPage, mem::kPage, mem::Prot::None));
+    CHECK(!mem::ww::arm(region, 0, 2));
+    std::vector<uint64_t> changed; mem::ww::take_written(region, changed);
+    CHECK(changed == std::vector<uint64_t>({0}));
+    CHECK(!mem::ww::arm(region, UINT64_MAX, 1));
 }
 
 NXTEST(failed_init_keeps_foreign_reservation_and_releases_its_stack) {

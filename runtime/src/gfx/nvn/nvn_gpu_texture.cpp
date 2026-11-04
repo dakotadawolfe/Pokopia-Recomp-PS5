@@ -562,6 +562,7 @@ TexGpu* create_texture_gpu(Texture* t, float want_scale) {
     }
     if (chosen == VK_FORMAT_UNDEFINED) return fail(why);
 
+#if !defined(NXRT_TARGET_PS5)
     if (const VkFormat hf = extras::hdr_promote_target(chosen, t->b.flags, s.type == VK_IMAGE_TYPE_2D, s.levels, s.layers, s.samples, g->fmt->srgb)) {
         if (device().image_supported(make_desc(s, hf, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, base_flags(s, hf)))) {
             NXLOG_I(kTag, "texture %u: %s %ux%u (flags 0x%x) kept as float16 for the HDR scene", t->id, g->fmt->name, s.base.width, s.base.height, static_cast<unsigned>(t->b.flags));
@@ -569,6 +570,7 @@ TexGpu* create_texture_gpu(Texture* t, float want_scale) {
             g->promoted = true;
         }
     }
+#endif
 
     g->format = chosen;
     g->transcoded = to_bc7;

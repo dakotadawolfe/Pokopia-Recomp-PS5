@@ -112,11 +112,27 @@ bool import_range(PoolGpu* g, PoolChunk& c, uint64_t off, uint64_t size, const c
         const uint64_t voff = soff & ~(mem::kAllocGranularity - 1);
         const uint64_t delta = soff - voff;
         const uint64_t vsize = (delta + size + mem::kAllocGranularity - 1) & ~(mem::kAllocGranularity - 1);
-        if (void* v = mem::heap_private_view(voff, std::min<uint64_t>(vsize, mem::heap_reserved() - voff))) {
+#if defined(NXRT_TARGET_PS5)
+        void* v = mem::heap_import_view(voff, std::min<uint64_t>(vsize, mem::heap_reserved() - voff));
+#else
+        void* v = mem::heap_private_view(voff, std::min<uint64_t>(vsize, mem::heap_reserved() - voff));
+#endif
+        if (v) {
             c.view = v;
             import_ptr = static_cast<uint8_t*>(v) + delta;
         }
     }
+
+#if defined(NXRT_TARGET_PS5)
+    // RADV promotes imported pages to CPU/GPU RW. Only a retained private view
+    // is suitable; falling back to the primary would override guest policy.
+    if (!c.view) {
+        NXLOG_E(kTag, "pool import needs a fully backed private heap view: %p + 0x%llx",
+                reinterpret_cast<void*>(start), static_cast<unsigned long long>(size));
+        c.failed = true;
+        return false;
+    }
+#endif
 
     VkMemoryHostPointerPropertiesEXT hp = {VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
     VkResult r;
@@ -219,7 +235,11 @@ PoolGpu* import_pool(MemoryPool* p) {
     }
     g->base = reinterpret_cast<uint8_t*>(start);
     g->size = size;
+#if defined(NXRT_TARGET_PS5)
+    constexpr bool use_view = true;
+#else
     static const bool use_view = config_get_bool("nvn", "pool_view", true);      // [nvn] pool_view = 0: import the pool's own address (slow)
+#endif
     g->viewed = use_view && mem::heap_exists() && start >= mem::kHeapBase && start + size <= mem::kHeapBase + mem::heap_reserved();
     if (chunked) {
         g->stride = stride;
@@ -550,12 +570,18 @@ int64_t g_skip_why[5] = {};          // binds not eligible: outside a pool (or p
 int64_t g_wr_pages[6] = {}, g_wr_calls[6] = {};
 
 MirrorMode mirror_mode() {
+#if defined(NXRT_TARGET_PS5)
+    // UMA imports are the authoritative storage. The PS5 snapshot tracker
+    // does not support the CPU read guards required by deferred mirror writes.
+    return MirrorMode::Off;
+#else
     static const MirrorMode m = [] {
         const std::string v = config_get_str("nvn", "pool_mirror", "on");
         if (v == "on" || v == "1" || v == "true") return MirrorMode::On;
         return MirrorMode::Off;
     }();
     return m;
+#endif
 }
 
 // The cap of the copies ([nvn] pool_mirror_mb, or from the card's video memory when it is not set; nvn_mirror_cap.h), logged once.

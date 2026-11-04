@@ -4,6 +4,9 @@
 // Config: [gfx] astc_quality (fast / high / uncompressed, default high; nvn_texdata.h), [nvn] bc7_quality (env NXRT_NVN_BC7_QUALITY, default 3), [nvn] bc7_cache (env NXRT_NVN_BC7_CACHE, default
 // "bc7_cache" in the current directory, "" disables the cache).
 #include "nvn_texdata.h"
+#if defined(NXRT_TARGET_PS5)
+#include "nxrt/memory.h"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -502,6 +505,13 @@ int entry_qualities(AstcQuality am, int q[2]) {
 
 VkFormat cache_entry_format(const Texture& t) {
     if (!t.mem) return VK_FORMAT_UNDEFINED;
+#if defined(NXRT_TARGET_PS5)
+    std::vector<uint8_t> snapshot(static_cast<size_t>(t.storage_size));
+    if (!mem::copy_readable(reinterpret_cast<uint64_t>(t.mem), snapshot.data(), t.storage_size)) return VK_FORMAT_UNDEFINED;
+    const auto* storage = snapshot.data();
+#else
+    const auto* storage = t.mem;
+#endif
     const TexLayout L = compute_texture_layout(t.b);
     if (!L.valid || !L.fmt || !L.fmt->astc || t.b.samples > 1 || t.storage_size < L.storage_size) return VK_FORMAT_UNDEFINED;
     const VkFormat rgba = L.fmt->srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
@@ -513,7 +523,7 @@ VkFormat cache_entry_format(const Texture& t) {
     int q[2];
     const int n = entry_qualities(am, q);
     for (int i = 0; i < n; ++i) {
-        const uint64_t key = cache_key_of(t.storage_size, t.mem, L, geo, *L.fmt, q[i]);
+        const uint64_t key = cache_key_of(t.storage_size, storage, L, geo, *L.fmt, q[i]);
         const VkFormat f = cache_peek_format(bc7_cache_path(t, key), key);
         if (f == VK_FORMAT_UNDEFINED) continue;
         return (f == rgba || (f == VK_FORMAT_BC5_UNORM_BLOCK && !L.fmt->srgb)) ? f : VK_FORMAT_UNDEFINED;   // the first valid entry decides
@@ -532,11 +542,22 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
     // The source bytes: the texture's storage in the game's memory, or for a sparse texture the tiles mapped into its virtual pool.
     const uint8_t* src_mem = t.mem;
     std::vector<uint8_t> gathered;
+#if defined(NXRT_TARGET_PS5)
+    if (src_mem) {
+        gathered.resize(static_cast<size_t>(t.storage_size));
+        if (!mem::copy_readable(reinterpret_cast<uint64_t>(src_mem), gathered.data(), t.storage_size))
+            return fail("texture storage is no longer readable");
+        src_mem = gathered.data();
+    } else if (t.vpool && texture_gather_virtual(t, gathered)) {
+        src_mem = gathered.data();
+    }
+#else
     Ref<MemoryPool> direct_keep;
     if (!src_mem && t.vpool) {
         if (const uint8_t* d = texture_virtual_direct(t, direct_keep)) src_mem = d;      // one piece of one pool: untile straight from it
         else if (texture_gather_virtual(t, gathered)) src_mem = gathered.data();
     }
+#endif
     if (!src_mem) return fail("no storage (mem is null)");
     const TexLayout L = compute_texture_layout(t.b);
     if (!L.valid || !L.fmt) return fail("layout is invalid (format, size, target or layout)");

@@ -290,9 +290,16 @@ bool SharedHeap::unmap_alias(uint64_t address) {
     if (it == aliases_.end() || !it->second->reset()) return false;
     aliases_.erase(it); return true;
 }
-void* SharedHeap::private_view(uint64_t offset, uint64_t bytes) {
+void* SharedHeap::private_view(uint64_t offset, uint64_t bytes, bool require_backed) {
     std::lock_guard lock(mutex_);
     if (!primary_ || !bytes || offset % kAllocGranularity || offset > size_ || bytes > size_ - offset) return nullptr;
+    // Vulkan may grant CPU/GPU access to the entire imported host range. Never
+    // expose holes or partially committed host pages to that operation.
+    if (require_backed) {
+        if (bytes % host_page) return nullptr;
+        for (uint64_t page = offset / kPage; page < (offset + bytes) / kPage; ++page)
+            if (!available_[page]) return nullptr;
+    }
     auto view = make_view(offset, bytes, 0, 3, true);
     if (!view) return nullptr;
     const uint64_t address = view->base;
