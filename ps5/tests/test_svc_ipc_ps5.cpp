@@ -9,6 +9,7 @@
 #include "nxrt/services_api.h"
 #include <array>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 namespace nxrt::services { void register_logfault(); void logfault_reset(); uint32_t logfault_destination(); }
@@ -250,6 +251,11 @@ struct AmFixture : Fixture {
         if (send(common, request(1))) return UINT32_MAX;
         auto r = reply(); return word(r.raw, 8) == 0 ? word(r.raw, 16) : UINT32_MAX;
     }
+    uint32_t storage(uint32_t creator, int64_t size) {
+        auto m = request(10); push(m.raw, size);
+        if (send(creator, m)) return 0;
+        auto r = reply(); return word(r.raw, 8) == 0 && r.move.size() == 1 ? r.move[0] : 0;
+    }
 };
 }
 NXTEST(applet_proxy_requires_current_process_and_supports_cmif_and_tipc) {
@@ -283,7 +289,7 @@ NXTEST(applet_reset_keeps_old_sessions_isolated_and_unported_commands_fail) {
     const auto next = f.open(); REQUIRE(next); const auto fresh = f.child(next, 0); REQUIRE(fresh);
     nxrt::services::amctl::set_focus(false);
     CHECK_EQ(f.receive(old), UINT32_MAX); CHECK_EQ(f.receive(fresh), 15u); CHECK_EQ(f.receive(fresh), 15u);
-    CHECK_EQ(f.send(p, request(3)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kStubService);
+    CHECK_EQ(f.send(p, request(4)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kStubService);
     CHECK(!ipc::has_service("appletAE"));
 }
 NXTEST(applet_graphics_scale_reports_the_fixed_guest_profile) {
@@ -299,4 +305,85 @@ NXTEST(applet_performance_service_cannot_claim_host_overclocking) {
     auto m = request(1); push(m.raw, uint8_t{1}); CHECK_EQ(f.send(performance, m), k::kOk);
     CHECK_EQ(word(f.reply().raw, 8), k::kNotImplemented);
     m = request(1); push(m.raw, uint8_t{0}); CHECK_EQ(f.send(performance, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+}
+NXTEST(applet_storage_accessors_share_bytes_and_outlive_the_storage_session) {
+    AmFixture f; const auto p = f.open(), creator = f.child(p, 11); REQUIRE(creator);
+    const auto storage = f.storage(creator, 16); REQUIRE(storage);
+    const auto first = f.child(storage, 0), second = f.child(storage, 0); REQUIRE(first && second);
+    k::handle_close(storage); k::handle_close(creator); k::handle_close(p);
+    CHECK_EQ(f.send(first, request(0)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), 16u);
+    const auto data = f.base + 0x1000; std::memcpy(reinterpret_cast<void*>(data), "PS5!", 4);
+    auto m = request(10); push(m.raw, int64_t{4}); m.send.push_back({data, 4, 0});
+    CHECK_EQ(f.send(first, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    k::handle_close(first); std::memset(reinterpret_cast<void*>(data), 0xff, 16);
+    m = request(11); push(m.raw, int64_t{0}); m.recv.push_back({data, 16, 0});
+    CHECK_EQ(f.send(second, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    const std::array<uint8_t, 16> expected{0, 0, 0, 0, 'P', 'S', '5', '!'};
+    CHECK(std::memcmp(reinterpret_cast<void*>(data), expected.data(), expected.size()) == 0);
+}
+NXTEST(applet_storage_pointer_buffers_round_trip_and_invalid_offsets_do_not_partially_write) {
+    AmFixture f; const auto p = f.open(), creator = f.child(p, 11), storage = f.storage(creator, 8);
+    const auto accessor = f.child(storage, 0); REQUIRE(accessor); const auto data = f.base + 0x1000;
+    std::memcpy(reinterpret_cast<void*>(data), "abcdefgh", 8);
+    auto m = request(10); push(m.raw, int64_t{0}); m.ptrs.push_back({data, 8, 0});
+    CHECK_EQ(f.send(accessor, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    std::memset(reinterpret_cast<void*>(data), 0xff, 8);
+    for (auto offset : {int64_t{-1}, int64_t{7}, INT64_MAX}) {
+        m = request(10); push(m.raw, offset); m.send.push_back({data, 2, 0});
+        CHECK_EQ(f.send(accessor, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 503));
+        m = request(11); push(m.raw, offset); m.recv.push_back({data, 2, 0});
+        CHECK_EQ(f.send(accessor, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 503));
+        CHECK_EQ(*reinterpret_cast<uint64_t*>(data), UINT64_MAX);
+    }
+    m = request(11); push(m.raw, int64_t{0}); m.recv_list_flags = 2; m.recv_list.push_back({data, 8});
+    CHECK_EQ(f.send(accessor, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    CHECK(std::memcmp(reinterpret_cast<void*>(data), "abcdefgh", 8) == 0);
+}
+NXTEST(applet_storage_creation_limits_and_empty_storage_have_defined_results) {
+    AmFixture f; const auto p = f.open(), creator = f.child(p, 11); REQUIRE(creator);
+    const auto count = k::handle_count();
+    for (auto size : {int64_t{-1}, int64_t{0x10000001}, INT64_MAX}) {
+        CHECK_EQ(f.storage(creator, size), 0u); CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 600));
+        CHECK_EQ(k::handle_count(), count);
+    }
+    const auto storage = f.storage(creator, 0), accessor = f.child(storage, 0); REQUIRE(accessor);
+    CHECK_EQ(f.send(accessor, request(0)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), 0u);
+    for (auto cmd : {10u, 11u}) {
+        auto m = request(cmd); push(m.raw, int64_t{0});
+        CHECK_EQ(f.send(accessor, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+        m = request(cmd); push(m.raw, int64_t{1});
+        CHECK_EQ(f.send(accessor, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 503));
+    }
+}
+NXTEST(applet_storage_respects_guest_permissions_and_rejects_unported_applet_backing) {
+    AmFixture f; const auto p = f.open(), creator = f.child(p, 11), storage = f.storage(creator, 8);
+    const auto accessor = f.child(storage, 0); REQUIRE(accessor); const auto data = f.base + 0x1000;
+    REQUIRE(mem::protect(data, 0x1000, mem::Prot::R));
+    auto m = request(11); push(m.raw, int64_t{0}); m.recv.push_back({data, 8, 0});
+    CHECK_EQ(f.send(accessor, m), k::kInvalidMemoryState);
+    REQUIRE(mem::protect(data, 0x1000, mem::Prot::None));
+    m = request(10); push(m.raw, int64_t{0}); m.send.push_back({data, 8, 0});
+    CHECK_EQ(f.send(accessor, m), k::kInvalidMemoryState);
+    // Direct dispatch is also protected, even outside the checked SVC entry point.
+    int64_t offset = 0; ipc::Request req; ipc::Response rsp; req.cmd = 10;
+    req.in = reinterpret_cast<uint8_t*>(&offset); req.in_size = sizeof offset; req.a.push_back({data, 8});
+    CHECK_EQ(k::handle_as<ipc::KSession>(accessor)->svc->handle(req, rsp), k::kInvalidMemoryState);
+    for (auto cmd : {0u, 3u, 11u, 12u}) {
+        CHECK_EQ(f.send(creator, request(cmd)), k::kOk); const auto r = f.reply();
+        CHECK_EQ(word(r.raw, 8), k::kNotImplemented); CHECK(r.move.empty());
+    }
+}
+NXTEST(applet_expected_audio_volumes_are_shared_clamped_and_reset_separately) {
+    AmFixture f; const auto p = f.open(), first = f.child(p, 3), second = f.child(p, 3); REQUIRE(first && second);
+    auto m = request(0); push(m.raw, -1.0f); push(m.raw, 2.0f);
+    CHECK_EQ(f.send(first, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    CHECK_EQ(f.send(second, request(1)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), 0u);
+    CHECK_EQ(f.send(second, request(2)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), 0x3f800000u);
+    m = request(0); push(m.raw, 0.5f); push(m.raw, std::numeric_limits<float>::quiet_NaN());
+    CHECK_EQ(f.send(first, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kOutOfRange);
+    CHECK_EQ(f.send(second, request(1)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), 0u);
+    nxrt::services::am_reset(); const auto fresh = f.child(f.open(), 3); REQUIRE(fresh);
+    CHECK_EQ(f.send(fresh, request(1)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), 0x3f800000u);
+    CHECK_EQ(f.send(first, request(1)), k::kOk); CHECK_EQ(word(f.reply().raw, 16), 0u);
+    CHECK_EQ(f.send(first, request(3)), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kStubService);
 }

@@ -831,9 +831,9 @@ The performance interface reports CPU overclocking disabled and explicitly
 rejects attempts to enable it; no PS5 clock changes are made. Command names for
 these Switch 2 interfaces follow the
 [Applet Manager interface research](https://switchbrew.org/wiki/AM_services#IPerformanceFunctions).
-Library applets, display/audio controllers, saves and system-app proxies remain
-unported. Unknown commands return errors; this backend supplies no generic
-success objects for those missing interfaces.
+At this checkpoint, library applets, display/audio controllers, saves and system-app
+proxies were unported. Unknown commands return errors; this backend supplies no
+generic success objects for missing interfaces.
 
 The expanded SVC diagnostic passed **68 cases, zero failures**, and exited:
 `svc-runtime-1793783666-279.log`; ELF SHA-256
@@ -843,7 +843,7 @@ rollback, rejected pseudo moves, application-proxy validation, shared events,
 message ordering, notification flags, reset isolation and fixed platform queries.
 The host platform and TLS suites pass. The Windows runtime suite was not run.
 
-The SDK probe now stops before `IApplicationProxy::GetLibraryAppletCreator`.
+The SDK probe at this checkpoint stops before `IApplicationProxy::GetLibraryAppletCreator`.
 Before that stop it must open the application proxy and obtain three subsidiary
 interfaces, including graphics-scale and performance, with no unknown commands.
 This remains a bounded initialization check, not complete SDK startup or gameplay.
@@ -856,13 +856,67 @@ interface is created. The first rtld callback returns; later callbacks and title
 startup have not run. The initial exploratory runs stopped on unported proxy
 commands 60, 40 and 11; those reports are not counted as passing runs.
 
-The **228-case native application** was built locally with executable SHA-256
+The **228-case native application passed with zero failures** on 2026-11-04.
+Report `app-platform-1793784171-292.log` records the library-applet boundary,
+main status zero and a normal process exit. The user confirmed returning home.
+A repeat launch in `app-platform-1793784815-304.log` also passed all 228 cases
+and exited normally before the next installation.
+It was built locally with executable SHA-256
 `5cf3dff54105762c1b98235a7aad1d28a9d2e1c725d0eaa635c129e612351004`
-(130,245,843 bytes). It is installed and all package files were readback-verified;
-the passing 220-case package is retained for rollback. The 228-case launch remains
-pending native-app verification. The
+(130,245,843 bytes). Its installation and all package files were readback-verified;
+the passing package is retained privately for rollback. The
 production PS5 SVC archive compiles, and all four ABI 4 game archives pass the
 module verifier. The game-derived artifacts remain private.
+
+## Applet storage and the display-controller checkpoint
+
+The PS5 library-applet creator now provides byte-backed `IStorage` and
+`IStorageAccessor` objects. Accessors share ownership, so closing the creator or
+storage session does not invalidate an accessor. New storage is zero-filled;
+reads and writes check the complete range and guest page permissions before
+copying. A mutex serializes access to each buffer. Empty buffers work without
+pointer arithmetic on a null allocation. Negative sizes and allocations over
+256 MiB are rejected, and allocation failures return an applet error.
+Transfer-memory storage and UI applet creation explicitly return not-implemented;
+they do not create empty success objects. Buffer backing is not pinned against
+concurrent guest unmapping, which remains an IPC limitation.
+
+`IAudioController` stores and returns the application's expected main/library
+volumes. Values are clamped to 0–1; non-finite input fails without a partial
+update. Reset isolates old sessions from the next application state. This is
+volume-request state only: host audio output, mixing and fades remain unported.
+Command layouts follow the existing runtime and
+[libnx's applet/storage implementation](https://github.com/switchbrew/libnx/blob/master/nx/source/services/applet.c).
+
+The expanded SVC diagnostic passed **73 cases, zero failures**, and exited:
+`svc-runtime-1793784579-297.log`; ELF SHA-256
+`e0771fcf4350f4f31ffc9ce68ee3fc0daf32b779df5d74b58575e119985ce0d0`.
+The five new cases cover shared buffer lifetime, A/X input and B/C output
+descriptors, zero initialization, atomic range failures, empty buffers, size
+limits, guest permissions, unavailable applets and volume-state isolation.
+
+The SDK probe now traces each requested service and command. It passes eight
+application-proxy calls and retrieves the window resource ID, then stops before
+`GetDisplayController`. The SDK obtains the storage-capable creator and audio
+controller; it does not use their storage/volume commands during this bounded
+probe. Those operations are exercised by the SVC cases above. Display capture,
+graphics, full SDK/title initialization, audio output, saves and gameplay remain
+unverified. The first rtld callback returns; the other two have not run.
+
+The final two-case SDK payload passed and exited:
+`game-images-1793784811-303.log`; ELF SHA-256
+`86dc1b53a54ff61e26e54966f5b5d3d93e9db8f81964fcf423eb93c295a69e9d`.
+It records 70 completed system calls and intercepts the 71st before creating the
+missing interface. No unknown service or unhandled command was used. The
+production SVC archive builds, and all four ABI 4 game archives pass verification.
+The Windows runtime suite was not run.
+
+The **233-case native application** is built locally and installed, with every
+package file readback-verified. Native launch verification is pending. Its
+executable is 130,347,955 bytes; SHA-256:
+`eb9610dee11f44e2326c84e357ddc083b001f4a766646327a4fcc651ebff0c21`.
+The passing 228-case package is retained privately for rollback. This diagnostic
+still stops during SDK initialization and does not launch gameplay.
 
 ## Repository ownership
 

@@ -3,7 +3,11 @@
 // Services are added as their state and backing are ported; unknown calls fail.
 #include "services_internal.h"
 #include "nxrt/kernel.h"
+#include "nxrt/subpage.h"
 #include "nxrt/services_api.h"
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <deque>
 #include <mutex>
 
@@ -24,6 +28,7 @@ struct State {
     bool graphics_notify = false;
     bool exit_locked = false, fatal_section = false;
     uint32_t terminate_result = 0;
+    float main_volume = 1.0f, library_volume = 1.0f;
     State() { message_event->signaled = true; }
     void queue(uint32_t value) {
         messages.push_back(value); message_event->signaled = true; kernel::notify_waitable_changed();
@@ -112,11 +117,84 @@ Ptr application(const std::shared_ptr<State>& state) {
         });
     });
 }
+struct Storage {
+    std::mutex mu;
+    std::vector<uint8_t> bytes;
+    explicit Storage(size_t size) : bytes(size) {}
+};
+Ptr accessor(const std::shared_ptr<Storage>& data) {
+    return make_iface("IStorageAccessor", [data](Service& s) {
+        s.add_cmd(0, "GetSize", [data](Request&, Response& rsp) -> uint32_t {
+            rsp.push<int64_t>(data->bytes.size()); return 0;
+        });
+        const auto transfer = [data](Request& req, bool write) -> uint32_t {
+            if (req.in_size < sizeof(int64_t)) return kernel::kInvalidCombination;
+            const int64_t offset = req.arg<int64_t>(0);
+            const auto buffer = write ? req.in_buf(0) : req.out_buf(0);
+            if (offset < 0 || static_cast<uint64_t>(offset) > data->bytes.size() ||
+                buffer.size > data->bytes.size() - static_cast<uint64_t>(offset)) return res(128, 503);
+            if (!buffer.size) return 0;
+            if (!mem::SubpageMap::allows(buffer.addr, buffer.size, write ? 1 : 2)) return kernel::kInvalidMemoryState;
+            std::lock_guard lock(data->mu);
+            auto* bytes = data->bytes.data() + offset;
+            if (write) std::memcpy(bytes, reinterpret_cast<const void*>(buffer.addr), buffer.size);
+            else std::memcpy(reinterpret_cast<void*>(buffer.addr), bytes, buffer.size);
+            return 0;
+        };
+        s.add_cmd(10, "Write", [transfer](Request& req, Response&) { return transfer(req, true); });
+        s.add_cmd(11, "Read", [transfer](Request& req, Response&) { return transfer(req, false); });
+    });
+}
+Ptr library_creator() {
+    return make_iface("ILibraryAppletCreator", [](Service& s) {
+        s.add_cmd(10, "CreateStorage", [](Request& req, Response& rsp) -> uint32_t {
+            if (req.in_size < sizeof(int64_t)) return kernel::kInvalidCombination;
+            const auto size = req.arg<int64_t>(0);
+            if (size < 0 || size > 0x10000000) return res(128, 600);
+            try {
+                auto data = std::make_shared<Storage>(static_cast<size_t>(size));
+                rsp.push_object(make_iface("IStorage", [data](Service& storage) {
+                    storage.add_cmd(0, "Open", [data](Request&, Response& out) -> uint32_t {
+                        out.push_object(accessor(data)); return 0;
+                    });
+                }));
+                return 0;
+            } catch (const std::bad_alloc&) { return res(128, 600); }
+        });
+        // UI applets and transfer-memory storage need their own backing before
+        // they can be created. Keep these failures distinct from an absent command.
+        for (const auto cmd : {0u, 3u, 11u, 12u})
+            s.add_cmd(cmd, "UnportedAppletOrTransferStorage", [](Request&, Response&) -> uint32_t {
+                return kernel::kNotImplemented;
+            });
+    });
+}
+Ptr audio(const std::shared_ptr<State>& state) {
+    return make_iface("IAudioController", [state](Service& s) {
+        s.add_cmd(0, "SetExpectedMasterVolume", [state](Request& req, Response&) -> uint32_t {
+            if (req.in_size < 8) return kernel::kInvalidCombination;
+            const auto main = req.arg<float>(0), library = req.arg<float>(4);
+            if (!std::isfinite(main) || !std::isfinite(library)) return kernel::kOutOfRange;
+            std::lock_guard lock(state->mu);
+            state->main_volume = std::clamp(main, 0.0f, 1.0f);
+            state->library_volume = std::clamp(library, 0.0f, 1.0f); return 0;
+        });
+        s.add_cmd(1, "GetMainAppletExpectedMasterVolume", [state](Request&, Response& rsp) -> uint32_t {
+            std::lock_guard lock(state->mu); rsp.push(state->main_volume); return 0;
+        });
+        s.add_cmd(2, "GetLibraryAppletExpectedMasterVolume", [state](Request&, Response& rsp) -> uint32_t {
+            std::lock_guard lock(state->mu); rsp.push(state->library_volume); return 0;
+        });
+        // Expected volume is queryable state; output mixing and fades are unported.
+    });
+}
 Ptr proxy(const std::shared_ptr<State>& state) {
     return make_iface("IApplicationProxy", [state](Service& s) {
         s.add_cmd(0, "GetCommonStateGetter", [state](Request&, Response& r) -> uint32_t { r.push_object(common(state)); return 0; });
         s.add_cmd(1, "GetSelfController", [state](Request&, Response& r) -> uint32_t { r.push_object(self(state)); return 0; });
         s.add_cmd(2, "GetWindowController", [state](Request&, Response& r) -> uint32_t { r.push_object(window(state)); return 0; });
+        s.add_cmd(3, "GetAudioController", [state](Request&, Response& r) -> uint32_t { r.push_object(audio(state)); return 0; });
+        s.add_cmd(11, "GetLibraryAppletCreator", [](Request&, Response& r) -> uint32_t { r.push_object(library_creator()); return 0; });
         s.add_cmd(20, "GetApplicationFunctions", [state](Request&, Response& r) -> uint32_t { r.push_object(application(state)); return 0; });
         s.add_cmd(40, "GetPerformanceFunctions", [](Request&, Response& r) -> uint32_t {
             r.push_object(make_iface("IPerformanceFunctions", [](Service& g) {

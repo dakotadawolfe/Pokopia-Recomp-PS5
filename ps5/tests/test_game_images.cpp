@@ -142,7 +142,7 @@ struct ProbeStop {};
 std::array<nxrt::SvcHandler, nxrt::kSvcCount> rtld_handlers{};
 unsigned rtld_calls = 0;
 uint64_t rtld_handoff_handle = 0;
-bool sdk_library_boundary = false;
+bool sdk_display_boundary = false;
 #ifdef NXRT_TEST_SDK
 nxrt::GuestFn sdk_start = nullptr;
 std::array<nxrt::GuestFn, 3> sdk_callbacks{};
@@ -211,9 +211,11 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
                     magic = read_word(header);
                     if (magic == 0x49434653) command = read_word(header + 8);
                 }
-                if (target && target->name() == "IApplicationProxy" && command == 11) {
-                    sdk_library_boundary = true;
-                    std::puts("SDK_BOUNDARY requested GetLibraryAppletCreator; stopped before interface creation; library applets and title startup not executed");
+                if (target && command != UINT32_MAX)
+                    std::printf("SDK_REQUEST service=%s command=%u\n", target->name().c_str(), command);
+                if (target && target->name() == "IApplicationProxy" && command == 4) {
+                    sdk_display_boundary = true;
+                    std::puts("SDK_BOUNDARY requested GetDisplayController; stopped before interface creation; display and title startup not executed");
                     throw Handoff{};
                 }
             }
@@ -279,7 +281,7 @@ extern "C" void nx_catch_call(Ctx* c, void (*)(Ctx*, uint64_t)) {
     std::printf("SDK_STOP guest exception frame fn=%llx\n", static_cast<unsigned long long>(c->fn));
     throw ProbeStop{};
 }
-NXTEST(decrypted_sdk_reaches_library_applet_boundary_after_application_proxy_setup) {
+NXTEST(decrypted_sdk_reaches_display_boundary_after_applet_interface_setup) {
 #else
 NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
 #endif
@@ -340,7 +342,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         });
     }
     REQUIRE(imports == 2 && start_imports == 1);
-    nxrt::svc_init(); nxrt::svc_reset_counters(); rtld_calls = 0; rtld_handoff_handle = 0; sdk_library_boundary = false;
+    nxrt::svc_init(); nxrt::svc_reset_counters(); rtld_calls = 0; rtld_handoff_handle = 0; sdk_display_boundary = false;
     install_rtld_svcs(std::make_index_sequence<nxrt::kSvcCount>{}); cleanup.installed = true;
     const auto main_handle = nxrt::kernel::main_thread_adopt(0x100000, "rtld-probe"); REQUIRE(main_handle);
     auto* context = nxrt::kernel::current_ctx(); REQUIRE(context);
@@ -354,23 +356,24 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     }
     CHECK(handoff);
 #ifdef NXRT_TEST_SDK
-    CHECK(sdk_library_boundary); CHECK_EQ(rtld_handoff_handle, main_handle);
+    CHECK(sdk_display_boundary); CHECK_EQ(rtld_handoff_handle, main_handle);
     CHECK_EQ(sdk_callback_returns[0], 1u); CHECK_EQ(sdk_callback_returns[1], 0u); CHECK_EQ(sdk_callback_returns[2], 0u);
     CHECK(nxrt::ipc::stub_names_requested().empty());
-    bool saw_sm = false, saw_logger = false, saw_applet = false, saw_proxy = false;
+    bool saw_sm = false, saw_logger = false, saw_applet = false, saw_proxy = false, saw_window = false;
     for (const auto& stats : nxrt::ipc::service_stats()) {
         CHECK(!stats.stub); CHECK(stats.unhandled.empty());
         if (stats.name == "sm:" && stats.requests >= 3) saw_sm = true;
         if (stats.name == "lm" && stats.requests >= 1) saw_logger = true;
         if (stats.name == "appletOE" && stats.requests == 1) saw_applet = true;
-        if (stats.name == "IApplicationProxy" && stats.requests == 3) saw_proxy = true;
+        if (stats.name == "IApplicationProxy" && stats.requests == 8) saw_proxy = true;
+        if (stats.name == "IWindowController" && stats.requests == 1) saw_window = true;
     }
-    CHECK(saw_sm); CHECK(saw_logger); CHECK(saw_applet); CHECK(saw_proxy);
+    CHECK(saw_sm); CHECK(saw_logger); CHECK(saw_applet); CHECK(saw_proxy); CHECK(saw_window);
 #else
     CHECK_EQ(rtld_handoff_handle, main_handle);
 #endif
     CHECK(rtld_calls > 0); CHECK_EQ(nxrt::svc_unknown_total(), 0u);
-    std::printf("SDK_RESULT library_boundary=%u\n", sdk_library_boundary);
+    std::printf("SDK_RESULT display_boundary=%u\n", sdk_display_boundary);
     std::printf("RTLD_RESULT handoff=%u svc_calls=%u lifted_functions=%d; no gameplay executed\n", handoff, rtld_calls, nxmod_rtld.nfns);
 }
 #endif
