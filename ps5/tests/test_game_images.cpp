@@ -7,7 +7,9 @@
 #include "nxrt/dispatch.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -139,10 +141,27 @@ extern "C" const uint32_t nxmod_sdk_abi;
 #endif
 struct Handoff {};
 struct ProbeStop {};
+#ifdef NXRT_SDK_STARTUP_TRACE
+constexpr bool startup_trace = true;
+#else
+constexpr bool startup_trace = false;
+#endif
+[[noreturn]] void stop_probe() {
+    if constexpr (startup_trace) {
+        std::puts("SDK_TRACE_END stopped at dependency or diagnostic limit; not a passing test or gameplay result");
+        std::fflush(stdout); std::fflush(stderr);
+        std::_Exit(2); // Ends this diagnostic process and all of its guest workers.
+    }
+    throw ProbeStop{};
+}
+std::mutex sdk_ipc_probe_mutex;
 std::array<nxrt::SvcHandler, nxrt::kSvcCount> rtld_handlers{};
-unsigned rtld_calls = 0;
+std::atomic<unsigned> rtld_calls{0};
 uint64_t rtld_handoff_handle = 0;
-bool sdk_map_boundary = false;
+bool sdk_map_boundary = false, sdk_thread_boundary = false;
+uint64_t sdk_stack_address = 0;
+uint32_t sdk_worker_handle = 0;
+bool sdk_worker_wait = false;
 #ifdef NXRT_TEST_SDK
 nxrt::GuestFn sdk_start = nullptr;
 std::array<nxrt::GuestFn, 3> sdk_callbacks{};
@@ -156,7 +175,7 @@ void trace_sdk_start(::Ctx* c) {
     constexpr nxrt::GuestFn wrappers[] = {sdk_callback<0>, sdk_callback<1>, sdk_callback<2>};
     for (unsigned n = 0; n < 3; ++n) {
         sdk_callbacks[n] = nxrt::fn_lookup(c->x[n + 2]); sdk_callback_returns[n] = 0;
-        if (!sdk_callbacks[n]) throw ProbeStop{};
+        if (!sdk_callbacks[n]) stop_probe();
         nxrt::fn_register(c->x[n + 2], wrappers[n]);
     }
     std::printf("SDK_ENTER main_handle=%llx\n", static_cast<unsigned long long>(rtld_handoff_handle));
@@ -164,22 +183,48 @@ void trace_sdk_start(::Ctx* c) {
 }
 #endif
 template<size_t Number> void rtld_svc(::Ctx* c) {
-    if (++rtld_calls > 10000) { std::puts("RTLD_STOP system-call limit"); throw ProbeStop{}; }
+    const unsigned call_number = ++rtld_calls;
+    if (call_number > (startup_trace ? 1000u : 10000u)) { std::puts("RTLD_STOP system-call limit"); stop_probe(); }
     const uint64_t a = c->x[0], b = c->x[1], d = c->x[2];
+    if constexpr (startup_trace) {
+        std::printf("SDK_TRACE_ENTER n=%u svc=%02zx thread=%x fn=%llx lr=%llx a=%llx b=%llx d=%llx\n",
+            call_number, Number, nxrt::kernel::current_thread() ? nxrt::kernel::current_thread()->handle : 0,
+            static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]),
+            static_cast<unsigned long long>(a), static_cast<unsigned long long>(b), static_cast<unsigned long long>(d));
+    }
+    // Keep diagnostic request inspection and domain updates in the same order.
+    // This trace is for startup dependencies, not performance measurement.
+    std::unique_lock ipc_lock(sdk_ipc_probe_mutex, std::defer_lock);
+    if constexpr (Number == 0x21 || Number == 0x22) ipc_lock.lock();
 #ifdef NXRT_TEST_SDK
-    if constexpr (Number == 0x04) {
+    if constexpr (!startup_trace && Number == 0x04) {
         const auto* sdk = nxrt::module_by_name("sdk");
         if (!sdk || b != sdk->base() + 0xe14000 || d != mem::kPage ||
             (a & (mem::kPage - 1)) || a < mem::kStackBase || a - mem::kStackBase > mem::kStackSize - d ||
             !mem::SubpageMap::allows(b, d, 3) || mem::is_mapped(a, d)) {
-            std::puts("SDK_STOP unexpected stack mapping request"); throw ProbeStop{};
+            std::puts("SDK_STOP unexpected stack mapping request"); stop_probe();
         }
-        sdk_map_boundary = true;
-        std::printf("SDK_BOUNDARY MapMemory dst=%llx src=%llx size=%llx caller=%s; stopped before mapping or worker creation\n",
-            static_cast<unsigned long long>(a), static_cast<unsigned long long>(b),
-            static_cast<unsigned long long>(d), sdk->describe(c->x[30]).c_str()); throw Handoff{};
+        sdk_stack_address = a;
     }
-    constexpr bool allowed = Number == 1 || Number == 2 || Number == 3 || Number == 6 || Number == 0xc ||
+    if constexpr (!startup_trace && Number == 0x08) {
+        std::printf("SDK_THREAD entry=%llx arg=%llx sp=%llx priority=%llx core=%llx\n",
+            static_cast<unsigned long long>(b), static_cast<unsigned long long>(d),
+            static_cast<unsigned long long>(c->x[3]), static_cast<unsigned long long>(c->x[4]),
+            static_cast<unsigned long long>(c->x[5]));
+        if (!sdk_map_boundary || !nxrt::fn_lookup(b) || (c->x[3] & 15) || c->x[3] <= sdk_stack_address || c->x[3] > sdk_stack_address + mem::kPage ||
+            !mem::SubpageMap::allows(sdk_stack_address, mem::kPage, 3)) stop_probe();
+    }
+    if constexpr (!startup_trace && Number == 0x1a) {
+        const auto* worker = nxrt::kernel::current_thread();
+        if (!worker || worker->handle != sdk_worker_handle || a != rtld_handoff_handle || d != sdk_worker_handle ||
+            (b & 3) || !mem::SubpageMap::allows(b, sizeof(uint32_t), 3)) stop_probe();
+        const uint32_t owner = __atomic_load_n(reinterpret_cast<const uint32_t*>(b), __ATOMIC_SEQ_CST);
+        if ((owner & 0x3fffffff) != a || !(owner & 0x40000000)) stop_probe();
+        std::printf("SDK_WORKER_MUTEX owner=%llx address=%llx tag=%llx word=%x; stopped before waiting for parent\n",
+            static_cast<unsigned long long>(a), static_cast<unsigned long long>(b), static_cast<unsigned long long>(d), owner);
+        sdk_worker_wait = true; throw Handoff{};
+    }
+    constexpr bool allowed = startup_trace || Number == 1 || Number == 2 || Number == 3 || Number == 4 || Number == 5 || Number == 6 || Number == 8 || Number == 9 || Number == 0xc ||
         Number == 0xd || Number == 0xe || Number == 0xf || Number == 0x10 || Number == 0x16 ||
         Number == 0x1e || Number == 0x1f || Number == 0x21 || Number == 0x22 || Number == 0x24 ||
         Number == 0x25 || Number == 0x27 || Number == 0x29 || Number == 0x6f || Number == 0x7c;
@@ -190,7 +235,7 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
         std::printf("RTLD_STOP svc=%02zx fn=%llx lr=%llx x0=%llx x1=%llx x2=%llx\n", Number,
             static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]),
             static_cast<unsigned long long>(a), static_cast<unsigned long long>(b), static_cast<unsigned long long>(d));
-        throw ProbeStop{};
+        stop_probe();
     }
     if constexpr (Number == 0x27) {
         const size_t n = static_cast<size_t>(std::min<uint64_t>(b, 240));
@@ -218,10 +263,10 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
                 if (nxrt::hipc::is_tipc(message.type)) command = message.type - nxrt::hipc::kTipcBase;
                 else if (message.type == nxrt::hipc::kInvoke2MethodOld || message.type == nxrt::hipc::kInvoke2Method) {
                     if (session->domain) {
-                        // This bounded probe cannot start guest workers; no other caller mutates the domain.
-                        if (!session->dom || message.raw.size() < 32 || message.raw[0] != 1) throw ProbeStop{};
+                        // IPC wrappers serialize domain inspection with guest requests.
+                        if (!session->dom || message.raw.size() < 32 || message.raw[0] != 1) stop_probe();
                         const auto object = session->dom->objects.find(read_word(4));
-                        if (object == session->dom->objects.end()) throw ProbeStop{};
+                        if (object == session->dom->objects.end()) stop_probe();
                         target = object->second; header = 16;
                     }
                     magic = read_word(header);
@@ -239,16 +284,41 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
 #endif
     rtld_handlers[Number](c);
 #ifdef NXRT_TEST_SDK
+    if constexpr (!startup_trace && Number == 0x08) {
+        if (c->x[0] || !nxrt::kernel::handle_as<nxrt::kernel::KThread>(c->x[1])) stop_probe();
+        sdk_worker_handle = c->x[1];
+        sdk_thread_boundary = true;
+    }
+    if constexpr (!startup_trace && Number == 0x09) {
+        if (c->x[0] || a != sdk_worker_handle || !nxrt::kernel::thread_join(sdk_worker_handle, 3000)) {
+            std::puts("SDK_STOP worker failed to start or reach bounded wait"); std::fflush(stdout); std::abort();
+        }
+        const auto worker = nxrt::kernel::handle_as<nxrt::kernel::KThread>(sdk_worker_handle);
+        if (!worker || !worker->worker || !sdk_worker_wait) stop_probe();
+        const auto failure = worker->worker->failure();
+        if (!failure) stop_probe();
+        try { std::rethrow_exception(failure); } catch (const Handoff&) {
+            std::puts("SDK_BOUNDARY worker executed SDK entry and requested its parent-owned mutex; joined after probe stop");
+            throw Handoff{};
+        }
+    }
+    if constexpr (!startup_trace && Number == 0x04) {
+        if (c->x[0] || mem::SubpageMap::allows(b, d, 1) || !mem::SubpageMap::allows(a, d, 3) ||
+            mem::vm_query(a).state != mem::kMemStack || !mem::stack_source_locked(b, d)) stop_probe();
+        sdk_map_boundary = true;
+        std::printf("SDK_MAP completed dst=%llx src=%llx size=%llx\n", static_cast<unsigned long long>(a),
+            static_cast<unsigned long long>(b), static_cast<unsigned long long>(d));
+    }
     if (check_cmif_result && c->x[0] == 0) {
         nxrt::hipc::Message reply;
         if (!nxrt::hipc::parse(reinterpret_cast<const uint32_t*>(c->tpidrro), 64, reply) ||
-            reply.raw.size() < cmif_header + 12) throw ProbeStop{};
+            reply.raw.size() < cmif_header + 12) stop_probe();
         uint32_t magic = 0, result = 0;
         std::memcpy(&magic, reply.raw.data() + cmif_header, 4);
         std::memcpy(&result, reply.raw.data() + cmif_header + 8, 4);
         if (magic != 0x4f434653 || result) {
             std::printf("SDK_STOP service=%s command=%u result=%08x reply_magic=%08x\n",
-                ipc_target.c_str(), ipc_command, result, magic); throw ProbeStop{};
+                ipc_target.c_str(), ipc_command, result, magic); stop_probe();
         }
     }
     if constexpr (Number == 0x1f) {
@@ -259,24 +329,24 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
         std::printf("SDK_IPC %s\n", nxrt::ipc::ipc_summary().c_str());
         for (const auto& stats : nxrt::ipc::service_stats()) {
             if (stats.requests && (stats.name == "IDisplayController" || stats.name == "IDebugFunctions")) {
-                std::printf("SDK_STOP unbacked endpoint used: %s\n", stats.name.c_str()); throw ProbeStop{};
+                std::printf("SDK_STOP unbacked endpoint used: %s\n", stats.name.c_str()); stop_probe();
             }
             if (!stats.unhandled.empty()) {
                 for (const auto& [cmd, count] : stats.unhandled)
                     std::printf("SDK_STOP service=%s command=%u calls=%llu\n", stats.name.c_str(), cmd, static_cast<unsigned long long>(count));
-                throw ProbeStop{};
+                stop_probe();
             }
         }
         const auto missing = nxrt::ipc::stub_names_requested();
         if (!missing.empty()) {
             for (const auto& name : missing) std::printf("SDK_STOP unported service=%s fn=%llx lr=%llx\n", name.c_str(),
                 static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]));
-            throw ProbeStop{};
+            stop_probe();
         }
     }
 #endif
-    if (rtld_calls <= 80 || c->x[0]) std::printf("RTLD_SVC n=%u svc=%02zx a=%llx b=%llx d=%llx rc=%llx out=%llx\n",
-        rtld_calls, Number, static_cast<unsigned long long>(a), static_cast<unsigned long long>(b),
+    if (startup_trace || call_number <= 100 || c->x[0]) std::printf("RTLD_SVC n=%u svc=%02zx a=%llx b=%llx d=%llx rc=%llx out=%llx\n",
+        call_number, Number, static_cast<unsigned long long>(a), static_cast<unsigned long long>(b),
         static_cast<unsigned long long>(d), static_cast<unsigned long long>(c->x[0]), static_cast<unsigned long long>(c->x[1]));
 }
 template<size_t... Number> void install_rtld_svcs(std::index_sequence<Number...>) {
@@ -288,6 +358,7 @@ struct RtldCleanup {
     ~RtldCleanup() {
         if (installed) for (unsigned n = 0; n < rtld_handlers.size(); ++n) nxrt::svc_register(n, rtld_handlers[n]);
         nxrt::kernel::main_thread_release(); nxrt::kernel::kernel_reset(); nxrt::ipc::registry_reset(); nxrt::services::am_reset();
+        nxrt::svc_memory_reset_for_tests();
         nxrt::modules_unload_all(); nxrt::nxmodules_clear(); nxrt::hle_clear(); nxrt::hle_restore_current(nullptr);
         nxrt::svc_info_reset_for_tests(); nxrt::svc_memory_reset_for_tests(); mem::shutdown();
         nxrt::game::set_current(previous);
@@ -298,7 +369,9 @@ struct RtldDeadline {
     std::thread worker{[this] {
         std::unique_lock lock(mutex);
         if (!changed.wait_for(lock, std::chrono::seconds(20), [this] { return done; })) {
-            std::puts("RTLD_STOP watchdog expired"); std::fflush(stdout); std::abort();
+            std::puts("RTLD_STOP watchdog expired"); std::fflush(stdout);
+            if constexpr (startup_trace) stop_probe();
+            std::abort();
         }
     }};
     ~RtldDeadline() { { std::lock_guard lock(mutex); done = true; } changed.notify_all(); worker.join(); }
@@ -309,9 +382,9 @@ struct RtldDeadline {
 // Fail explicitly if startup reaches guest exception machinery before it is ported.
 extern "C" void nx_catch_call(Ctx* c, void (*)(Ctx*, uint64_t)) {
     std::printf("SDK_STOP guest exception frame fn=%llx\n", static_cast<unsigned long long>(c->fn));
-    throw ProbeStop{};
+    stop_probe();
 }
-NXTEST(decrypted_sdk_reaches_stack_mapping_after_applet_event_setup) {
+NXTEST(decrypted_sdk_maps_its_stack_and_runs_a_worker_to_its_parent_mutex) {
 #else
 NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
 #endif
@@ -345,7 +418,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         nxrt::hle_register(symbol.name, +[](::Ctx* c) {
             std::printf("SDK_STOP external call %s fn=%llx lr=%llx\n", c->in_import,
                 static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]));
-            throw ProbeStop{};
+            stop_probe();
         });
     }
 #endif
@@ -358,7 +431,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         ++imports; std::printf("RTLD_BOUNDARY import=%s\n", symbol.name);
         if (std::strcmp(symbol.name, "_ZN2nn4init5StartEmmPFvvES2_S2_") != 0) {
             nxrt::hle_register(symbol.name, +[](::Ctx*) {
-                std::puts("RTLD_STOP unexpected external call before SDK startup"); throw ProbeStop{};
+                std::puts("RTLD_STOP unexpected external call before SDK startup"); stop_probe();
             });
             continue;
         }
@@ -372,7 +445,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         });
     }
     REQUIRE(imports == 2 && start_imports == 1);
-    nxrt::svc_init(); nxrt::svc_reset_counters(); rtld_calls = 0; rtld_handoff_handle = 0; sdk_map_boundary = false;
+    nxrt::svc_init(); nxrt::svc_reset_counters(); rtld_calls = 0; rtld_handoff_handle = 0; sdk_map_boundary = false; sdk_thread_boundary = false; sdk_stack_address = 0; sdk_worker_handle = 0; sdk_worker_wait = false;
     install_rtld_svcs(std::make_index_sequence<nxrt::kSvcCount>{}); cleanup.installed = true;
     const auto main_handle = nxrt::kernel::main_thread_adopt(0x100000, "rtld-probe"); REQUIRE(main_handle);
     auto* context = nxrt::kernel::current_ctx(); REQUIRE(context);
@@ -384,9 +457,10 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         catch (const Handoff&) { handoff = true; }
         catch (const ProbeStop&) { std::puts("BOOT_STOP before expected diagnostic boundary"); }
     }
+    if constexpr (startup_trace) { std::puts("SDK_TRACE returned from SDK entry"); stop_probe(); }
     CHECK(handoff);
 #ifdef NXRT_TEST_SDK
-    CHECK(sdk_map_boundary); CHECK_EQ(rtld_handoff_handle, main_handle);
+    CHECK(sdk_map_boundary); CHECK(sdk_thread_boundary); CHECK(sdk_worker_wait); CHECK_EQ(rtld_handoff_handle, main_handle);
     CHECK_EQ(sdk_callback_returns[0], 1u); CHECK_EQ(sdk_callback_returns[1], 0u); CHECK_EQ(sdk_callback_returns[2], 0u);
     CHECK(nxrt::ipc::stub_names_requested().empty());
     bool saw_sm = false, saw_logger = false, saw_applet = false, saw_proxy = false, saw_window = false;
@@ -408,7 +482,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     CHECK_EQ(rtld_handoff_handle, main_handle);
 #endif
     CHECK(rtld_calls > 0); CHECK_EQ(nxrt::svc_unknown_total(), 0u);
-    std::printf("SDK_RESULT map_boundary=%u\n", sdk_map_boundary);
-    std::printf("RTLD_RESULT handoff=%u svc_calls=%u lifted_functions=%d; no gameplay executed\n", handoff, rtld_calls, nxmod_rtld.nfns);
+    std::printf("SDK_RESULT map_completed=%u worker_created=%u worker_wait=%u\n", sdk_map_boundary, sdk_thread_boundary, sdk_worker_wait);
+    std::printf("RTLD_RESULT handoff=%u svc_calls=%u lifted_functions=%d; no gameplay executed\n", handoff, rtld_calls.load(), nxmod_rtld.nfns);
 }
 #endif

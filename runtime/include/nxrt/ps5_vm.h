@@ -49,4 +49,11 @@ private:
     size_t size_ = 0;
     std::vector<View> views_;
 };
+// Temporary host-only access to backing while its guest address is protected.
+// The caller holds the memory owner's mutation lock for the view's lifetime.
+struct CopyView {
+    Reservation mapping;
+    size_t offset;
+    void* data() const { return static_cast<unsigned char*>(mapping.data()) + offset; }
+};
 } // namespace nxrt::ps5_vm

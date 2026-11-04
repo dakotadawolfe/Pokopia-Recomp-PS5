@@ -49,6 +49,16 @@ bool decommit(uint64_t addr, uint64_t size);
 bool protect(uint64_t addr, uint64_t size, Prot p);
 uint64_t alloc_kernel(uint64_t size, uint64_t align = kPage);   // committed RW memory from the kernel region (bump allocator)
 bool is_mapped(uint64_t addr, uint64_t size);                // every byte of the range is committed and accessible (VirtualQuery)
+#ifndef _WIN32
+// MapMemory's exclusive stack ownership, implemented by page copies on PS5.
+// The SVC layer validates states/attributes. Buffers must be quiescent during
+// transfer; shared/imported heap pages are refused. Metadata commits atomically
+// with permissions. Partial unmap preserves the remaining mappings.
+bool stack_map(uint64_t dst, uint64_t src, uint64_t size, uint32_t source_state);
+bool stack_unmap(uint64_t dst, uint64_t src, uint64_t size);
+bool stack_source_locked(uint64_t address, uint64_t size);
+void stack_reset_for_tests(); // Quiescent teardown, immediately before memory shutdown.
+#endif
 
 // ---- heap section ---------------------------------------------------------------------------------------------------
 // One pagefile-backed section (SEC_RESERVE, nothing is charged until committed) with a primary view at kHeapBase.

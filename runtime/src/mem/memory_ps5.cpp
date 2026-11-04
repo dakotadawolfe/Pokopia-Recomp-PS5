@@ -10,6 +10,7 @@
 #include "nxrecomp/memory.h"
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -21,6 +22,34 @@ struct Fixed { uint64_t size; std::unique_ptr<GuestRegion> owner; };
 std::mutex mutex;
 std::map<uint64_t, Fixed> fixed;
 std::map<uint64_t, VmInfo> vm;
+struct StackMap { uint64_t dst, src, size; uint32_t state; };
+std::vector<StackMap> stack_maps;
+bool overlap(uint64_t a, uint64_t size, uint64_t b, uint64_t count) {
+    return size && count && (a >= b ? a - b < count : b - a < size);
+}
+bool stack_busy(uint64_t address, uint64_t size, bool source_only = false) {
+    for (const auto& r : stack_maps)
+        if (overlap(address, size, r.src, r.size) || (!source_only && overlap(address, size, r.dst, r.size))) return true;
+    return false;
+}
+void set_vm(std::map<uint64_t, VmInfo>& map, uint64_t address, uint64_t size, uint32_t state, uint32_t perm) {
+    const uint64_t end = address + size;
+    auto it = map.lower_bound(address);
+    if (it != map.begin()) {
+        auto previous = std::prev(it);
+        if (previous->second.addr + previous->second.size > address) it = previous;
+    }
+    while (it != map.end() && it->second.addr < end) {
+        const auto block = it->second; it = map.erase(it);
+        if (block.addr < address) map.emplace(block.addr, VmInfo{block.addr, address - block.addr, block.state, block.perm});
+        if (block.addr + block.size > end) map.emplace(end, VmInfo{end, block.addr + block.size - end, block.state, block.perm});
+    }
+    if (state != kMemFree) map.emplace(address, VmInfo{address, size, state, perm});
+}
+template<class F> void must_restore(F restore) {
+    try { if (restore()) return; } catch (...) {}
+    std::abort();
+}
 std::unique_ptr<SharedHeap> heap;
 bool ready = false;
 uint64_t default_heap = 0, kernel_next = kKernelBase;
@@ -47,7 +76,7 @@ bool reserve(uint64_t address, uint64_t size, const char* tag) {
 }
 bool release(uint64_t address) {
     auto it = fixed.find(address);
-    if (it == fixed.end() || !it->second.owner->reset()) return false;
+    if (it == fixed.end() || stack_busy(address, it->second.size) || !it->second.owner->reset()) return false;
     fixed.erase(it); return true;
 }
 struct Part {
@@ -76,7 +105,7 @@ bool parts(uint64_t first, uint64_t end, std::vector<Part>& out) {
 }
 bool commit_locked(uint64_t address, uint64_t size, Prot p) {
     uint64_t first, end;
-    if (!valid(p) || !span(address, size, first, end)) return false;
+    if (!valid(p) || !span(address, size, first, end) || stack_busy(first, end - first)) return false;
     if (first == end) return true;
     std::vector<Part> ranges;
     if (!parts(first, end, ranges) || ranges.size() != 1) return false;
@@ -117,6 +146,7 @@ bool init(const Config& config) {
 }
 void shutdown() {
     std::lock_guard lock(mutex);
+    stack_maps.clear();
     if (heap && !heap->reset()) std::abort();
     heap.reset();
     while (!fixed.empty()) if (!release(fixed.begin()->first)) std::abort();
@@ -131,7 +161,7 @@ bool commit(uint64_t address, uint64_t size, Prot p) { std::lock_guard lock(mute
 bool decommit(uint64_t address, uint64_t size) {
     std::lock_guard lock(mutex);
     uint64_t first, end;
-    if (!span(address, size, first, end)) return false;
+    if (!span(address, size, first, end) || stack_busy(first, end - first)) return false;
     if (first == end) return true;
     std::vector<Part> ranges;
     // Section views use heap_decommit; generic decommit releases private pages.
@@ -140,7 +170,7 @@ bool decommit(uint64_t address, uint64_t size) {
 bool protect(uint64_t address, uint64_t size, Prot p) {
     std::lock_guard lock(mutex);
     uint64_t first, end;
-    if (!valid(p) || !span(address, size, first, end)) return false;
+    if (!valid(p) || !span(address, size, first, end) || stack_busy(first, end - first)) return false;
     if (first == end) return true;
     std::vector<Part> ranges;
     if (!parts(first, end, ranges)) return false;
@@ -204,33 +234,102 @@ bool heap_create(uint64_t bytes) {
 bool heap_exists() { std::lock_guard lock(mutex); return static_cast<bool>(heap); }
 uint64_t heap_reserved() { std::lock_guard lock(mutex); return heap ? heap->reserved_bytes() : 0; }
 uint64_t heap_committed() { std::lock_guard lock(mutex); return heap ? heap->committed_bytes() : 0; }
-bool heap_commit(uint64_t offset, uint64_t size) { std::lock_guard lock(mutex); return heap && heap->commit(offset, size); }
-bool heap_decommit(uint64_t offset, uint64_t size) { std::lock_guard lock(mutex); return heap && heap->decommit(offset, size); }
+bool heap_commit(uint64_t offset, uint64_t size) { std::lock_guard lock(mutex); return heap && !stack_busy(kHeapBase + offset, size) && heap->commit(offset, size); }
+bool heap_decommit(uint64_t offset, uint64_t size) { std::lock_guard lock(mutex); return heap && !stack_busy(kHeapBase + offset, size) && heap->decommit(offset, size); }
 uint64_t heap_alias(uint64_t offset, uint64_t size, uint64_t at, Prot p) {
-    std::lock_guard lock(mutex); return heap ? heap->alias(offset, size, at, p) : 0;
+    std::lock_guard lock(mutex); return heap && !stack_busy(kHeapBase + offset, size) ? heap->alias(offset, size, at, p) : 0;
 }
 bool heap_alias_unmap(uint64_t at) { std::lock_guard lock(mutex); return heap && heap->unmap_alias(at); }
-void* heap_private_view(uint64_t offset, uint64_t size) { std::lock_guard lock(mutex); return heap ? heap->private_view(offset, size) : nullptr; }
+void* heap_private_view(uint64_t offset, uint64_t size) { std::lock_guard lock(mutex); return heap && !stack_busy(kHeapBase + offset, size) ? heap->private_view(offset, size) : nullptr; }
 bool heap_private_view_unmap(void* at) { std::lock_guard lock(mutex); return heap && heap->unmap_private(at); }
 size_t heap_alias_count() { std::lock_guard lock(mutex); return heap ? heap->alias_count() : 0; }
 void heap_alias_ranges(std::vector<std::pair<uint64_t, uint64_t>>& out) { std::lock_guard lock(mutex); if (heap) heap->alias_ranges(out); }
 bool heap_offset_of(uint64_t at, uint64_t* offset) { std::lock_guard lock(mutex); return heap && heap->offset_of(at, offset); }
 
+bool stack_source_locked(uint64_t address, uint64_t size) {
+    std::lock_guard lock(mutex); return stack_busy(address, size, true);
+}
+void stack_reset_for_tests() { std::lock_guard lock(mutex); stack_maps.clear(); }
+
+bool stack_map(uint64_t dst, uint64_t src, uint64_t size, uint32_t source_state) {
+    std::lock_guard lock(mutex);
+    if (!size || (dst | src | size) % kPage || src >= limit || size > limit - src ||
+        dst < kStackBase || dst >= kStackBase + kStackSize || size > kStackBase + kStackSize - dst ||
+        stack_busy(src, size) || stack_busy(dst, size) || overlap(src, size, dst, size)) return false;
+    std::vector<Part> sources, targets;
+    if (!parts(src, src + size, sources) || sources.size() != 1 ||
+        !parts(dst, dst + size, targets) || targets.size() != 1 || !targets[0].region ||
+        !SubpageMap::allows(src, size, 3)) return false;
+    auto& source = sources[0]; auto& target = targets[0];
+    for (uint64_t at = dst; at < dst + size; at += kPage)
+        if (target.region->is_committed(at, kPage)) return false;
+    auto source_view = source.region ? source.region->copy_view(src, size) : heap->copy_view(src, size);
+    if (!source_view) return false;
+    auto updated = vm;
+    set_vm(updated, src, size, source_state, 0); set_vm(updated, dst, size, kMemStack, 3);
+    auto records = stack_maps; records.push_back({dst, src, size, source_state});
+    if (!target.region->commit(dst, size, Prot::None)) return false;
+    bool source_hidden = false;
+    auto rollback = [&] {
+        if (source_hidden) must_restore([&] { return source.protect(Prot::RW); });
+        must_restore([&] { return target.region->decommit(dst, size); });
+    };
+    try {
+        auto target_view = target.region->copy_view(dst, size);
+        if (!target_view || !source.protect(Prot::None)) { rollback(); return false; }
+        source_hidden = true;
+        std::memcpy(target_view->data(), source_view->data(), size);
+        if (!target.protect(Prot::RW)) { rollback(); return false; }
+    } catch (...) { rollback(); throw; }
+    vm.swap(updated); stack_maps.swap(records); return true;
+}
+
+bool stack_unmap(uint64_t dst, uint64_t src, uint64_t size) {
+    std::lock_guard lock(mutex);
+    if (!size || (dst | src | size) % kPage || src >= limit || size > limit - src ||
+        dst >= limit || size > limit - dst) return false;
+    size_t index = 0;
+    for (; index < stack_maps.size(); ++index) {
+        const auto& r = stack_maps[index];
+        if (dst >= r.dst && dst - r.dst <= r.size && size <= r.size - (dst - r.dst) &&
+            src == r.src + dst - r.dst) break;
+    }
+    if (index == stack_maps.size()) return false;
+    const auto record = stack_maps[index];
+    std::vector<Part> sources, targets;
+    if (!parts(src, src + size, sources) || sources.size() != 1 ||
+        !parts(dst, dst + size, targets) || targets.size() != 1 || !targets[0].region) return false;
+    auto& source = sources[0]; auto& target = targets[0];
+    auto source_view = source.region ? source.region->copy_view(src, size) : heap->copy_view(src, size);
+    auto target_view = target.region->copy_view(dst, size);
+    if (!source_view || !target_view) return false;
+    auto updated = vm;
+    set_vm(updated, src, size, record.state, 3); set_vm(updated, dst, size, kMemFree, 0);
+    auto records = stack_maps; records.erase(records.begin() + index);
+    if (dst > record.dst) records.push_back({record.dst, record.src, dst - record.dst, record.state});
+    if (dst + size < record.dst + record.size)
+        records.push_back({dst + size, src + size, record.dst + record.size - dst - size, record.state});
+    if (!target.protect(Prot::None)) return false;
+    bool source_restored = false;
+    auto rollback = [&] {
+        if (source_restored) must_restore([&] { return source.protect(Prot::None); });
+        must_restore([&] { return target.protect(Prot::RW); });
+    };
+    try {
+        std::memcpy(source_view->data(), target_view->data(), size);
+        if (!source.protect(Prot::RW)) { rollback(); return false; }
+        source_restored = true;
+        if (!target.region->decommit(dst, size)) { rollback(); return false; }
+    } catch (...) { rollback(); throw; }
+    vm.swap(updated); stack_maps.swap(records); return true;
+}
+
 void vm_set(uint64_t address, uint64_t size, uint32_t state, uint32_t perm) {
     if (!size || address >= limit || size > limit - address) return;
-    const uint64_t end = address + size;
     std::lock_guard lock(mutex);
-    auto it = vm.lower_bound(address);
-    if (it != vm.begin()) {
-        auto previous = std::prev(it);
-        if (previous->second.addr + previous->second.size > address) it = previous;
-    }
-    while (it != vm.end() && it->second.addr < end) {
-        const auto block = it->second; it = vm.erase(it);
-        if (block.addr < address) vm.emplace(block.addr, VmInfo{block.addr, address - block.addr, block.state, block.perm});
-        if (block.addr + block.size > end) vm.emplace(end, VmInfo{end, block.addr + block.size - end, block.state, block.perm});
-    }
-    if (state != kMemFree) vm.emplace(address, VmInfo{address, size, state, perm});
+    auto updated = vm;
+    set_vm(updated, address, size, state, perm);
+    vm.swap(updated);
 }
 VmInfo vm_query(uint64_t address) {
     std::lock_guard lock(mutex);

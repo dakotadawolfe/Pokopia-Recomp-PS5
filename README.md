@@ -1,7 +1,8 @@
 # Pokopia Recomp for PS5
 
 Native PS5 port in development, based on drakolordx7's Pokopia recompilation.
-The current milestone is decrypted-input validation and platform bring-up.
+The current build validates the native runtime and executes SDK startup and its
+first worker on PS5. Filesystem and rendering integration remain.
 There is no playable PS5 build yet.
 
 See [the PS5 project scope and current status](ps5/README.md). Builds run locally,

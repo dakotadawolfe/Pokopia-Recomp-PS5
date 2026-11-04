@@ -154,6 +154,15 @@ if(PKP_GAME_IMAGE_INPUT)
         if(PKP_TEST_SDK)
             target_compile_definitions(ps5_rtld_tests PRIVATE NXRT_TEST_SDK=1)
             target_link_libraries(ps5_rtld_tests PRIVATE test_sdk)
+            # An exploratory payload continues through known SVCs and exits its
+            # entire process on the next dependency. It never reports a pass.
+            add_executable(ps5_sdk_startup_trace sync_main.cpp test_game_images.cpp "${root}/ps5/app/thread_exit.cpp")
+            target_include_directories(ps5_sdk_startup_trace PRIVATE "${root}/runtime/tests" "${game_expectations}")
+            target_compile_definitions(ps5_sdk_startup_trace PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_GAME_IMAGES=1
+                NXRT_TEST_RTLD=1 NXRT_TEST_SDK=1 NXRT_SDK_STARTUP_TRACE=1)
+            target_compile_options(ps5_sdk_startup_trace PRIVATE -Wall -Wextra -Werror -mcx16)
+            target_link_libraries(ps5_sdk_startup_trace PRIVATE nxrt_ps5_svc test_rtld test_sdk)
+            target_link_options(ps5_sdk_startup_trace PRIVATE "LINKER:--wrap,pthread_create")
             set(runtime_sdk true)
         endif()
     endif()

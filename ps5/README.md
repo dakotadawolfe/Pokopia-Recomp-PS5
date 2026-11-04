@@ -134,11 +134,11 @@ shared heaps and aliases.
 The core library contains dispatch, the generated-code ABI,
 module registration, hooks, NSO loading and linking. The kernel component adds
 guest thread objects, handles, TLS, timing and synchronization queues. The SVC
-component connects 35 handlers to the generated-code ABI: thread, event,
+component connects 37 handlers to the generated-code ABI: thread, event,
 synchronization, timing, debug strings, boot memory, process information and
 three synchronous IPC calls. The service manager, log manager and initial
 application-proxy interfaces are connected.
-Memory mapping, other services, guest exceptions, write tracking and rendering still need integration
+Remaining memory services, other services, guest exceptions, write tracking and rendering still need integration
 before the core can run the game.
 The optional Windows frame recorder and stack sampler are disabled in the PS5
 core build; ordinary HLE call logging remains available.
@@ -971,11 +971,88 @@ The production PS5 SVC archive builds, and all four ABI 4 game archives pass the
 module verifier. The Windows runtime suite was not run.
 
 The **239-case native application** is built locally and installed, with every
-package file readback-verified. Native launch verification is pending. Its
+package file readback-verified. Both native launches passed all 239 cases with
+zero failures and main status zero; their processes exited and the user confirmed
+returning home. Reports: `app-platform-1793785879-327.log` and
+`app-platform-1793786160-332.log`. Its
 executable is 130,448,787 bytes; SHA-256:
 `8aa3e8ba8fca49cc7e93738779074a6f237018f2957ee6856f44aea1c036c80f`.
 The passing 233-case package is retained privately for rollback. The installed
 diagnostic stops before SDK stack remapping and does not launch gameplay.
+
+## Stack mapping and automated startup tracing
+
+PS5 SVCs 0x04/0x05 now move exclusive ownership between writable heap/module
+pages and stack addresses. The source becomes inaccessible and reports the
+Locked attribute; unmap restores its contents and permissions. Whole, prefix,
+suffix and middle unmaps preserve the remaining ranges. Permission changes,
+heap shrink, replacement and module release cannot bypass a live mapping.
+
+This backend copies the bytes through temporary private backing views rather
+than creating a physical alias. That supports arbitrary 4 KiB source/destination
+alignment inside PS5's 16 KiB pages. It requires quiescent source/destination
+buffers during transfer and rejects heap pages with overlapping guest aliases
+or private/GPU import views. New aliases/imports are refused while mapped. A
+source range must fit one fixed reservation or the primary heap. It is not a
+shared-memory implementation and has not been performance-tested with gameplay.
+The validation rules follow
+[Atmosphere's memory SVCs](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/svc/kern_svc_memory.cpp)
+and [page-table implementation](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/kern_k_page_table_base.cpp).
+
+Private views and updated metadata are prepared before permission changes.
+Failed protection restores the previous mapping; a failed rollback aborts rather
+than leaving guest execution with inconsistent ownership. On PS5, the SVC
+payload passed **87 cases, zero failures** in
+`svc-runtime-1793786692-339.log`; SHA-256:
+`75bc471be137a0318dc03a71c70a83ce55348f15d59b7729e15e9e3732a6a03c`.
+The eight added cases exercise data round trips, neighboring subpages, partial
+unmap, invalid/occupied ranges, aliases/imports, lifetime locks, both permission
+failure points in each direction, and a copy across physical backing blocks.
+
+The bounded SDK test maps the real 4 KiB SDK stack, creates its worker with the
+SDK-provided registers/TLS, and starts its recompiled entry. It checks the first
+mutex request against the parent handle, mapped mutex word and worker tag, then
+stops before waiting and joins the worker. Report
+`game-images-1793787424-350.log` passed both cases and exited; ELF SHA-256:
+`e0d0541045253cd609337fbea17fec2981d2683a8c53edc11f317d63b7166248`.
+This checks worker entry, not completion of the SDK thread's initialization.
+
+A separate `ps5_sdk_startup_trace` payload allows already-ported SVCs to execute
+past that checkpoint, including parent/worker synchronization. Build it from the
+same SDK-enabled test configuration:
+
+```sh
+cmake --build /path/to/private/build/app-tests --target ps5_sdk_startup_trace
+```
+
+It logs `/data/pokopia-recomp/tests/sdk-startup-<time>-<pid>.log`, limits execution
+to 1,000 SVCs or 20 seconds, and exits its own process and workers on an unknown
+service/call, checked CMIF error, external import or limit. It deliberately does
+not report a passing test. Its IPC diagnostic wrappers serialize requests while
+inspecting domain objects; timings are not performance measurements.
+
+Trace `sdk-startup-1793787201-349.log` shows the real mutex handoff completing,
+the worker entering `WaitSynchronization`, and the main thread processing focus
+and foreground setup. It stops at call 95: `IApplicationFunctions` command 320,
+result `0x000bcbd5`. The original Windows backend returns two zero bytes for 320
+and one for 321 but labels their meanings unknown; these compatibility replies
+have not been silently promoted into the PS5 runtime. ELF SHA-256:
+`4b3fe97d6fbe5a16e6156ca5cc4ad383e16fb99444044a56378129c20e8ce90d`.
+Earlier exploratory SDK runs stopped on overly strict stack-top validation and
+the first worker mutex request; those runs are not passes.
+
+The locally packaged **247-case native app** includes the stack/worker test.
+It is prepared for a later combined native test; it has not replaced the proven
+239-case app or been launched through ShadowMountPlus. Automated payload traces
+will cover larger startup chunks before another manual launch is requested.
+
+There is still no rendered game menu. The path to a first real frame includes
+completing SDK/title startup, linking the remaining game code into the runnable
+app, providing RomFS/file services, and integrating the NVN/Vulkan renderer with
+PS5 RADV/VideoOut. The existing renderer and filesystem contain Windows host
+backends; they are not linked into this PS5 diagnostic. Audio, controller and
+save integration follow alongside that work. No date or 60 FPS result is implied
+by these startup checks.
 
 ## Repository ownership
 

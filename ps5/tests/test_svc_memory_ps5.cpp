@@ -247,3 +247,118 @@ NXTEST(lifted_arm_program_sizes_queries_and_protects_the_guest_heap) {
     CHECK_EQ(rd32(f.output + 56), 1u); CHECK_EQ(nxrt::svc_current_heap_size(), 0u);
     CHECK_EQ(nxrt::svc_unknown_total(), 0u);
 }
+
+NXTEST(stack_mapping_moves_code_data_and_preserves_host_page_neighbors) {
+    Fixture f; f.module();
+    const uint64_t dst = mem::kStackBase + page, src = image + 2 * page;
+    wr64(src, 0x12345678); wr64(src - page, 11); wr64(src + page, 22);
+    REQUIRE(mem::commit(dst + page, page)); wr64(dst + page, 33);
+    mem::vm_set(dst + page, page, mem::kMemStack, 3);
+    REQUIRE(call(4, dst, src, page).rc == k::kOk);
+    CHECK_EQ(rd64(dst), 0x12345678u);
+    CHECK(!mem::SubpageMap::allows(src, 8, 1));
+    CHECK_EQ(f.query(src).attr, 1u); CHECK_EQ(f.query(src).perm, 0u);
+    CHECK_EQ(f.query(src).state, mem::kMemCodeData);
+    CHECK_EQ(f.query(dst).state, mem::kMemStack); CHECK_EQ(f.query(dst).perm, 3u);
+    CHECK_EQ(rd64(src - page), 11u); CHECK_EQ(rd64(src + page), 22u); CHECK_EQ(rd64(dst + page), 33u);
+    CHECK(!mem::SubpageMap::allows(dst - page, 8, 1));
+    CHECK_EQ(permission(src, page, 3).rc, k::kInvalidMemoryState);
+    CHECK_EQ(attribute(src, page, 16, 16).rc, k::kInvalidMemoryState);
+    wr64(dst, 0xabcdef);
+    REQUIRE(call(5, dst, src, page).rc == k::kOk);
+    CHECK_EQ(rd64(src), 0xabcdefu); CHECK_EQ(f.query(src).attr, 0u); CHECK_EQ(f.query(src).perm, 3u);
+    CHECK_EQ(f.query(dst).state, mem::kMemFree); CHECK(!mem::is_mapped(dst, page));
+    CHECK_EQ(rd64(dst + page), 33u);
+    REQUIRE(mem::commit(dst, page)); CHECK_EQ(rd64(dst), 0u);
+}
+NXTEST(stack_mapping_supports_heap_and_middle_prefix_suffix_unmap) {
+    Fixture f; REQUIRE(resize(4 * mib).rc == k::kOk);
+    const uint64_t dst = mem::kStackBase + 0x10000, src = heap + 2 * mib;
+    REQUIRE(call(4, dst, src, 3 * page).rc == k::kOk);
+    for (unsigned i = 0; i < 3; ++i) wr64(dst + i * page, 100 + i);
+    CHECK_EQ(resize(2 * mib).rc, k::kInvalidMemoryState);
+    CHECK_EQ(call(5, dst, src + page, page).rc, k::kInvalidMemoryState);
+    for (unsigned i : {1u, 0u, 2u}) {
+        REQUIRE(call(5, dst + i * page, src + i * page, page).rc == k::kOk);
+        CHECK_EQ(rd64(src + i * page), 100u + i); CHECK_EQ(f.query(src + i * page).attr, 0u);
+    }
+    CHECK_EQ(call(5, dst, src, page).rc, k::kInvalidMemoryState);
+    REQUIRE(resize(2 * mib).rc == k::kOk);
+}
+NXTEST(stack_mapping_rejects_invalid_ranges_and_occupied_destinations) {
+    Fixture f; f.module(); const uint64_t dst = mem::kStackBase;
+    CHECK_EQ(call(4, dst + 1, image, page).rc, k::kInvalidAddress);
+    CHECK_EQ(call(4, dst, image + 1, page).rc, k::kInvalidAddress);
+    for (uint64_t size : {uint64_t{0}, page + 1}) CHECK_EQ(call(4, dst, image, size).rc, k::kInvalidSize);
+    CHECK_EQ(call(4, dst, UINT64_MAX - page + 1, page).rc, k::kInvalidMemoryState);
+    CHECK_EQ(call(4, image, image + page, page).rc, k::kInvalidMemoryRegion);
+    CHECK_EQ(call(4, dst, image, 0x11000).rc, k::kInvalidMemoryState);
+    REQUIRE(permission(image, page, 1).rc == k::kOk);
+    CHECK_EQ(call(4, dst, image, page).rc, k::kInvalidMemoryState);
+    REQUIRE(permission(image, page, 3).rc == k::kOk);
+    REQUIRE(attribute(image, page, 16, 16).rc == k::kOk);
+    CHECK_EQ(call(4, dst, image, page).rc, k::kInvalidMemoryState);
+    REQUIRE(mem::commit(dst, page)); wr64(dst, 42);
+    CHECK_EQ(call(4, dst, image + page, page).rc, k::kInvalidMemoryState);
+    CHECK_EQ(rd64(dst), 42u); CHECK(mem::SubpageMap::allows(image + page, page, 3));
+}
+NXTEST(stack_mapping_rejects_existing_shared_and_imported_heap_pages) {
+    Fixture f; REQUIRE(resize(2 * mib).rc == k::kOk);
+    const uint64_t dst = mem::kStackBase;
+    const auto alias = mem::heap_alias(0, 0x10000); REQUIRE(alias != 0);
+    CHECK_EQ(call(4, dst, heap + page, page).rc, k::kInvalidMemoryState);
+    REQUIRE(mem::heap_alias_unmap(alias));
+    auto* imported = mem::heap_private_view(0, 0x10000); REQUIRE(imported != nullptr);
+    CHECK_EQ(call(4, dst, heap + page, page).rc, k::kInvalidMemoryState);
+    REQUIRE(mem::heap_private_view_unmap(imported));
+    REQUIRE(call(4, dst, heap + page, page).rc == k::kOk);
+    CHECK_EQ(mem::heap_alias(0, 0x10000), 0u); CHECK(mem::heap_private_view(0, 0x10000) == nullptr);
+    CHECK(!mem::heap_decommit(0, 0x10000)); CHECK(!mem::heap_commit(0, 0x10000));
+    CHECK(!mem::protect(heap, 0x10000, mem::Prot::RW));
+    REQUIRE(call(5, dst, heap + page, page).rc == k::kOk);
+    const auto restored = mem::heap_alias(0, 0x10000); REQUIRE(restored != 0);
+    REQUIRE(mem::heap_alias_unmap(restored));
+}
+NXTEST(stack_mapping_prevents_replacement_and_module_release_until_unmapped) {
+    Fixture f; f.module(); const uint64_t dst = mem::kStackBase;
+    REQUIRE(call(4, dst, image, page).rc == k::kOk);
+    CHECK_EQ(call(4, dst + page, image, page).rc, k::kInvalidMemoryState);
+    CHECK_EQ(call(4, dst, image + page, page).rc, k::kInvalidMemoryState);
+    CHECK(!mem::release_fixed(image)); CHECK(!mem::decommit(dst, page)); CHECK(!mem::commit(image, page));
+    REQUIRE(call(5, dst, image, page).rc == k::kOk);
+    CHECK(mem::release_fixed(image));
+}
+NXTEST(stack_mapping_rolls_back_both_permission_failure_points) {
+    for (unsigned fault : {1u, 2u}) {
+        Fixture f; f.module(); const uint64_t dst = mem::kStackBase;
+        wr64(image, 91); test_fail_protect = fault;
+        CHECK_EQ(call(4, dst, image, 0x4000).rc, k::kInvalidMemoryState);
+        CHECK_EQ(test_fail_protect.load(), 0u);
+        CHECK_EQ(rd64(image), 91u); CHECK_EQ(f.query(image).attr, 0u); CHECK_EQ(f.query(image).perm, 3u);
+        CHECK_EQ(f.query(dst).state, mem::kMemFree); CHECK(!mem::is_mapped(dst, page));
+        REQUIRE(call(4, dst, image, 0x4000).rc == k::kOk);
+        REQUIRE(call(5, dst, image, 0x4000).rc == k::kOk);
+    }
+}
+NXTEST(stack_unmapping_rolls_back_both_permission_failure_points) {
+    for (unsigned fault : {1u, 2u}) {
+        Fixture f; f.module(); const uint64_t dst = mem::kStackBase;
+        REQUIRE(call(4, dst, image, 0x4000).rc == k::kOk); wr64(dst, 92);
+        test_fail_protect = fault;
+        CHECK_EQ(call(5, dst, image, 0x4000).rc, k::kInvalidMemoryState);
+        CHECK_EQ(test_fail_protect.load(), 0u);
+        CHECK_EQ(rd64(dst), 92u); CHECK_EQ(f.query(image).attr, 1u); CHECK_EQ(f.query(image).perm, 0u);
+        CHECK_EQ(f.query(dst).state, mem::kMemStack); CHECK(!mem::is_mapped(image, page));
+        REQUIRE(call(5, dst, image, 0x4000).rc == k::kOk); CHECK_EQ(rd64(image), 92u);
+    }
+}
+NXTEST(stack_mapping_crosses_backing_blocks_with_different_subpage_offsets) {
+    Fixture f; REQUIRE(resize(4 * mib).rc == k::kOk);
+    const uint64_t src = heap + 2 * mib - page, dst = mem::kStackBase + 2 * mib - 2 * page;
+    wr64(src, 101); wr64(src + 2 * page, 103);
+    REQUIRE(call(4, dst, src, 3 * page).rc == k::kOk);
+    CHECK_EQ(rd64(dst), 101u); CHECK_EQ(rd64(dst + 2 * page), 103u);
+    wr64(dst + page, 102);
+    REQUIRE(call(5, dst, src, 3 * page).rc == k::kOk);
+    CHECK_EQ(rd64(src + page), 102u);
+}

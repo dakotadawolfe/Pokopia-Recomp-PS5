@@ -305,7 +305,7 @@ void set_memory_permission(::Ctx* c) {
     mem::VmInfo before;
     const bool uniform = uniform_memory(addr, size, before);
     const bool reprotected = before.state == mem::kMemHeap || before.state == mem::kMemCodeData || before.state == 0x09;
-    if (!inside || !uniform || !reprotected || overlaps_perm_locked(addr, size)) {
+    if (!inside || !uniform || !reprotected || overlaps_perm_locked(addr, size) || mem::stack_source_locked(addr, size)) {
 #endif
         fail(c, "SetMemoryPermission", kernel::kInvalidMemoryState, addr, size, perm);
         return;
@@ -348,7 +348,7 @@ void set_memory_attribute(::Ctx* c) {
 #ifndef _WIN32
     std::lock_guard lk(g_mu);
     mem::VmInfo before;
-    if (!uniform_memory(addr, size, before)) {
+    if (!uniform_memory(addr, size, before) || mem::stack_source_locked(addr, size)) {
         fail(c, "SetMemoryAttribute (range)", kernel::kInvalidMemoryState, addr, size, mask);
         return;
     }
@@ -497,6 +497,40 @@ void unmap_memory(::Ctx* c) {
     fail(c, "UnmapMemory (no such mapping)", kernel::kInvalidMemoryState, dst, src, size);
 }
 
+#else
+void stack_memory(::Ctx* c, bool unmap) {
+    const uint64_t dst = reg(c, 0), src = reg(c, 1), size = reg(c, 2);
+    const char* name = unmap ? "UnmapMemory" : "MapMemory";
+    if ((dst | src) & kPageMask) { fail(c, name, kernel::kInvalidAddress, dst, src, size); return; }
+    if (!size || (size & kPageMask)) { fail(c, name, kernel::kInvalidSize, dst, src, size); return; }
+    if (src + size <= src || dst + size <= dst) { fail(c, name, kernel::kInvalidMemoryState, dst, src, size); return; }
+    if (!in_stack(dst, size)) { fail(c, name, kernel::kInvalidMemoryRegion, dst, src, size); return; }
+    std::lock_guard lock(g_mu);
+    mem::VmInfo source, target;
+    if (!uniform_memory(src, size, source) ||
+        (source.state != mem::kMemHeap && source.state != mem::kMemCodeData && source.state != 0x09) ||
+        source.perm != (unmap ? 0u : kPermRW) || overlaps_perm_locked(src, size)) {
+        fail(c, name, kernel::kInvalidMemoryState, dst, src, size); return;
+    }
+    if (unmap) {
+        if (!uniform_memory(dst, size, target) || target.state != mem::kMemStack || target.perm != kPermRW ||
+            !mem::stack_unmap(dst, src, size)) {
+            fail(c, name, kernel::kInvalidMemoryState, dst, src, size); return;
+        }
+    } else {
+        const auto free = mem::vm_query(dst);
+        if (free.state != mem::kMemFree || free.addr + free.size < dst + size || mem::stack_source_locked(src, size)) {
+            fail(c, name, kernel::kInvalidMemoryState, dst, src, size); return;
+        }
+        if (!mem::stack_map(dst, src, size, source.state)) {
+            fail(c, name, kernel::kInvalidMemoryState, dst, src, size); return;
+        }
+    }
+    svc_ret(c, kernel::kOk);
+}
+void map_memory(::Ctx* c) { stack_memory(c, false); }
+void unmap_memory(::Ctx* c) { stack_memory(c, true); }
+
 #endif
 
 // ---- QueryMemory (0x06) ------------------------------------------------------------------------------------------------------
@@ -548,6 +582,7 @@ void query_memory(::Ctx* c) {
         info.base_address = begin; info.size = end - begin;
     }
 #ifndef _WIN32
+    if (mem::stack_source_locked(addr, 1)) info.attribute |= 1; // Locked while its stack view owns the bytes.
     if (vi.state == mem::kMemInaccessible && vi.size == 0) info.size = 0 - vi.addr;
 #endif
     std::memcpy(reinterpret_cast<void*>(out), &info, sizeof info);
@@ -898,11 +933,11 @@ void svc_register_memory_group() {
     svc_register(0x01, set_heap_size);
     svc_register(0x02, set_memory_permission);
     svc_register(0x03, set_memory_attribute);
+    svc_register(0x04, map_memory);
+    svc_register(0x05, unmap_memory);
     svc_register(0x06, query_memory);
 #ifdef _WIN32
     svc_register(0x80, set_gpu_memory_attribute);
-    svc_register(0x04, map_memory);
-    svc_register(0x05, unmap_memory);
     svc_register(0x13, map_shared_memory);
     svc_register(0x14, unmap_shared_memory);
     svc_register(0x15, create_transfer_memory);
@@ -926,6 +961,8 @@ void svc_memory_reset_for_tests() {
     for (auto& kv : g_phys) VirtualFree(reinterpret_cast<void*>(kv.first), 0, MEM_RELEASE);
     g_phys.clear();
     g_maps.clear();
+#else
+    mem::stack_reset_for_tests();
 #endif
     g_perm_locked.clear();
     g_heap_cur = 0;

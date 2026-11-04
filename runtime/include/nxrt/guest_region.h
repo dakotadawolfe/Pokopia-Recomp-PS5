@@ -21,6 +21,7 @@ public:
     bool protect(uint64_t address, uint64_t size, Prot protection);
     bool is_mapped(uint64_t address, uint64_t size) const;
     bool is_committed(uint64_t address, uint64_t size) const;
+    std::unique_ptr<ps5_vm::CopyView> copy_view(uint64_t address, uint64_t size);
     uint64_t committed_bytes() const;
     uint64_t backed_bytes() const;
     // Stop guest accesses before release/destruction. Failed release keeps

@@ -237,6 +237,31 @@ uint64_t SharedHeap::view_end(uint64_t address) const {
     return view ? view->base + view->size : 0;
 }
 
+std::unique_ptr<ps5_vm::CopyView> SharedHeap::copy_view(uint64_t address, uint64_t bytes) {
+    std::lock_guard lock(mutex_);
+    if (!primary_ || address < primary_->base) return {};
+    const uint64_t offset = address - primary_->base;
+    uint64_t first, end;
+    if (!bytes || !span(offset, bytes, size_, first, end)) return {};
+    for (uint64_t page = first; page < end; ++page) if (!active_[page]) return {};
+    for (const auto* views : {&aliases_, &private_})
+        for (const auto& [at, view] : *views) {
+            (void)at;
+            if (offset < view->offset + view->size && view->offset < offset + bytes) return {};
+        }
+    const uint64_t begin = offset & ~(host_page - 1), stop = up(offset + bytes, host_page);
+    auto mapping = ps5_vm::Reservation::reserve(stop - begin);
+    if (!mapping) return {};
+    for (uint64_t at = begin; at < stop;) {
+        const auto& block = blocks_[at / block_size];
+        if (!block) return {};
+        const uint64_t count = std::min(stop - at, block->size - at % block_size);
+        if (!mapping.map(at - begin, block->memory, at % block_size, count, host_vm::Access::ReadWrite)) return {};
+        at += count;
+    }
+    return std::make_unique<ps5_vm::CopyView>(ps5_vm::CopyView{std::move(mapping), offset - begin});
+}
+
 uint64_t SharedHeap::alias(uint64_t offset, uint64_t bytes, uint64_t at, Prot protection) {
     std::lock_guard lock(mutex_);
     const unsigned access = bits(protection);

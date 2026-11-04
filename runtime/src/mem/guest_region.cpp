@@ -128,6 +128,26 @@ bool GuestRegion::protect(uint64_t address, uint64_t size, Prot protection) {
     return permissions_->protect(base_ + first * kPage, (end - first) * kPage, bits);
 }
 
+std::unique_ptr<ps5_vm::CopyView> GuestRegion::copy_view(uint64_t address, uint64_t size) {
+    std::lock_guard lock(mutex_);
+    uint64_t first, end;
+    if (!size || !span(address, size, first, end)) return {};
+    for (uint64_t page = first; page < end; ++page) if (!committed_pages_[page]) return {};
+    const uint64_t begin = (address - base_) & ~(host_page - 1);
+    const uint64_t stop = round_up(address - base_ + size, host_page);
+    auto mapping = ps5_vm::Reservation::reserve(stop - begin);
+    if (!mapping) return {};
+    for (uint64_t at = begin; at < stop;) {
+        const size_t index = at / block_size;
+        const auto& block = blocks_[index];
+        if (!block) return {};
+        const uint64_t bytes = std::min(stop - at, block->size - at % block_size);
+        if (!mapping.map(at - begin, block->memory, at % block_size, bytes, host_vm::Access::ReadWrite)) return {};
+        at += bytes;
+    }
+    return std::make_unique<ps5_vm::CopyView>(ps5_vm::CopyView{std::move(mapping), address - base_ - begin});
+}
+
 bool GuestRegion::decommit(uint64_t address, uint64_t size) {
     std::lock_guard lock(mutex_);
     uint64_t first, end;
