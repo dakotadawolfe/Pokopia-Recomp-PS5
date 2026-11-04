@@ -1,4 +1,14 @@
-# Pokopia Recomp
+# Pokopia Recomp for PS5
+
+Native PS5 port in development, based on drakolordx7's Pokopia recompilation.
+The current milestone is decrypted-input validation and platform bring-up.
+There is no playable PS5 build yet.
+
+See [the PS5 project scope and current status](ps5/README.md). Builds run locally,
+using an existing decrypted game dump. The PS5 application will use a fixed
+graphics profile and expose controller, audio and save options.
+
+## Upstream Windows project
 
 Pokémon Pokopia (Switch 2) recompiled to run natively on Windows.
 
