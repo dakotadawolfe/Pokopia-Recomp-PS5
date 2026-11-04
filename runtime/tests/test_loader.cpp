@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Loader tests on the synthetic AArch64 ELF fixture (tests/data/fixture_aarch64.elf, facts in tests/data/fixture_info.txt).
+#ifdef NXRT_TEST_PS5
+#include "nxrecomp/ctx.h"
+#include "protect_fault.h"
+#include <csignal>
+#include <csetjmp>
+#include <cstdlib>
+#else
 #include <windows.h>
+#endif
 
 #include <cstring>
 #include <fstream>
@@ -44,11 +52,35 @@ void reset() {
 }
 
 uint64_t peek64(uint64_t a) { return *reinterpret_cast<uint64_t*>(a); }
+#ifdef NXRT_TEST_PS5
+sigjmp_buf write_return;
+volatile sig_atomic_t expecting_write_fault = 0;
+void write_fault(int signal) {
+    if (expecting_write_fault) siglongjmp(write_return, 1);
+    _Exit(128 + signal);
+}
+bool writable(uint64_t address) {
+    struct sigaction action{}, old_segv{}, old_bus{};
+    action.sa_handler = write_fault; sigemptyset(&action.sa_mask);
+    if (sigaction(SIGSEGV, &action, &old_segv) != 0) std::abort();
+    if (sigaction(SIGBUS, &action, &old_bus) != 0) std::abort();
+    volatile bool result = false;
+    if (!sigsetjmp(write_return, 1)) {
+        expecting_write_fault = 1;
+        wr8(address, rd8(address));
+        result = true;
+    }
+    expecting_write_fault = 0;
+    sigaction(SIGBUS, &old_bus, nullptr); sigaction(SIGSEGV, &old_segv, nullptr);
+    return result;
+}
+#else
 uint32_t page_protect(uint64_t a) {
     MEMORY_BASIC_INFORMATION mbi{};
     VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi);
     return mbi.Protect;
 }
+#endif
 
 Module* load_linked(const char* path = kFull) {
     module_provide_data("hle_data_import", reinterpret_cast<uint64_t>(&g_host_data));
@@ -62,6 +94,7 @@ Module* load_linked(const char* path = kFull) {
 
 std::vector<uint8_t> read_file(const char* p) {
     std::ifstream f(p, std::ios::binary | std::ios::ate);
+    if (!f || f.tellg() <= 0) return {};
     std::vector<uint8_t> v(static_cast<size_t>(f.tellg()));
     f.seekg(0);
     f.read(reinterpret_cast<char*>(v.data()), static_cast<std::streamsize>(v.size()));
@@ -219,10 +252,21 @@ NXTEST(segment_protections) {
     Module* m = load_linked();
     REQUIRE(m);
     const uint64_t b = m->base();
+#ifdef NXRT_TEST_PS5
+    CHECK(!writable(b));
+    CHECK(!writable(b + 0x2000));
+    CHECK(!writable(b + 0x4000));
+    CHECK(writable(b + 0x5000));
+    CHECK_EQ(mem::vm_query(b).perm, 1u);
+    CHECK_EQ(mem::vm_query(b + 0x2000).perm, 5u); // ARM text is host-readable, not executed directly.
+    CHECK_EQ(mem::vm_query(b + 0x4000).perm, 1u);
+    CHECK_EQ(mem::vm_query(b + 0x5000).perm, 3u);
+#else
     CHECK_EQ(page_protect(b + 0x0), (uint32_t)PAGE_READONLY);          // headers / rodata
     CHECK_EQ(page_protect(b + 0x2000), (uint32_t)PAGE_EXECUTE_READ);   // text
     CHECK_EQ(page_protect(b + 0x4000), (uint32_t)PAGE_READONLY);       // RELRO, read-only once relocated
     CHECK_EQ(page_protect(b + 0x5000), (uint32_t)PAGE_READWRITE);      // data + bss
+#endif
     mem::VmInfo v = mem::vm_query(b + 0x2000);
     CHECK_EQ(v.state, (uint32_t)mem::kMemCode);
     CHECK_EQ(mem::vm_query(b + 0x5000).state, (uint32_t)mem::kMemCodeData);
@@ -243,6 +287,30 @@ NXTEST(tls_segment_and_tprel) {
     CHECK_EQ(module_tls_template().mem_size, 0x40u);
     reset();
 }
+
+#ifdef NXRT_TEST_PS5
+NXTEST(native_protection_failure_does_not_mark_a_module_linked) {
+    reset();
+    struct Cleanup { ~Cleanup() { test_fail_protect = 0; reset(); } } cleanup;
+    Module* m = module_load_file(kFull);
+    REQUIRE(m);
+    // The fixture needs one native page change; its remaining 4 KiB policies
+    // share writable 16 KiB host pages and need no additional mprotect call.
+    test_fail_protect = 1;
+    CHECK(!module_link_all());
+    CHECK_EQ(test_fail_protect.load(), 0u);
+    CHECK(!m->linked());
+    test_fail_protect = 0;
+    // A failed link may have relocated slots or protected earlier runs. Unload
+    // the failed image before loading it again; never execute the partial image.
+    modules_unload_all();
+    CHECK(mem::reserve_fixed(mem::kMainBase, mem::kAllocGranularity, "loader rollback"));
+    CHECK(mem::release_fixed(mem::kMainBase));
+    m = load_linked();
+    REQUIRE(m);
+    CHECK(m->linked());
+}
+#endif
 
 NXTEST(image_without_section_headers) {
     reset();

@@ -117,6 +117,8 @@ The core library contains dispatch, the generated-code ABI,
 module registration, hooks, NSO loading and linking. Guest threads, services,
 guest exceptions, write tracking and rendering still need platform integration
 before the core can run the game.
+The optional Windows frame recorder and stack sampler are disabled in the PS5
+core build; ordinary HLE call logging remains available.
 
 The platform check runs 57 cases on the host: 17 upstream cases for mutexes,
 condition variables, events and semaphores, 23 upstream cases for logging and
@@ -245,10 +247,10 @@ tested allocation size in that context, not a full game memory budget.
 
 Runtime/HLE buffer accesses still need permission checks and write tracking.
 Guard overhead has not been measured in Pokopia. The loader propagates a failed
-protection operation instead of marking a module linked; that error path still
-needs its native loader integration test.
+protection operation instead of marking a module linked; the payload loader
+suite below now exercises that path against the native memory backend.
 
-Next: exercise the loader against this memory backend, port write tracking,
+Next: validate the game's NSO images against the loader, port write tracking,
 and partition the RADV
 address arena before initializing graphics. The existing RADV arena spans
 `0x4000000000` through `0x8000000000` and overlaps the lifted game layout.
@@ -260,8 +262,8 @@ The runtime suite also builds as the native title **Pokopia Runtime Tests**,
 `PPSA98731`. This is an application-process check before game integration. It
 contains original ARM fixtures and runtime tests, with no Pokopia code or assets.
 It uses the native application CRT, kernel provider, C++ libraries and companion
-`libc.prx`, rather than the payload CRT. Its 102 cases comprise 66 platform cases,
-six thread-lifetime/exception cases and 30 memory API cases.
+`libc.prx`, rather than the payload CRT. Its 118 cases comprise 66 platform cases,
+six thread-lifetime/exception cases, 30 memory API cases and 16 loader cases.
 
 The app supplies C++ thread-local destructor registration and wraps statically
 linked `pthread_create` calls. Worker cleanup handlers drain C++ destructors before
@@ -300,7 +302,7 @@ its [scan API](https://github.com/drakmor/ShadowMountPlus/blob/1.7/docs/api.md).
 Launch **Pokopia Runtime Tests** from the PS5 home screen. This headless suite
 normally displays a blank screen while running and exits when finished. It writes
 `/data/pokopia-recomp/tests/app-platform-<time>-<pid>.log`, containing
-`context=native-app title=PPSA98731`. Only a complete report with 102 cases and
+`context=native-app title=PPSA98731`. Only a complete report with 118 cases and
 zero failures, together with a clean application exit, establishes success. Registration,
 FSELF inspection and payload-suite results do not establish application runtime
 behavior. Native game boot and gameplay remain separate checks.
@@ -324,9 +326,37 @@ report and recorded main status. Resources that require orderly application
 shutdown must be closed before returning from main; shell closure does not run
 the CRT's global finalizers.
 
-The shutdown candidate was locally built, inspected, installed and readback-verified;
-its native retry is pending. Executable SHA-256:
+The shutdown build passed on the console: report
+`app-platform-1793770766-128.log` contains **102 cases, zero failures**, followed
+by `main returned status=0`. ShadowMountPlus recorded the process closing without
+a game-error event, and the user confirmed a clean return home. Executable SHA-256:
 `72cd362dc21be414345ecafb783be3bc8483b835639e944969c05f2e62f0c552`.
+
+## Loader integration checks
+
+`ps5_loader_tests` runs the 15 upstream loader cases plus a native protection
+failure case against the PS5 memory backend. The fixtures are original AArch64
+ELFs tracked under `runtime/tests/data`, with source and rebuild commands under
+`runtime/tests/fixture`. They test mapping, symbols, RELA/RELR relocations,
+import resolution, dispatch, initialization/finalization, TLS templates and
+malformed headers. PS5 permission checks attempt real checked guest writes and
+verify Horizon permission metadata, preserving the distinction between guest
+ARM text and host-executable x86 code.
+
+The protection-failure case verifies that a failed operation leaves the module
+unlinked, that unloading releases its reservation, and that a fresh load works.
+A partially linked image must be unloaded before retry; it must not execute.
+
+On 2026-11-03, the payload suite passed **16 cases, zero failures** and exited.
+Report: `loader-runtime-1793771058-133.log`; ELF SHA-256:
+`47db2bae63420b91a99fe4ae58dcb5700aa05ef3a859c5d2b8bb0d44d2e08d45`.
+For a payload run, copy the three `fixture_*.elf` files to
+`/data/pokopia-recomp/tests/loader-data`; the native app packages them under
+`tests/data` and reads them from `/app0`. Neither test uses game files.
+
+The combined 118-case native app has been built locally and installed with every
+packaged file readback-verified. Its native retry is pending. Executable SHA-256:
+`812ca41be16544a750f31211c3995ffe3a411f5c7bb18259604f5aa598edbba3`.
 
 ## Repository ownership
 

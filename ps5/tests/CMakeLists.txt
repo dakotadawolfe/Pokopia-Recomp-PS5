@@ -35,12 +35,20 @@ if(PS5)
     target_link_libraries(ps5_shared_heap_tests PRIVATE nxrt_ps5_platform)
     target_link_options(ps5_shared_heap_tests PRIVATE
         "LINKER:--wrap,sceKernelMapDirectMemory" "LINKER:--wrap,mprotect")
-    add_executable(ps5_memory_api_tests sync_main.cpp test_memory_ps5.cpp "${root}/runtime/tests/test_memory.cpp")
+    add_executable(ps5_memory_api_tests sync_main.cpp test_memory_ps5.cpp protect_fault.cpp "${root}/runtime/tests/test_memory.cpp")
     target_include_directories(ps5_memory_api_tests PRIVATE "${root}/runtime/tests")
     target_compile_definitions(ps5_memory_api_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_MEMORY_API=1)
     target_compile_options(ps5_memory_api_tests PRIVATE -Wall -Wextra -Werror -mcx16)
     target_link_libraries(ps5_memory_api_tests PRIVATE nxrt_ps5_platform)
     target_link_options(ps5_memory_api_tests PRIVATE "LINKER:--wrap,mprotect")
+    add_executable(ps5_loader_tests sync_main.cpp protect_fault.cpp "${root}/runtime/tests/test_loader.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/../app/thread_exit.cpp")
+    target_include_directories(ps5_loader_tests PRIVATE "${root}/runtime/tests" "${CMAKE_CURRENT_LIST_DIR}")
+    target_compile_definitions(ps5_loader_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_LOADER=1
+        NXRT_TEST_DATA_DIR="/data/pokopia-recomp/tests/loader-data")
+    target_compile_options(ps5_loader_tests PRIVATE -Wall -Wextra -Werror -mcx16)
+    target_link_libraries(ps5_loader_tests PRIVATE nxrt_ps5_core)
+    target_link_options(ps5_loader_tests PRIVATE "LINKER:--wrap,mprotect" "LINKER:--wrap,pthread_create")
 endif()
 
 option(PKP_BUILD_NATIVE_APP "Build the runtime suite as a native application" OFF)
@@ -54,11 +62,13 @@ if(PKP_BUILD_NATIVE_APP)
     add_executable(ps5_runtime_app ${platform_test_sources} test_guest_region.cpp
         test_app_runtime.cpp "${native}/app_crt.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/runtime.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/../app/thread_exit.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/lifecycle.cpp"
-        test_memory_ps5.cpp "${root}/runtime/tests/test_memory.cpp")
+        test_memory_ps5.cpp protect_fault.cpp "${root}/runtime/tests/test_memory.cpp"
+        "${root}/runtime/tests/test_loader.cpp")
     set_property(TARGET ps5_runtime_app PROPERTY SKIP_BUILD_RPATH TRUE)
-    target_include_directories(ps5_runtime_app PRIVATE "${root}/runtime/include" "${root}/runtime/tests")
+    target_include_directories(ps5_runtime_app PRIVATE "${root}/runtime/include" "${root}/runtime/tests" "${CMAKE_CURRENT_LIST_DIR}")
     target_compile_options(ps5_runtime_app PRIVATE -Wall -Wextra -Werror -mcx16)
-    target_compile_definitions(ps5_runtime_app PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_NATIVE_APP=1)
+    target_compile_definitions(ps5_runtime_app PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_NATIVE_APP=1
+        NXRT_TEST_DATA_DIR="/app0/tests/data")
     target_link_options(ps5_runtime_app PRIVATE -nostartfiles -nodefaultlibs
         "LINKER:-T,${native}/ps5-pie.ld" "LINKER:-T,${CMAKE_CURRENT_LIST_DIR}/../app/unwind.ld"
         "LINKER:--version-script,${CMAKE_CURRENT_LIST_DIR}/../app/exports.map"

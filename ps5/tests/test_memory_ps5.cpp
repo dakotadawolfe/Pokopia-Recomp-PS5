@@ -4,6 +4,7 @@
 #include "nxrt/guest_region.h"
 #include "nxrt/subpage.h"
 #include "nxrecomp/ctx.h"
+#include "protect_fault.h"
 #include <atomic>
 #include <cerrno>
 #include <mutex>
@@ -14,15 +15,7 @@ NXTEST_GROUP(memory_ps5)
 namespace {
 namespace mem = nxrt::mem;
 constexpr uint64_t base = mem::kMainBase, granule = mem::kAllocGranularity;
-std::atomic<unsigned> fail_protect{0};
-struct Reset { Reset() { mem::shutdown(); } ~Reset() { fail_protect = 0; mem::shutdown(); } };
-}
-extern "C" int __real_mprotect(void*, size_t, int);
-extern "C" int __wrap_mprotect(void* address, size_t size, int protection) {
-    unsigned value = fail_protect.load();
-    while (value && !fail_protect.compare_exchange_weak(value, value - 1)) {}
-    if (value == 1) { errno = ENOMEM; return -1; }
-    return __real_mprotect(address, size, protection);
+struct Reset { Reset() { mem::shutdown(); } ~Reset() { test_fail_protect = 0; mem::shutdown(); } };
 }
 
 NXTEST(failed_init_keeps_foreign_reservation_and_releases_its_stack) {
@@ -45,9 +38,9 @@ NXTEST(cross_reservation_protect_preflights_and_rolls_back_native_failure) {
     CHECK(mem::SubpageMap::allows(base, granule, 3)); CHECK_EQ(rd32(base), uint32_t{73});
     REQUIRE(mem::commit(base + granule, granule)); wr32(base + granule, 84);
     REQUIRE(mem::protect(base, granule, mem::Prot::R));
-    fail_protect = 2;
+    test_fail_protect = 2;
     CHECK(!mem::protect(base, 2 * granule, mem::Prot::None));
-    CHECK_EQ(fail_protect.load(), 0u);
+    CHECK_EQ(test_fail_protect.load(), 0u);
     CHECK(mem::SubpageMap::allows(base, granule, 1)); CHECK(!mem::SubpageMap::allows(base, granule, 3));
     CHECK(mem::SubpageMap::allows(base + granule, granule, 3));
     CHECK_EQ(rd32(base), uint32_t{73}); CHECK_EQ(rd32(base + granule), uint32_t{84});

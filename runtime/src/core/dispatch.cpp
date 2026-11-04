@@ -17,7 +17,9 @@
 #include <unordered_map>
 #include <vector>
 
+#ifndef NXRT_DISABLE_FRAME_TRACE
 #include "nxrt/ftrace.h"
+#endif
 #include "nxrt/config.h"
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
@@ -327,6 +329,7 @@ void dispatch_call(::Ctx* c, uint64_t addr) {
             for (int i = 0; i < 4; i++) targs[i] = reg(c, i);
         }
         if (t.fn) {
+#ifndef NXRT_DISABLE_FRAME_TRACE
             if (ft::on()) {
                 const uint64_t t0 = ft::now_ns();
                 t.fn(c);
@@ -337,8 +340,11 @@ void dispatch_call(::Ctx* c, uint64_t addr) {
                     ft::event(static_cast<uint16_t>(z), t0, t1, 0);
                 }
             } else {
+#endif
                 t.fn(c);
+#ifndef NXRT_DISABLE_FRAME_TRACE
             }
+#endif
         } else {
             // No handler: the console would fault on an unresolved import. A silent 0 is a fake answer, so say so (every
             // call up to 20, then every 1000th) and return 0.

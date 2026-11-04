@@ -50,6 +50,8 @@ def main():
               "licenses/runtime-toolchain-GPL-3.0.txt": args.template / "LICENSE"}
     for name in ("icon0.png", "pic0.dds", "pic1.dds", "snd0.at9"):
         copies["sce_sys/" + name] = args.template / "sce_sys" / name
+    for name in ("fixture_aarch64.elf", "fixture_nosections.elf", "fixture_relr.elf"):
+        copies["tests/data/" + name] = ROOT / "runtime/tests/data" / name
     expected = set(copies) | {"eboot.bin", ".pokopia-runtime-test"}
     marker = app / ".pokopia-runtime-test"
     if app.exists():
@@ -72,7 +74,7 @@ def main():
         raise ValueError("Unexpected test app identity")
     with (args.build / "fself-inspection.txt").open("w") as output:
         subprocess.run([str(args.tool), "self", "--inspect", "--file", str(app / "eboot.bin")], stdout=output, check=True)
-    manifest = {"title_id": TITLE, "expected_cases": 102, "context": "native-app",
+    manifest = {"title_id": TITLE, "expected_cases": 118, "context": "native-app",
                 "gameplay_verified": False,
                 "toolchain_revision": subprocess.check_output(["git", "-C", str(args.template), "rev-parse", "HEAD"], text=True).strip(),
                 "files": {name: {"bytes": (app / name).stat().st_size, "sha256": sha(app / name)} for name in sorted(expected)}}
