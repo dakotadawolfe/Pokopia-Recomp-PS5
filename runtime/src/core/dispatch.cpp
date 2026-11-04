@@ -3,7 +3,10 @@
 // SuperMarioWonderRecomp runtime/src/loader.cpp (thunks, logging stub for unknown imports).
 #include "nxrt/dispatch.h"
 
+#include <cstdlib>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -278,8 +281,12 @@ void host_callback_restore(uint32_t flags) { t_host_cb_flags = flags; }
 void trap(const char* what, uint64_t addr) {
     NXLOG_E("guest", "GUEST TRAP: %s (0x%llx)", what, static_cast<unsigned long long>(addr));
     log_flush();
+#ifdef _WIN32
     RaiseException(0xE0000001, EXCEPTION_NONCONTINUABLE, 0, nullptr);
     TerminateProcess(GetCurrentProcess(), 2);
+#else
+    std::abort();
+#endif
     for (;;) {}
 }
 

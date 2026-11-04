@@ -62,7 +62,8 @@ Validated locally on 2026-11-03:
 ## Bring-up milestones
 
 1. Validate the decrypted inputs and establish reproducible local preparation.
-   Module hashes are verified; game lifting and asset preparation remain.
+   Module hashes are verified and all four game modules have been lifted.
+   Asset preparation and full game linking remain.
 2. Port memory reservations, aliases, protection and fault handling. Coordinate
    guest addresses with the PS5 GPU allocator before combining the runtimes.
 3. Port thread, synchronization, filesystem and exception services, and exercise
@@ -77,6 +78,51 @@ matched its results on a PC and linked it into a PS5 ELF. It did not execute
 Pokopia or run on console. The detailed
 [portability audit](https://github.com/dakotadawolfe/EglantinePS5/blob/44e3f3e/docs/POKOPIA_RECOMP_PS5.md)
 and reproducible test are retained in the existing emulator project.
+
+## Local native build
+
+Install the PS5 payload SDK, LLVM 18, CMake, Ninja and a Python environment with
+`recomp/requirements.txt`. Set `PS5_PAYLOAD_SDK` to the SDK root and `NX_PYTHON`
+to that Python executable. On Linux/WSL, from this checkout:
+
+```sh
+export LLVM_CONFIG=/usr/bin/llvm-config-18
+bash ps5/build_modules.sh /path/to/decrypted/Pokopia /path/to/private/build/modules
+bash ps5/check_platform.sh /path/to/private/build
+```
+
+`BUILD_JOBS` limits compiler concurrency and defaults to four. The build writes
+all generated game code and archives under the supplied private build directory.
+It reads the original dump without copying or changing it. The module bases,
+hook sites, floating-point contraction setting and generated-code optimization
+level match upstream. Their runtime memory layout remains to be implemented.
+
+The component target produces `libpkp_main.a`, `libpkp_sdk.a`,
+`libpkp_subsdk0.a`, `libpkp_rtld.a`, `libnxrt_ps5_platform.a` and
+`libnxrt_ps5_core.a`. These are link inputs, not a finished game executable.
+The platform library contains synchronization, logging, configuration and the
+gauge registry. The core library contains dispatch, the generated-code ABI,
+module registration, hooks, NSO loading and linking. Memory, guest threads,
+services, exceptions and rendering still need platform implementations before
+the core can run the game.
+
+The platform check runs 40 existing upstream cases on the host: 17 for mutexes,
+condition variables, events and semaphores, and 23 for logging and configuration.
+The same test program also links with the PS5 SDK. Its PS5 build writes a report
+to `/data/pokopia-recomp/tests/platform-<time>-<pid>.log`; individual temporary
+test files are removed by the tests. Windows retains its native synchronization
+primitives; the PS5 backend uses the target C++ threading runtime and a monotonic
+clock. Host success does not prove the PS5 backend's runtime behavior.
+
+The lifted output currently contains 200,586 function entries across 280
+translation units, with no emitted `guest_unimpl` calls in those units. This
+checks translation coverage of the discovered functions, not execution or
+complete discovery of every possible runtime code path.
+
+On 2026-11-03 all four game archives and both runtime component archives built
+locally with the PS5 SDK. The 40 host platform cases passed, and the PS5 version
+of that suite linked successfully. Console execution and game boot remain
+unverified.
 
 ## Repository ownership
 

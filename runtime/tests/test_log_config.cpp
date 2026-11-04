@@ -5,7 +5,11 @@
 #include "nxrt/config.h"
 #include "nxrt/log.h"
 
-#include <windows.h>
+#include "nxrt/host_sync.h"
+#include <cstdlib>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #include <cstdint>
 #include <cstdio>
@@ -37,12 +41,21 @@ struct SinkGuard {
     ~SinkGuard() { log_set_sink(nullptr, nullptr); }
 };
 
+void set_env(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    if (*value) setenv(name, value, 1);
+    else unsetenv(name);
+#endif
+}
+
 // Environment variables the module reads. An empty value removes the variable on Windows.
 void clear_env() {
-    _putenv_s("NXRT_LOG", "");
-    _putenv_s("NXRT_LOG_LEVEL", "");
-    _putenv_s("NXRT_LOG_PATH", "");
-    _putenv_s("NXRT_DIAG_WATCHDOG_SECONDS", "");
+    set_env("NXRT_LOG", "");
+    set_env("NXRT_LOG_LEVEL", "");
+    set_env("NXRT_LOG_PATH", "");
+    set_env("NXRT_DIAG_WATCHDOG_SECONDS", "");
 }
 
 // Log to nothing but the sink: no file, no stderr, empty config.
@@ -67,12 +80,20 @@ int count_containing(const std::vector<std::string>& lines, const char* needle) 
 }
 
 std::string temp_path(const char* name) {
+#ifdef _WIN32
     char dir[MAX_PATH];
     DWORD n = GetTempPathA(MAX_PATH, dir);
     if (n == 0 || n >= MAX_PATH) return std::string();
     char buf[MAX_PATH + 128];
     std::snprintf(buf, sizeof buf, "%snxrt_test_%s_%lu.log", dir, name,
                   static_cast<unsigned long>(GetCurrentProcessId()));
+#else
+    const char* directory = std::getenv("NXRT_TEST_TEMP");
+    if (!directory) directory = "/tmp";
+    char buf[4096];
+    std::snprintf(buf, sizeof buf, "%s/nxrt_test_%s_%lu.log", directory, name,
+                  static_cast<unsigned long>(getpid()));
+#endif
     return buf;
 }
 
@@ -137,7 +158,7 @@ NXTEST(log_line_format_via_sink) {
     CHECK(!line.empty() && line[0] == '[');
     CHECK(contains(line, " I t"));
     char tid[32];
-    std::snprintf(tid, sizeof tid, " t%lu ", static_cast<unsigned long>(GetCurrentThreadId()));
+    std::snprintf(tid, sizeof tid, " t%lu ", static_cast<unsigned long>(nxrt::host::thread_id()));
     CHECK(contains(line, tid));
     CHECK(contains(line, " main] kernel: hello 5"));
     CHECK(cap.levels[0] == LogLevel::Info);
@@ -289,17 +310,17 @@ NXTEST(log_prev_rotation_on_second_init) {
 NXTEST(log_env_level_overrides_options) {
     quiet_init(LogLevel::Error);
     CHECK(log_level() == LogLevel::Error);
-    _putenv_s("NXRT_LOG_LEVEL", "debug");
+    set_env("NXRT_LOG_LEVEL", "debug");
     LogOptions o;
     o.path = "";
     o.level = LogLevel::Error;
     o.to_stderr = false;
     log_init(o);
     CHECK(log_level() == LogLevel::Debug);
-    _putenv_s("NXRT_LOG_LEVEL", "4");
+    set_env("NXRT_LOG_LEVEL", "4");
     log_init(o);
     CHECK(log_level() == LogLevel::Trace);
-    _putenv_s("NXRT_LOG_LEVEL", "bogus");  // invalid: the option level is used
+    set_env("NXRT_LOG_LEVEL", "bogus");  // invalid: the option level is used
     log_init(o);
     CHECK(log_level() == LogLevel::Error);
     clear_env();
@@ -311,7 +332,7 @@ NXTEST(log_env_path_overrides_options) {
     remove_log_files(p);
     clear_env();
     config_clear();
-    _putenv_s("NXRT_LOG", p.c_str());
+    set_env("NXRT_LOG", p.c_str());
     LogOptions o;
     o.path = "";  // no file by option; the environment must still win
     o.to_stderr = false;
@@ -415,11 +436,11 @@ NXTEST(config_env_beats_ini_beats_default) {
     config_load_string("[diag]\nwatchdog_seconds = 10\n");
     CHECK(config_get_int("diag", "watchdog_seconds", 99) == 10);
     CHECK(std::string(config_source("diag", "watchdog_seconds")) == "ini");
-    _putenv_s("NXRT_DIAG_WATCHDOG_SECONDS", "30");
+    set_env("NXRT_DIAG_WATCHDOG_SECONDS", "30");
     CHECK(config_get_int("diag", "watchdog_seconds", 99) == 30);
     CHECK(std::string(config_source("diag", "watchdog_seconds")) == "env");
     CHECK(config_has("diag", "watchdog_seconds"));
-    _putenv_s("NXRT_DIAG_WATCHDOG_SECONDS", "");
+    set_env("NXRT_DIAG_WATCHDOG_SECONDS", "");
     CHECK(config_get_int("diag", "watchdog_seconds", 99) == 10);
     CHECK(config_get_int("diag", "missing", 99) == 99);
     CHECK(std::string(config_source("diag", "missing")) == "default");

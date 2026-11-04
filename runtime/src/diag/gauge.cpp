@@ -22,15 +22,6 @@
 namespace nxrt {
 namespace {
 
-struct Registry {
-    std::mutex m;
-    std::map<std::string, std::function<int64_t()>> g;
-};
-Registry& reg() {
-    static Registry* r = new Registry;     // never destroyed: counters in other statics may unregister at exit
-    return *r;
-}
-
 // ---- frame times of the window -------------------------------------------------------------------------------------------
 constexpr size_t kRing = 1 << 16;           // frames kept between two samples (enough for 6,500 fps at a 10 s window)
 std::atomic<uint64_t> g_ring_n{0};
@@ -339,32 +330,6 @@ void run(double interval_s, double t0) {
 }
 
 }  // namespace
-
-void gauge_register(const char* name, std::function<int64_t()> fn) {
-    Registry& r = reg();
-    std::lock_guard<std::mutex> lk(r.m);
-    r.g[name] = std::move(fn);
-}
-
-void gauge_unregister(const char* name) {
-    Registry& r = reg();
-    std::lock_guard<std::mutex> lk(r.m);
-    r.g.erase(name);
-}
-
-std::vector<std::pair<std::string, int64_t>> gauge_read_all() {
-    Registry& r = reg();
-    std::lock_guard<std::mutex> lk(r.m);
-    std::vector<std::pair<std::string, int64_t>> out;
-    out.reserve(r.g.size());
-    for (auto& kv : r.g) out.emplace_back(kv.first, kv.second());
-    return out;
-}
-
-GaugeCounter::GaugeCounter(const char* name) : name_(name) {
-    gauge_register(name, [this] { return get(); });
-}
-GaugeCounter::~GaugeCounter() { gauge_unregister(name_.c_str()); }
 
 void soak_note_frame() {
     const uint64_t n = g_ring_n.load(std::memory_order_relaxed);

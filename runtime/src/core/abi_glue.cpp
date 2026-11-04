@@ -4,7 +4,10 @@
 // to its subsystem: nx_site_inline / nx_site_midhook / nx_hook_entry in hooks.cpp, nx_catch_call in eh/catch_call.cpp, and the
 // registration of the lifted module tables (NxModule) in nxmodule.cpp.
 // Pattern from smo-recomp runtime/core/hostrt.c (host_import with in_import bookkeeping, stx_diag, guest_trap / guest_unimpl).
+#include <cstdlib>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <cstdio>
 #include <mutex>
@@ -53,8 +56,12 @@ void guest_trap(const char* what, uint64_t addr) { nxrt::trap(what, addr); }
 void guest_unimpl(uint64_t pc, uint32_t insn, const char* what) {
     NXLOG_E("guest", "UNTRANSLATED INSTRUCTION at 0x%llx: %08x (%s)", static_cast<unsigned long long>(pc), insn, what);
     nxrt::log_flush();
+#ifdef _WIN32
     RaiseException(0xE0000002, EXCEPTION_NONCONTINUABLE, 0, nullptr);
     TerminateProcess(GetCurrentProcess(), 3);
+#else
+    std::abort();
+#endif
 }
 
 void guest_svc(Ctx* c, uint32_t number) { nxrt::svc_dispatch(c, number, 0); }
