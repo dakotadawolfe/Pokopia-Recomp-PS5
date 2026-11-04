@@ -10,6 +10,7 @@ struct LifecyclePolicy {
     bool restart_message = false;
     bool out_of_focus_suspending = true;
     bool exit_library_on_next_program = false;
+    bool album_image_notification = false;
 };
 LifecyclePolicy lifecycle_policy();
 struct StartupState {

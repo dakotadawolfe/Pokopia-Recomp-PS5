@@ -54,6 +54,7 @@ namespace nxrt::services { void register_pctl(); }
 namespace nxrt::services { void register_fs(); void fs_reset(); }
 namespace nxrt::services { void register_time(); void time_reset(); }
 namespace nxrt::services { void register_acc(); void acc_reset(); }
+namespace nxrt::services { void register_locale(); }
 #endif
 
 NXTEST_GROUP(game_images)
@@ -810,6 +811,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     nxrt::services::fs_reset(); nxrt::services::register_fs();
     nxrt::services::time_reset(); nxrt::services::register_time();
     nxrt::services::acc_reset(); nxrt::services::register_acc();
+    nxrt::services::register_locale();
 #endif
     REQUIRE(mem::init({.heap_reserve = 12ull << 30}));
     nxrt::Module* rtld = nullptr;

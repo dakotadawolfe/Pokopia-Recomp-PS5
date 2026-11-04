@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Read-only add-on inventory for a port with no installed DLC. Wire layouts
-// follow misc.cpp; mounting and purchasing content remain unsupported.
+// follow misc.cpp and Eden's addon_content_manager.cpp. The empty inventory
+// has no lost mounts; mounting and purchasing content remain unsupported.
 #include "services_internal.h"
 #include "nxrt/kernel.h"
 #include "nxrt/subpage.h"
@@ -12,11 +13,21 @@ using ipc::Request;
 using ipc::Response;
 using ipc::Service;
 struct State {
+    const std::shared_ptr<kernel::KProcess> process = kernel::current_process();
     std::shared_ptr<kernel::EventState> changed = std::make_shared<kernel::EventState>();
     std::shared_ptr<kernel::EventState> purchased = std::make_shared<kernel::EventState>();
 };
 std::mutex mutex;
 std::shared_ptr<State> state;
+class AddOnService final : public Service {
+    const std::shared_ptr<State> state_;
+public:
+    explicit AddOnService(std::shared_ptr<State> state) : Service("IAddOnContentManager"), state_(std::move(state)) {}
+    uint32_t handle(Request& req, Response& rsp) override {
+        if (state_->process != kernel::current_process()) return kernel::kInvalidHandle;
+        return Service::handle(req, rsp);
+    }
+};
 uint32_t event(const std::shared_ptr<kernel::EventState>& state, Response& rsp) {
     auto object = std::make_shared<kernel::KEvent>(); object->state = state;
     const auto handle = kernel::handle_add(object);
@@ -26,7 +37,8 @@ uint32_t event(const std::shared_ptr<kernel::EventState>& state, Response& rsp) 
 std::shared_ptr<Service> make_aoc() {
     std::shared_ptr<State> shared;
     { std::lock_guard lock(mutex); if (!state) state = std::make_shared<State>(); shared = state; }
-    return make_iface("IAddOnContentManager", [shared](Service& s) {
+    auto service = std::make_shared<AddOnService>(shared);
+    const auto setup = [shared](Service& s) {
         for (const auto command : {0u, 2u})
             s.add_cmd(command, "CountAddOnContent", [](Request&, Response& rsp) -> uint32_t {
                 rsp.push<int32_t>(0); return 0;
@@ -60,6 +72,14 @@ std::shared_ptr<Service> make_aoc() {
         s.add_cmd(13, "IsAddOnContentMountedForDebug", [](Request&, Response& rsp) -> uint32_t {
             rsp.push<uint8_t>(0); return 0;
         });
+        s.add_cmd(50, "CheckAddOnContentMountStatus", [](Request& req, Response&) -> uint32_t {
+            if (!req.in_copy.empty() || !req.in_move.empty()) return kernel::kInvalidHandle;
+            if (!req.in_services.empty() || !req.a.empty() || !req.b.empty() || !req.w.empty() ||
+                !req.x.empty() || !req.c.empty()) return kernel::kInvalidCombination;
+            // No inputs/outputs. With no installed or mounted add-ons there is
+            // no lost mount to report. This does not mount or authorize content.
+            return 0;
+        });
         for (const auto command : {100u, 101u})
             s.add_cmd(command, "CreatePurchaseEventManager", [shared](Request&, Response& rsp) -> uint32_t {
                 rsp.push_object(make_iface("IPurchaseEventManager", [shared](Service& manager) {
@@ -72,11 +92,12 @@ std::shared_ptr<Service> make_aoc() {
                         });
                 })); return 0;
             });
-        for (const auto command : {6u, 7u, 11u, 12u, 50u, 110u, 200u})
+        for (const auto command : {6u, 7u, 11u, 12u, 110u, 200u})
             s.add_cmd(command, "AddOnOperationUnavailable", [](Request&, Response&) -> uint32_t {
                 return kernel::kNotImplemented;
             });
-    });
+    };
+    setup(*service); return service;
 }
 }
 void register_aoc() { add("aoc:u", make_aoc); }

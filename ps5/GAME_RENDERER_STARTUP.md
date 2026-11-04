@@ -532,8 +532,9 @@ preselection storage, PID/init state, identity consistency, profile byte layout,
 buffer boundaries, process isolation, reset snapshots, offline results,
 completion-event ownership and handle exhaustion. Payload: 4,405,936 bytes,
 SHA-256 `cd12f8d8a95a91dd6e4d02e4ac658bb294e772917999a42eb9a5c03718b4652e`.
-This is console service validation; a game launch through the account batch is
-still unverified.
+This is console service validation. The subsequent native run below confirms
+account initialization and launch-record consumption; other account operations
+remain unverified in actual game startup.
 
 The local native build, exception-linkage checks and packaging pass. FSELF:
 278,441,793 bytes, SHA-256
@@ -549,6 +550,80 @@ readbacks. The owned transfer helper (PID 126) and service test (PID 131) are
 gone, their two temporary payload slots are removed, and port 2121 is closed.
 Cleanup is recorded in `game-renderer-channels-result-console.json`. No game
 files or shader caches were transferred or changed.
+
+Report `game-native-1793835778-92.log` confirms `acc:u0` command 160 succeeds.
+The title reads the preselected-user storage through `IStorageAccessor`, closes
+the domain objects, and queries the account-switch policy. Startup then stops
+at `IAddOnContentManager` command 50 with `0x4201` (not implemented). The trace
+captures a plain CMIF request with 12 trailing/padding bytes, all zero; that
+does not establish a 12-byte argument. The no-input/output contract comes from
+the service implementation cited below. Dispatch reaches 210 SVC calls in
+813 ms. Renderer counters remain zero submits, draws and presents; the text
+"Waiting for first game frame" remains a host status message. Exit status 2
+is the controlled dependency stop, not a native crash.
+
+## Add-on status, notification preference and locale batch
+
+`IAddOnContentManager` command 50 now checks the port's empty add-on inventory:
+there are no installed/mounted add-ons to lose, so the status is successful
+with no return data or handle. The contract matches the local Eden
+`core/hle/service/aoc/addon_content_manager.cpp` implementation and the
+[AOC command table](https://switchbrew.org/wiki/NS_services#aoc:u).
+Foreign resources are rejected and the root service is bound to its guest
+process. This does not implement preparation, mounting, authorization or
+purchasing; those operations still fail explicitly. Events remain unsignaled.
+
+The batch also ports `ISelfController` command 100 as a stored boolean
+screenshot-notification preference. Its one-byte request is validated and the
+preference resets with application state. This follows the inherited applet
+command table and Eden's `am/service/self_controller.cpp`. No screenshot
+producer or capture facility is enabled by subscribing.
+
+Read-only locale prerequisites are now available through `set` and the
+`ns:am2`/`ns:ro` getter (command 7989). Settings exposes language code, legacy
+and modern language lists/counts, language-index conversion, USA region,
+non-kiosk status and a bounded `Pokopia PS5` runtime nickname. The applet and
+settings share the existing fixed `en-US` frontend locale. These are runtime
+preferences, not queries of or changes to the PS5 shell's settings.
+
+The NS child ports commands 1/2/3: supported-language selection and conversion
+between application indices and eight-byte codes. Its 16 application indices
+are distinct from the 18 settings indices; Chinese legacy aliases normalize
+to their corresponding modern codes. Selection prefers American English,
+then British English and the American-English fallback order, with Brazilian
+Portuguese adjacent to Portuguese. A mask containing no supported languages
+returns NS `16-300`. The language structures/order and error code follow
+Eden's `ns/language.{h,cpp}` and `ns/ns_results.h`; settings request layouts
+follow [libnx set.c](https://github.com/switchbrew/libnx/blob/master/nx/source/services/set.c).
+The frontend still has no locale picker. Administrative settings, firmware
+data, title-control metadata, store/rights and installation interfaces remain
+unported. Buffer bounds, guest permissions and process identity are checked.
+
+The notification and locale additions are proactive startup prerequisites;
+this PS5 report did not reach them. They are not claimed as the next observed
+dependency or as evidence of gameplay. No new blanket error bypass was added.
+
+Console report `svc-runtime-1793836111-102.log` records **163 cases, zero
+failures**. The seven added cases exercise the observed plain CMIF status
+query, resource/process rejection, exact one-byte notification domain input,
+settings receive-list/map-alias outputs, all language mappings, invalid masks,
+truncated/readonly/overflowing buffers, and cross-service locale consistency.
+The service payload is 4,579,288 bytes, SHA-256
+`c2a42f1a863a35ff51796b09c244b4d1cc26b46057968f0cb5d1689dca1bd83b`.
+
+The local native build, exception-linkage checks and packaging pass. FSELF:
+278,478,497 bytes, SHA-256
+`d156d9ea4281c0e9115a5650e6413e23d5e5adfba3daebfffa6497de53e08ea4`.
+Native ELF: 284,279,604 bytes, SHA-256
+`832c6be4c94f77bc4b71cc0d97c391dfb63436621ce166c029985cde97c81955`.
+Only `eboot.bin` differs from the prior title package. The private module stamp,
+RADV/platform libraries, native libc, provenance and startup shaders are unchanged.
+The first installation attempt lost its FTP connection while reading the old
+executable backup, before upload or rename. The 228,943,192-byte incomplete
+local backup was hashed in `game-renderer-locale-deployment-status.json` and
+removed. Ports 8084, 10101 and 2121 then timed out. The candidate is not installed
+by that attempt; the previous account build remains the installed executable.
+The owned helper/diagnostic slots require cleanup when console services return.
 
 ## Interpreting a run
 

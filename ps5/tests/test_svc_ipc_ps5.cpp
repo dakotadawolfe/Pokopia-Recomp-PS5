@@ -9,6 +9,7 @@
 #include "nxrt/services_api.h"
 #include "nxrt/am_ps5.h"
 #include "nxrt/acc_ps5.h"
+#include "nxrt/locale_ps5.h"
 #include "nxrt/config.h"
 #include "nxrt/game.h"
 #include "nxrt/services.h"
@@ -1053,11 +1054,168 @@ NXTEST(addon_inventory_is_empty_and_copied_events_survive_session_close) {
         ipc::Response rsp; req.cmd = command; CHECK_EQ(service->handle(req, rsp), 0u);
         CHECK_EQ(word(rsp.out, 0), 0u);
     }
-    for (const auto command : {6u, 7u, 11u, 50u}) {
+    for (const auto command : {6u, 7u, 11u}) {
         ipc::Response rsp; req.cmd = command; CHECK_EQ(service->handle(req, rsp), k::kNotImplemented);
         CHECK(rsp.out_move.empty() && rsp.out_objects.empty());
     }
     nxrt::services::aoc_reset();
+}
+NXTEST(addon_mount_status_reports_an_empty_inventory_without_creating_content_or_signals) {
+    Fixture f; nxrt::services::aoc_reset(); nxrt::services::register_aoc();
+    const auto handle = f.connect("aoc:u"); REQUIRE(handle);
+    auto check = request(50); check.type = hipc::kInvoke2Method;
+    REQUIRE(f.send(handle, request(8)) == k::kOk); const auto before = f.reply(); REQUIRE(before.copy.size() == 1);
+    const auto changed = k::handle_as<k::KEvent>(before.copy[0]); REQUIRE(changed);
+    const auto count = k::handle_count();
+    for (unsigned i = 0; i < 3; ++i) {
+        REQUIRE(f.send(handle, check) == k::kOk); const auto reply = f.reply();
+        CHECK_EQ(word(reply.raw, 8), 0u); CHECK(reply.copy.empty() && reply.move.empty());
+        CHECK_EQ(k::handle_count(), count); CHECK(!changed->signaled());
+    }
+    for (auto command : {2u, 13u}) {
+        REQUIRE(f.send(handle, request(command)) == k::kOk); const auto reply = f.reply();
+        CHECK_EQ(word(reply.raw, 8), 0u); CHECK_EQ(reply.raw[16], 0);
+    }
+    for (auto command : {6u, 7u, 11u, 12u, 110u, 200u}) {
+        REQUIRE(f.send(handle, request(command)) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kNotImplemented);
+    }
+    nxrt::services::aoc_reset();
+}
+NXTEST(addon_mount_status_rejects_foreign_resources_and_stale_processes) {
+    Fixture f; nxrt::services::aoc_reset(); nxrt::services::register_aoc();
+    const auto service = ipc::make_service("aoc:u"); ipc::Request req; req.cmd = 50;
+    ipc::Response rsp; req.in_copy.push_back(k::kPseudoCurrentProcess);
+    CHECK_EQ(service->handle(req, rsp), k::kInvalidHandle); req.in_copy.clear();
+    req.in_move.push_back(k::kPseudoCurrentProcess);
+    CHECK_EQ(service->handle(req, rsp), k::kInvalidHandle); req.in_move.clear();
+    for (auto member : {&ipc::Request::a, &ipc::Request::b, &ipc::Request::w, &ipc::Request::x, &ipc::Request::c}) {
+        (req.*member).push_back({f.base, 8}); CHECK_EQ(service->handle(req, rsp), k::kInvalidCombination); (req.*member).clear();
+    }
+    req.in_services.push_back(service); CHECK_EQ(service->handle(req, rsp), k::kInvalidCombination); req.in_services.clear();
+    CHECK(rsp.out.empty() && rsp.out_objects.empty() && rsp.out_copy.empty() && rsp.out_move.empty());
+    k::kernel_reset(); CHECK_EQ(service->handle(req, rsp), k::kInvalidHandle);
+    nxrt::services::aoc_reset();
+}
+NXTEST(applet_album_notification_subscription_uses_one_byte_domain_input_and_resets) {
+    AmFixture f; const auto self = f.child(f.open(), 1); REQUIRE(self);
+    auto convert = request(0); convert.type = hipc::kInvoke2ManagerMethodOld;
+    REQUIRE(f.send(self, convert) == k::kOk);
+    const auto domain = [](std::vector<uint8_t> input) {
+        auto m = request(100); m.raw.insert(m.raw.end(), input.begin(), input.end());
+        const auto body = std::move(m.raw); m.raw.clear();
+        push(m.raw, uint8_t{1}); push(m.raw, uint8_t{0}); push(m.raw, static_cast<uint16_t>(body.size()));
+        push(m.raw, uint32_t{1}); push(m.raw, uint64_t{0}); m.raw.insert(m.raw.end(), body.begin(), body.end()); return m;
+    };
+    for (uint8_t enabled : {1, 0, 1}) {
+        REQUIRE(f.send(self, domain({enabled})) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), 0u);
+        CHECK_EQ(nxrt::services::amctl::lifecycle_policy().album_image_notification, enabled != 0);
+    }
+    REQUIRE(f.send(self, domain({})) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), k::kInvalidSize);
+    REQUIRE(f.send(self, domain({2})) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), k::kOutOfRange);
+    CHECK(nxrt::services::amctl::lifecycle_policy().album_image_notification);
+    auto extra = domain({0}); extra.copy = {k::kPseudoCurrentProcess};
+    REQUIRE(f.send(self, extra) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), k::kInvalidHandle);
+    nxrt::services::am_reset(); CHECK(!nxrt::services::amctl::lifecycle_policy().album_image_notification);
+}
+NXTEST(locale_settings_enumeration_and_scalar_conversion_match_the_distinct_system_order) {
+    Fixture f; nxrt::services::register_locale(); const auto settings = f.connect("set"); REQUIRE(settings);
+    constexpr std::array<const char*, 18> expected{"ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl", "pt", "ru",
+        "zh-TW", "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"};
+    for (auto command : {1u, 5u}) {
+        std::memset(reinterpret_cast<void*>(f.base + 0x1000), 0xa7, 0x100);
+        auto list = request(command);
+        if (command == 1) { list.recv_list_flags = 2; list.recv_list.push_back({f.base + 0x1000, 0x100}); }
+        else list.recv.push_back({f.base + 0x1000, 0x100, 0});
+        REQUIRE(f.send(settings, list) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+        const auto count = command == 1 ? 15u : 18u; CHECK_EQ(word(f.reply().raw, 16), count);
+        for (size_t i = 0; i < count; ++i) {
+            char bytes[8]{}; std::memcpy(bytes, expected[i], std::strlen(expected[i]));
+            CHECK(std::memcmp(reinterpret_cast<void*>(f.base + 0x1000 + 8 * i), bytes, 8) == 0);
+        }
+        CHECK_EQ(*reinterpret_cast<const uint8_t*>(f.base + 0x1000 + count * 8), 0xa7);
+        REQUIRE(f.send(settings, request(command == 1 ? 3 : 6)) == k::kOk); CHECK_EQ(word(f.reply().raw, 16), count);
+    }
+    for (uint32_t i = 0; i < expected.size(); ++i) {
+        auto m = request(2); push(m.raw, i); REQUIRE(f.send(settings, m) == k::kOk); auto r = f.reply();
+        CHECK_EQ(word(r.raw, 8), 0u); char bytes[8]{}; std::memcpy(bytes, expected[i], std::strlen(expected[i]));
+        CHECK(std::memcmp(r.raw.data() + 16, bytes, 8) == 0);
+    }
+    for (auto command : {4u, 8u}) {
+        REQUIRE(f.send(settings, request(command)) == k::kOk);
+        const auto reply = f.reply(); CHECK_EQ(reply.raw[16], command == 4 ? 1 : 0);
+    }
+    auto nickname = request(11); nickname.recv.push_back({f.base + 0x1000, 0x80, 0});
+    REQUIRE(f.send(settings, nickname) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    CHECK(std::strcmp(reinterpret_cast<const char*>(f.base + 0x1000), "Pokopia PS5") == 0);
+}
+NXTEST(locale_settings_reject_bad_buffers_and_inputs_without_fabricating_admin_data) {
+    Fixture f; nxrt::services::register_locale(); auto service = ipc::make_service("set");
+    ipc::Request req; req.cmd = 5; req.c.push_back({f.base + 0x1000, 9}); ipc::Response rsp;
+    CHECK_EQ(service->handle(req, rsp), k::kInvalidSize); CHECK(rsp.out.empty());
+    req.c[0].size = 16; REQUIRE(mem::protect(f.base + 0x1000, 0x1000, mem::Prot::R));
+    CHECK_EQ(service->handle(req, rsp), k::kInvalidMemoryState);
+    req.c[0] = {UINT64_MAX - 7, 16}; CHECK_EQ(service->handle(req, rsp), k::kInvalidMemoryState);
+    req.c[0] = {f.base + 0x1000, 0}; CHECK_EQ(service->handle(req, rsp), 0u); CHECK_EQ(word(rsp.out, 0), 0u);
+    req.c.clear(); req.cmd = 2; rsp = {}; CHECK_EQ(service->handle(req, rsp), k::kInvalidSize);
+    uint32_t index = UINT32_MAX; req.in = reinterpret_cast<uint8_t*>(&index); req.in_size = 4;
+    CHECK_EQ(service->handle(req, rsp), k::make_result(105, 625)); index = 18;
+    CHECK_EQ(service->handle(req, rsp), k::make_result(105, 625));
+    req.in_copy.push_back(k::kPseudoCurrentProcess); CHECK_EQ(service->handle(req, rsp), k::kInvalidHandle); req.in_copy.clear();
+    req.cmd = 11; req.c.push_back({f.base + 0x2000, 0x7f}); CHECK_EQ(service->handle(req, rsp), k::kInvalidSize); req.c.clear();
+    for (auto command : {7u, 10u, 100u, 999u}) { req.cmd = command; CHECK_EQ(service->handle(req, rsp), k::kNotImplemented); }
+    for (const auto name : {"set:sys", "set:cal", "set:fd", "ns:am", "ns:dev"}) CHECK(!ipc::has_service(name));
+}
+NXTEST(locale_application_language_domain_queries_use_supported_bits_and_code_round_trips) {
+    Fixture f; nxrt::services::register_locale(); const auto ns = f.connect("ns:am2"); REQUIRE(ns);
+    auto convert = request(0); convert.type = hipc::kInvoke2ManagerMethodOld; REQUIRE(f.send(ns, convert) == k::kOk);
+    const auto domain = [](uint32_t target, hipc::Message inner) {
+        auto body = std::move(inner.raw); inner.raw.clear();
+        push(inner.raw, uint8_t{1}); push(inner.raw, uint8_t{0}); push(inner.raw, static_cast<uint16_t>(body.size()));
+        push(inner.raw, target); push(inner.raw, uint64_t{0}); inner.raw.insert(inner.raw.end(), body.begin(), body.end()); return inner;
+    };
+    REQUIRE(f.send(ns, domain(1, request(7989))) == k::kOk); auto r = f.reply(); CHECK_EQ(word(r.raw, 24), 0u);
+    const auto object = word(r.raw, 32); REQUIRE(object > 1 && object != UINT32_MAX);
+    constexpr std::array<const char*, 16> codes{"en-US", "en-GB", "ja", "fr", "de", "es-419", "es", "it", "nl", "fr-CA",
+        "pt", "ru", "ko", "zh-Hant", "zh-Hans", "pt-BR"};
+    for (uint8_t index = 0; index < codes.size(); ++index) {
+        auto desired = request(1); push(desired.raw, uint32_t{1} << index);
+        REQUIRE(f.send(ns, domain(object, desired)) == k::kOk); r = f.reply(); CHECK_EQ(word(r.raw, 24), 0u); CHECK_EQ(r.raw[32], index);
+        auto convert_code = request(2); push(convert_code.raw, index);
+        REQUIRE(f.send(ns, domain(object, convert_code)) == k::kOk); r = f.reply(); CHECK_EQ(word(r.raw, 24), 0u);
+        char expected[8]{}; std::memcpy(expected, codes[index], std::strlen(codes[index]));
+        CHECK(std::memcmp(r.raw.data() + 32, expected, 8) == 0);
+        auto reverse = request(3); reverse.raw.insert(reverse.raw.end(), expected, expected + 8);
+        REQUIRE(f.send(ns, domain(object, reverse)) == k::kOk); r = f.reply(); CHECK_EQ(word(r.raw, 24), 0u); CHECK_EQ(r.raw[32], index);
+    }
+    for (auto mask : {0u, 0x73ffu, 0xffffu}) {
+        auto desired = request(1); push(desired.raw, mask); REQUIRE(f.send(ns, domain(object, desired)) == k::kOk);
+        r = f.reply(); CHECK_EQ(word(r.raw, 24), 0u); CHECK_EQ(r.raw[32], 0);
+    }
+    auto desired = request(1); push(desired.raw, uint32_t{6}); REQUIRE(f.send(ns, domain(object, desired)) == k::kOk);
+    r = f.reply(); CHECK_EQ(r.raw[32], 1); // British English before Japanese
+    desired = request(1); push(desired.raw, uint32_t{1} << 31); REQUIRE(f.send(ns, domain(object, desired)) == k::kOk);
+    CHECK_EQ(word(f.reply().raw, 24), k::make_result(16, 300));
+    REQUIRE(f.send(ns, domain(object, request(1))) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), k::kInvalidSize);
+    REQUIRE(f.send(ns, domain(1, request(7994))) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), k::kNotImplemented);
+}
+NXTEST(locale_applet_settings_and_application_queries_agree_and_cannot_cross_processes) {
+    AmFixture f; nxrt::services::register_locale(); const auto application = f.child(f.open(), 20); REQUIRE(application);
+    REQUIRE(f.send(application, request(21)) == k::kOk); const auto app = f.reply();
+    const auto settings = f.connect("set"); REQUIRE(settings); REQUIRE(f.send(settings, request(0)) == k::kOk);
+    CHECK(std::memcmp(app.raw.data() + 16, f.reply().raw.data() + 16, 8) == 0);
+    const auto ns = f.connect("ns:ro"); REQUIRE(ns);
+    const auto control = f.child(ns, 7989); REQUIRE(control);
+    auto convert = request(2); push(convert.raw, uint8_t{0}); REQUIRE(f.send(control, convert) == k::kOk);
+    CHECK(std::memcmp(app.raw.data() + 16, f.reply().raw.data() + 16, 8) == 0);
+    const auto root = k::handle_as<ipc::KSession>(ns)->svc, child = k::handle_as<ipc::KSession>(control)->svc;
+    const auto set = k::handle_as<ipc::KSession>(settings)->svc;
+    const auto count = k::handle_count(); ipc::Request req; ipc::Response rsp; req.cmd = 7989; req.in_copy.push_back(k::kPseudoCurrentProcess);
+    CHECK_EQ(root->handle(req, rsp), k::kInvalidHandle); CHECK(rsp.out_objects.empty()); CHECK_EQ(k::handle_count(), count);
+    req = {}; req.cmd = 3; uint64_t code = 0; std::memcpy(&code, "zh-CN", 5); req.in = reinterpret_cast<uint8_t*>(&code); req.in_size = 8;
+    CHECK_EQ(child->handle(req, rsp), 0u); REQUIRE(rsp.out.size() == 1); CHECK_EQ(rsp.out[0], 14);
+    rsp = {}; code = UINT64_MAX; CHECK_EQ(child->handle(req, rsp), k::make_result(16, 300)); CHECK(rsp.out.empty());
+    k::kernel_reset();
+    for (const auto& service : {root, child, set}) CHECK_EQ(service->handle(req, rsp), k::kInvalidHandle);
 }
 NXTEST(parental_profile_is_process_bound_and_initialization_is_session_local) {
     Fixture f; nxrt::services::register_pctl(); auto factory = ipc::make_service("pctl"); REQUIRE(factory);

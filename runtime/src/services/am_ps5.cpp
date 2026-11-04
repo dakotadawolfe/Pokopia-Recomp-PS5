@@ -5,6 +5,7 @@
 #include "gsv_ps5.h"
 #include "nxrt/am_ps5.h"
 #include "nxrt/acc_ps5.h"
+#include "nxrt/locale_ps5.h"
 #include "nxrt/config.h"
 #include "nxrt/kernel.h"
 #include "nxrt/subpage.h"
@@ -196,6 +197,13 @@ Ptr self(const std::shared_ptr<State>& state) {
         s.add_cmd(91, "GetAccumulatedSuspendedTickChangedEvent", [state](Request&, Response& rsp) {
             return event_handle(state->suspended_event, rsp);
         });
+        s.add_cmd(100, "SetAlbumImageTakenNotificationEnabled", [state](Request& req, Response&) -> uint32_t {
+            if (const auto rc = scalar_request(req, 1)) return rc;
+            const auto enabled = req.arg<uint8_t>(0);
+            if (enabled > 1) return kernel::kOutOfRange;
+            std::lock_guard lock(state->mu); state->lifecycle.album_image_notification = enabled != 0;
+            return 0; // subscription preference; the native runtime has no capture producer
+        });
         s.add_cmd(2400, "SetRtcScreenSharingAudioEnabled", [](Request& req, Response&) -> uint32_t {
             if (req.in_size < 1) return kernel::kInvalidCombination;
             // Disabling an absent sharing path is supported; enabling it is not.
@@ -242,9 +250,7 @@ Ptr application(const std::shared_ptr<State>& state) {
         });
         s.add_cmd(21, "GetDesiredLanguage", [](Request& req, Response& rsp) -> uint32_t {
             if (const auto rc = scalar_request(req, 0)) return rc;
-            // The native frontend currently has a fixed American English locale.
-            constexpr char code[8] = {'e', 'n', '-', 'U', 'S', 0, 0, 0};
-            rsp.out.assign(code, code + sizeof code); return 0;
+            rsp.push(locale::native_language_code()); return 0;
         });
         s.add_cmd(23, "GetDisplayVersion", [](Request& req, Response& rsp) -> uint32_t {
             if (const auto rc = scalar_request(req, 0)) return rc;
