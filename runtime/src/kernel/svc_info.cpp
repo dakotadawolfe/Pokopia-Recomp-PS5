@@ -3,7 +3,10 @@
 // Info SVCs (include/nxrt/svc.h): GetInfo 0x29, GetSystemInfo 0x6F, GetResourceLimitLimitValue 0x30, GetResourceLimitCurrentValue 0x31,
 // GetResourceLimitPeakValue 0x37, GetProcessId 0x24, GetThreadId 0x25, GetProcessInfo 0x7C.
 // AArch64 columns per Switchbrew: inputs in x1.., result in w0, outputs in x1.
+#ifdef _WIN32
 #include <windows.h>
+#endif
+#include <mutex>
 
 #include "nxrt/game.h"
 #include "nxrt/abi.h"
@@ -26,7 +29,9 @@ constexpr uint64_t kCoreMaskApp = 0x7;                          // nxrt: cores 0
 constexpr uint64_t kPriorityMaskApp = 0x0FFFFFFFF0000000ull;    // nxrt: bits 28..59 = HOS priorities 0x1C..0x3B (kernel.h: applications 28..59)
 constexpr uint64_t kAslrRegionAddress = 0x0008000000ull;       // chosen value (Switchbrew: no value given)
 constexpr uint64_t kAslrRegionSize = 0x7FF8000000ull;           // chosen value (Switchbrew: no value given)
+#ifdef _WIN32
 constexpr uint64_t kTotalMemoryAvailable = 0xCD500000ull;       // chosen value: ~3.2 GiB, like an application ([memory] app_memory_mb overrides)
+#endif
 constexpr uint64_t kUsedMemoryOverhead = 0x4000000ull;          // chosen value: 64 MiB added to the heap size for "used"
 constexpr uint64_t kEntropyDefaultSeed = 0x1234567890ABCDEFull; // chosen value
 constexpr uint64_t kGoldenRatio64 = 0x9E3779B97F4A7C15ull;      // used to separate the four RandomEntropy subtypes
@@ -36,8 +41,6 @@ constexpr uint32_t kInfoThreadTickCount = 25;                   // ThreadTickCou
 constexpr uint64_t kProcessStateStarted = 2;                    // Switchbrew ProcessState 2 = Started (not debugged)
 constexpr uint64_t kSubAllCores = 0xFFFFFFFFFFFFFFFFull;        // ThreadTickCount sub-argument: the total over all cores (Switchbrew)
 
-}  // namespace
-namespace {
 uint64_t used_memory() {
     uint64_t images = 0;
     for (Module* m : modules()) images += m->size();          // the kernel counts the mapped code/data of the process as used
@@ -45,12 +48,15 @@ uint64_t used_memory() {
 }
 
 // UserExceptionContextAddress: one committed kernel page, made on first use and again only if it has been unmapped.
+std::mutex context_mutex;
+uint64_t page = 0;
 uint64_t user_exception_context() {
-    static uint64_t page = 0;
+    std::lock_guard lock(context_mutex);
     if (page == 0 || !mem::is_mapped(page, mem::kPage)) page = mem::alloc_kernel(mem::kPage);
     return page;
 }
 
+#ifdef _WIN32
 // CPU time a thread has used, in system ticks. Win32 gives kernel + user time in 100 ns units; the split keeps the product in 64 bits.
 uint64_t thread_cpu_ticks(HANDLE h) {
     if (!h) return 0;                                      // thread not started yet
@@ -63,9 +69,32 @@ uint64_t thread_cpu_ticks(HANDLE h) {
     return (t100ns / kUnitsPerSecond) * hz + (t100ns % kUnitsPerSecond) * hz / kUnitsPerSecond;
 }
 
+
+#endif
+
 // Returns the result code; `out` receives the value (0 on error).
 uint32_t get_info(uint32_t type, uint32_t handle, uint64_t sub, uint64_t& out) {
     out = 0;
+#ifndef _WIN32
+    switch (type) {
+        case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7:
+        case 12: case 13: case 14: case 15: case 16: case 17: case 18:
+        case 20: case 21: case 22: case 23: case 28: case 29: case 30:
+        case 31: case 32: case 33: case 36: case 37: case 38:
+            if (sub) return kInvalidCombination;
+            if (handle != kernel::kPseudoCurrentProcess) return kernel::kInvalidHandle;
+            break;
+        case 8: case 9:
+            if (handle) return kernel::kInvalidHandle;
+            if (sub) return kInvalidCombination;
+            break;
+        case 10: case 11:
+            if (handle) return kernel::kInvalidHandle;
+            if (type == 11 && sub >= (game::info().platform == game::Platform::Switch2 ? 8u : 4u)) return kInvalidCombination;
+            break;
+        default: break;
+    }
+#endif
     switch (type) {
         case 0: out = game::info().platform == game::Platform::Switch2 ? kCoreMaskAppSwitch2 : kCoreMaskApp; return kernel::kOk;   // CoreMask
         case 1: out = kPriorityMaskApp; return kernel::kOk;                   // PriorityMask
@@ -76,8 +105,12 @@ uint32_t get_info(uint32_t type, uint32_t handle, uint64_t sub, uint64_t& out) {
         case 6: out = svc_total_memory(); return kernel::kOk;              // TotalMemorySize
         case 7: out = used_memory(); return kernel::kOk;                      // UsedMemorySize
         case 8: out = 0; return kernel::kOk;                                  // DebuggerAttached: never
+#ifdef _WIN32
         case 9: out = 0; return kernel::kOk;                                  // ResourceLimit: no handle
         case 10: out = 0; return kernel::kOk;                                 // IdleTickCount (nxrt: no idle accounting)
+#else
+        case 9: case 10: return kernel::kNotImplemented;
+#endif
         case 11: {                                                            // RandomEntropy, subtype 0..3
             if (sub > 7) return kInvalidCombination;
             uint64_t seed = static_cast<uint64_t>(config_get_int("process", "entropy_seed", static_cast<int64_t>(kEntropyDefaultSeed)));
@@ -91,9 +124,17 @@ uint32_t get_info(uint32_t type, uint32_t handle, uint64_t sub, uint64_t& out) {
         case 16:                                                              // SystemResourceSizeTotal: main.npdm (title profile)
             // nn::os enables its virtual address memory manager (VAMM, AllocateAddressRegion) when this is non-zero, and titles that
             // declare it allocate through VAMM unconditionally: report what the title's NPDM says ([process] overrides).
+#ifdef _WIN32
             out = static_cast<uint64_t>(config_get_int("process", "system_resource_size", static_cast<int64_t>(services::profile().system_resource_size)));
+#else
+            out = services::system_resource_size_now();
+#endif
             return kernel::kOk;
+#ifdef _WIN32
         case 17: out = 0; return kernel::kOk;                                 // SystemResourceSizeUsed
+#else
+        case 17: return kernel::kNotImplemented;
+#endif
         case 18:                                                              // ProgramId: set by the game layer ([process] program_id)
             out = services::program_id_now();   // [process] program_id, else [title] program_id (default: the title the profile describes)
             return kernel::kOk;
@@ -105,6 +146,7 @@ uint32_t get_info(uint32_t type, uint32_t handle, uint64_t sub, uint64_t& out) {
         case 23: out = 1; return kernel::kOk;                                 // IsApplication
         case kInfoThreadTickCountOld:
         case kInfoThreadTickCount: {
+#ifdef _WIN32
             // ThreadTickCount(thread handle or pseudo handle of the calling thread, core): the CPU time the thread has used, in ticks.
             if (handle != kernel::kPseudoCurrentThread && !kernel::handle_get(handle)) return kernel::kInvalidHandle;
             // Core sub-argument: 0..3 names a console core, all-ones asks for the total over all cores (Switchbrew).
@@ -116,6 +158,11 @@ uint32_t get_info(uint32_t type, uint32_t handle, uint64_t sub, uint64_t& out) {
             // The pseudo handle is GetCurrentThread() (the calling thread); any other handle uses the thread's own host handle.
             out = thread_cpu_ticks(handle == kernel::kPseudoCurrentThread ? GetCurrentThread() : static_cast<HANDLE>(t->host_handle));
             return kernel::kOk;
+#else
+            if (sub != kSubAllCores && sub >= static_cast<uint64_t>(kernel::app_core_count())) return kInvalidCombination;
+            if (!kernel::handle_as<kernel::KThread>(handle)) return kernel::kInvalidHandle;
+            return kernel::kNotImplemented; // Host CPU accounting and virtual-core attribution are not connected.
+#endif
         }
         case 28:                                                              // AliasRegionExtraSize (18.0.0+): sub 0
             // The extra alias space a process gets when created with the 18.0.0 flag; nxrt's alias region has none (mesosphere
@@ -133,7 +180,11 @@ uint32_t get_info(uint32_t type, uint32_t handle, uint64_t sub, uint64_t& out) {
         case 37: case 38: out = 0; return kernel::kOk;                       // ShadowStackRegionAddress / Size: none
         default:
             NXLOG_W("svc", "svcGetInfo: unknown type %u sub %llu", type, static_cast<unsigned long long>(sub));
+#ifdef _WIN32
             return kInvalidCombination;
+#else
+            return kernel::kInvalidEnum;
+#endif
     }
 }
 
@@ -150,19 +201,28 @@ uint32_t get_system_info(uint32_t type, uint64_t sub, uint64_t& out) {
     switch (type) {
         case 0:                                                // TotalPhysicalMemorySize per pool
             switch (sub) {
+#ifdef _WIN32
                 case 0: out = 0x100000000ull; return kernel::kOk;   // Application: 4 GiB (chosen value)
                 case 1: out = 0x20000000ull; return kernel::kOk;    // Applet: 512 MiB (nxrt choice)
                 case 2: out = 0x10000000ull; return kernel::kOk;    // System: 256 MiB (nxrt choice)
                 case 3: out = 0x10000000ull; return kernel::kOk;    // SystemUnsafe: 256 MiB (nxrt choice)
+#else
+                case 0: out = svc_total_memory(); return kernel::kOk;
+                case 1: case 2: case 3: return kernel::kNotImplemented;
+#endif
                 default: return kInvalidCombination;
             }
         case 1:                                                // UsedPhysicalMemorySize per pool: only the application pool is in use
             if (sub == 0) { out = used_memory(); return kernel::kOk; }
+#ifdef _WIN32
             if (sub <= 3) return kernel::kOk;                  // other pools: 0
+#else
+            if (sub <= 3) return kernel::kNotImplemented;
+#endif
             return kInvalidCombination;
         case 2:                                                // InitialProcessIdRange: subtype 0 lower bound, 1 upper bound
             // nxrt choice: the range is the single pid GetProcessId reports.
-            if (sub == 0 || sub == 1) { out = kDefaultProcessId; return kernel::kOk; }
+            if (sub == 0 || sub == 1) { out = static_cast<uint64_t>(config_get_int("process", "pid", kDefaultProcessId)); return kernel::kOk; }
             return kInvalidCombination;
         default:
             return kInvalidCombination;
@@ -170,12 +230,16 @@ uint32_t get_system_info(uint32_t type, uint64_t sub, uint64_t& out) {
 }
 
 void system_info_get(::Ctx* c) {
+#ifndef _WIN32
+    if (static_cast<uint32_t>(reg(c, 2)) != 0) { reg(c, 1) = 0; return svc_ret(c, kernel::kInvalidHandle); }
+#endif
     uint64_t value = 0;
     uint32_t rc = get_system_info(static_cast<uint32_t>(reg(c, 1)), reg(c, 3), value);
     reg(c, 1) = value;
     svc_ret(c, rc);
 }
 
+#ifdef _WIN32
 // LimitableResource: 0 PhysicalMemoryMax, 1 ThreadCountMax, 2 EventCountMax, 3 TransferMemoryCountMax, 4 SessionCountMax.
 bool resource_limit(uint64_t which, uint64_t& v) {
     switch (which) {
@@ -220,6 +284,8 @@ void resource_peak_value(::Ctx* c) {
     svc_ret(c, ok ? kernel::kOk : kInvalidCombination);
 }
 
+#endif
+
 // GetProcessId(process handle): only the pseudo handle of the current process is accepted (no other process objects exist yet).
 void get_process_id(::Ctx* c) {
     if (static_cast<uint32_t>(reg(c, 1)) != kernel::kPseudoCurrentProcess) {
@@ -245,6 +311,11 @@ void get_thread_id(::Ctx* c) {
 
 // GetProcessInfo(process handle, ProcessInfoType): type 0 is ProcessState. The handle is not checked (no process objects yet).
 void get_process_info(::Ctx* c) {
+#ifndef _WIN32
+    if (static_cast<uint32_t>(reg(c, 1)) != kernel::kPseudoCurrentProcess) {
+        reg(c, 1) = 0; return svc_ret(c, kernel::kInvalidHandle);
+    }
+#endif
     if (static_cast<uint32_t>(reg(c, 2)) == 0) {
         reg(c, 1) = kProcessStateStarted;
         svc_ret(c, kernel::kOk);
@@ -256,12 +327,18 @@ void get_process_info(::Ctx* c) {
 
 }  // namespace
 
+void svc_info_reset_for_tests() {
+    std::lock_guard lock(context_mutex); page = 0;
+}
+
 void svc_register_info_group() {
     svc_register(0x29, info_get_info);
     svc_register(0x6F, system_info_get);
+#ifdef _WIN32
     svc_register(0x30, resource_limit_value);
     svc_register(0x31, resource_current_value);
     svc_register(0x37, resource_peak_value);
+#endif
     svc_register(0x24, get_process_id);
     svc_register(0x25, get_thread_id);
     svc_register(0x7C, get_process_info);

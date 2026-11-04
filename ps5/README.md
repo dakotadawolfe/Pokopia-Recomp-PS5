@@ -326,8 +326,8 @@ its [scan API](https://github.com/drakmor/ShadowMountPlus/blob/1.7/docs/api.md).
 Launch **Pokopia Runtime Tests** from the PS5 home screen. This headless suite
 normally displays a blank screen while running and exits when finished. It writes
 `/data/pokopia-recomp/tests/app-platform-<time>-<pid>.log`, containing
-`context=native-app title=PPSA98731`. The current baseline has 195 cases; enabling
-the game-image check makes 196. Only the expected complete report with zero
+`context=native-app title=PPSA98731`. The current baseline has 205 cases; enabling
+the game-image check makes 206, and the optional real-rtld probe makes 207. Only the expected complete report with zero
 failures, together with a clean application exit, establishes success. Registration,
 FSELF inspection and payload-suite results do not establish application runtime
 behavior. Native game boot and gameplay remain separate checks.
@@ -580,8 +580,8 @@ The first `ps5/svc.cmake` milestone connected the shared dispatcher to 23 handle
 startup and exit, priority/core-mask metadata, sleep/ticks, events, handles,
 synchronization, address arbitration and debug strings. Unported calls return
 the dispatcher's explicit not-implemented result and retain their call-site
-records. The four memory handlers below are now added; process-information
-and IPC groups are not registered yet.
+records. The four memory handlers and five process-information handlers below are now
+added; the IPC group is not registered yet.
 Process exit, processor-number mapping, exception return, thread activity and
 preemption-state handling also remain unported.
 
@@ -656,12 +656,76 @@ and releases a guest heap. The first run had one incorrect test expectation:
 a query after protecting one page must report that page's region, not the whole
 heap. Correcting that expectation produced the passing run above.
 
-The locally built **196-case native application** is installed and every package
-file is readback-verified. Its native launch check is pending. Executable SHA-256:
+The **196-case native application passed with zero failures** on 2026-11-04.
+Report `app-platform-1793779537-188.log` records main status zero; the process
+exited and the user confirmed returning home. Executable SHA-256:
 `866a84d3f1bf438d01555afeaf2d13e4f40a60926846360584a8b7fccf6e295e`.
 Host checks pass 68 platform cases plus six TLS cases. The production SVC archive
 builds and all four ABI 4 game archives pass verification. No Pokopia guest code,
 rendering or gameplay has executed in this milestone.
+
+## Process information and the real loader entry
+
+The PS5 runtime now registers 32 SVC handlers, adding `GetInfo` (0x29),
+`GetSystemInfo` (0x6F), `GetProcessId` (0x24), `GetThreadId` (0x25) and
+`GetProcessInfo` (0x7C). These provide the guest address layout, title metadata,
+process/thread identity, platform limits and a shared exception-context page.
+Title defaults are separated from the Windows service host so the same game
+metadata and configuration precedence can be used on PS5. The context-page
+cache must be reset between process-memory lifetimes.
+
+Handle/subtype validation follows the
+[Atmosphere information SVC implementation](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/svc/kern_svc_info.cpp).
+Memory usage is still the existing guest model (heap plus mapped images plus
+64 MiB overhead), not measured native allocation usage. Entropy retains the
+upstream deterministic seed. Resource-limit handles, idle/thread CPU accounting,
+other process pools and system-resource usage return not-implemented on PS5.
+Resource-limit SVCs 0x30/0x31/0x37 remain unregistered. Windows accounting remains
+on its existing backend; the Windows runtime suite was not run.
+
+The expanded SVC payload passed **47 cases, zero failures**, and exited:
+`svc-runtime-1793780091-208.log`; ELF SHA-256
+`6779c6722e80270201cf074741cfd3b9f46970268921fe3c2905ccf868a4bb9a`.
+Host checks pass 68 platform cases and six TLS cases. The production SVC archive
+builds, and all four ABI 4 game archives pass the module verifier.
+
+An optional test now executes the supplied game's recompiled `rtld` entry. It
+validates and maps all four decrypted images, registers the 37-function rtld
+module, adopts a main guest thread and enters the real loader. Diagnostic guards
+allow only the loader's expected memory/information/debug system calls and stop
+at the `nn::init::Start` import. Unexpected imports, unsupported calls, excessive
+calls or a 20-second deadline fail the probe. The SDK startup boundary is an
+explicit diagnostic stop, not an implementation of SDK startup.
+
+The two-case payload passed on PS5 and exited:
+`game-images-1793780373-215.log`; ELF SHA-256
+`45c1c2abe8c109a1396018d2cbb6cc198181df48483d1a2a37b12b4133e02ab7`.
+The real loader made 23 successful `QueryMemory` calls and reached SDK startup
+with its main-thread handle and three rtld callbacks. The callbacks were not
+executed; relocation completion, SDK startup, graphics, audio, saves and gameplay
+remain unverified. The first probe stopped before dispatch because its fixture
+expected one undefined import; this image has two. The corrected fixture guards
+the exception-handler import separately and accepts only the startup import as
+success.
+
+Build this private native diagnostic locally by supplying a decrypted input and
+an explicit fourth argument:
+
+```sh
+bash ps5/build_runtime_app.sh /path/to/native-tools /path/to/private/app-build /path/to/decrypted/input rtld
+```
+
+Without `rtld`, the optional image test only maps and checks the inputs. With
+`rtld`, the package includes game-derived recompiled code and must stay outside
+Git. `native-app-manifest.json` records `executes_game_rtld` and the expected case
+count. The locally built **207-case native application** is installed and all
+package files are readback-verified; its native launch check is pending.
+Executable SHA-256:
+`ee29203fe7bfa8d3e96de136423a518a2df1d86e75dde955c1b82c1726145c90`.
+A later launch of the old 196-case app, PID 210, left an incomplete report ending
+at `stress_random_ops`; its cause is not established, so that launch is not
+counted as a pass. The next native run must produce a complete report and a clean
+exit before the new application milestone is accepted.
 
 ## Repository ownership
 

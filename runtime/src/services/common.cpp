@@ -270,16 +270,8 @@ bool parse_uid(const std::string& s, uint64_t& hi, uint64_t& lo) {
     return true;
 }
 
-// The defaults before the ini: the registered game's own facts (nxrt/game.h, Info::title_defaults), else the neutral ones of the struct.
-TitleProfile game_defaults() {
-    TitleProfile p;
-    if (const game::Info* g = game::current(); g && g->title_defaults) g->title_defaults(p);
-    if (p.supported_languages == 0) p.supported_languages = 1u << static_cast<uint32_t>(Language::AmericanEnglish);
-    return p;
-}
-
 TitleProfile load_profile() {
-    TitleProfile p = game_defaults();
+    TitleProfile p = title_defaults();
     const uint64_t game_owner = p.save_data_owner_id;      // 0: the save data owner is the program id
     p.program_id = static_cast<uint64_t>(config_get_int("title", "program_id", static_cast<int64_t>(p.program_id)));
     // [process] program_id (kernel GetInfo ProgramId) overrides when it is set explicitly.
@@ -339,11 +331,6 @@ const TitleProfile& profile() {
         g_prof_loaded = true;
     }
     return g_prof;
-}
-
-uint64_t program_id_now() {
-    if (config_has("process", "program_id")) return static_cast<uint64_t>(config_get_int("process", "program_id", 0));
-    return static_cast<uint64_t>(config_get_int("title", "program_id", static_cast<int64_t>(game_defaults().program_id)));
 }
 
 void profile_reload() {

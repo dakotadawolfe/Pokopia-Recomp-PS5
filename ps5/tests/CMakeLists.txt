@@ -36,7 +36,7 @@ if(PS5)
     nxrecomp_add_module(svc_fixture INPUT "${svc_fixture_elf}" NAME svc_fixture INDEX 1
         BASE 0x7300000000 KIND static_elf SHARDS 1 JOBS 1)
     target_compile_definitions(svc_fixture PUBLIC NXRECOMP_SUBPAGE_CHECKS=1)
-    add_executable(ps5_svc_tests sync_main.cpp test_svc_posix.cpp test_svc_memory_ps5.cpp protect_fault.cpp "${root}/ps5/app/thread_exit.cpp")
+    add_executable(ps5_svc_tests sync_main.cpp test_svc_posix.cpp test_svc_memory_ps5.cpp test_svc_info_ps5.cpp protect_fault.cpp "${root}/ps5/app/thread_exit.cpp")
     target_include_directories(ps5_svc_tests PRIVATE "${root}/runtime/tests")
     target_compile_definitions(ps5_svc_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_SVC=1)
     target_compile_options(ps5_svc_tests PRIVATE -Wall -Wextra -Werror -mcx16)
@@ -89,7 +89,15 @@ list(LENGTH svc_cases svc_count)
 file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/test_svc_memory_ps5.cpp" memory_svc_cases REGEX "^NXTEST\\(")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_svc_memory_ps5.cpp")
 list(LENGTH memory_svc_cases memory_svc_count)
-math(EXPR runtime_case_count "125 + ${host_thread_count} + ${kernel_count} + ${svc_count} + ${memory_svc_count}")
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/test_svc_info_ps5.cpp" info_svc_cases REGEX "^NXTEST\\(")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_svc_info_ps5.cpp")
+list(LENGTH info_svc_cases info_svc_count)
+math(EXPR runtime_case_count "125 + ${host_thread_count} + ${kernel_count} + ${svc_count} + ${memory_svc_count} + ${info_svc_count}")
+option(PKP_TEST_RTLD "Execute the supplied recompiled rtld up to its SDK handoff" OFF)
+if(PKP_TEST_RTLD AND NOT PKP_GAME_IMAGE_INPUT)
+    message(FATAL_ERROR "The rtld check requires verified decrypted game images")
+endif()
+set(runtime_rtld false)
 set(runtime_game_images false)
 if(PKP_GAME_IMAGE_INPUT)
     if(NOT PS5)
@@ -115,11 +123,25 @@ if(PKP_GAME_IMAGE_INPUT)
     target_compile_options(ps5_game_image_tests PRIVATE -Wall -Wextra -Werror -mcx16)
     target_link_libraries(ps5_game_image_tests PRIVATE nxrt_ps5_core)
     target_link_options(ps5_game_image_tests PRIVATE "LINKER:--wrap,pthread_create")
-    math(EXPR runtime_case_count "126 + ${host_thread_count} + ${kernel_count} + ${svc_count} + ${memory_svc_count}")
+    math(EXPR runtime_case_count "126 + ${host_thread_count} + ${kernel_count} + ${svc_count} + ${memory_svc_count} + ${info_svc_count}")
     set(runtime_game_images true)
+    if(PKP_TEST_RTLD)
+        string(JSON rtld_input GET "${game_manifest}" modules 3 source)
+        nxrecomp_add_module(test_rtld INPUT "${rtld_input}" NAME rtld INDEX 3
+            BASE 0x7700000000 GAME pkp SHARDS 1 JOBS 1 OUTDIR "${CMAKE_BINARY_DIR}/private-rtld")
+        target_compile_definitions(test_rtld PUBLIC NXRECOMP_SUBPAGE_CHECKS=1)
+        add_executable(ps5_rtld_tests sync_main.cpp test_game_images.cpp "${root}/ps5/app/thread_exit.cpp")
+        target_include_directories(ps5_rtld_tests PRIVATE "${root}/runtime/tests" "${game_expectations}")
+        target_compile_definitions(ps5_rtld_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_GAME_IMAGES=1 NXRT_TEST_RTLD=1)
+        target_compile_options(ps5_rtld_tests PRIVATE -Wall -Wextra -Werror -mcx16)
+        target_link_libraries(ps5_rtld_tests PRIVATE nxrt_ps5_svc test_rtld)
+        target_link_options(ps5_rtld_tests PRIVATE "LINKER:--wrap,pthread_create")
+        math(EXPR runtime_case_count "${runtime_case_count} + 1")
+        set(runtime_rtld true)
+    endif()
 endif()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/runtime-suite.json"
-    "{\"expected_cases\":${runtime_case_count},\"requires_game_images\":${runtime_game_images}}\n")
+    "{\"expected_cases\":${runtime_case_count},\"requires_game_images\":${runtime_game_images},\"executes_game_rtld\":${runtime_rtld}}\n")
 set(PKP_NATIVE_APP_ROOT "" CACHE PATH "Pinned ps5-native-app-boilerplate checkout")
 if(PKP_BUILD_NATIVE_APP)
     # Null/overflow/zero-size behavior must call the allocator, not LLVM's
@@ -130,7 +152,7 @@ if(PKP_BUILD_NATIVE_APP)
     endif()
     set(native "${PKP_NATIVE_APP_ROOT}/tooling/native")
     set(sdk "$ENV{PS5_PAYLOAD_SDK}")
-    add_executable(ps5_runtime_app ${platform_test_sources} test_guest_region.cpp test_kernel_posix.cpp test_svc_posix.cpp test_svc_memory_ps5.cpp
+    add_executable(ps5_runtime_app ${platform_test_sources} test_guest_region.cpp test_kernel_posix.cpp test_svc_posix.cpp test_svc_memory_ps5.cpp test_svc_info_ps5.cpp
         test_app_runtime.cpp test_app_heap.cpp heap_fault.cpp "${CMAKE_CURRENT_LIST_DIR}/../app/heap.cpp"
         "${native}/app_crt.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/runtime.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/../app/thread_exit.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/lifecycle.cpp"
@@ -150,6 +172,10 @@ if(PKP_BUILD_NATIVE_APP)
         "LINKER:--version-script,${CMAKE_CURRENT_LIST_DIR}/../app/exports.map"
         "LINKER:--eh-frame-hdr" "LINKER:--no-dynamic-linker" "LINKER:-e,_start"
         "LINKER:--wrap,mprotect" "LINKER:--wrap,pthread_create")
+    if(PKP_TEST_RTLD)
+        target_compile_definitions(ps5_runtime_app PRIVATE NXRT_TEST_RTLD=1)
+        target_link_libraries(ps5_runtime_app PRIVATE test_rtld)
+    endif()
     target_link_libraries(ps5_runtime_app PRIVATE nxrt_ps5_svc subpage_fixture svc_fixture
         "-Wl,--start-group" "${sdk}/target/lib/libc++.a" "${sdk}/target/lib/libc++abi.a"
         "${sdk}/target/lib/libunwind.a" "-Wl,--end-group" "-Wl,--as-needed"

@@ -115,6 +115,8 @@ struct TitleProfile {
     std::string user_nickname = "Player";                  // [account] nickname
     uint64_t user_uid_hi = 0x0000000000000001ull, user_uid_lo = 0x6e78727475736572ull;   // [account] uid = 32 hex digits ("nxrtuser")
 };
+TitleProfile title_defaults();          // registered game facts, with neutral language fallback
+uint64_t system_resource_size_now();    // process override, title override, then registered title defaults
 uint64_t program_id_now();               // [process] program_id if set, else [title] program_id, else the game's title id; read from the config on every call
 const TitleProfile& profile();           // loaded from the config on first use
 void profile_reload();                   // tests: re-read the config

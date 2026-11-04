@@ -102,10 +102,10 @@ NXTEST(svc_registers_only_the_ported_services) {
     Fixture fixture;
     unsigned count = 0;
     for (unsigned i = 0; i < nxrt::kSvcCount; ++i) count += nxrt::svc_handler(i) != nullptr;
-    CHECK_EQ(count, 27u);
+    CHECK_EQ(count, 32u);
     CHECK_EQ(std::string(nxrt::svc_name(0x18)), "WaitSynchronization");
     CHECK_EQ(std::string(nxrt::svc_name(0x45)), "CreateEvent");
-    for (unsigned missing : {0x04, 0x05, 0x13, 0x2c, 0x80, 0x07, 0x10, 0x1f, 0x21, 0x26, 0x28, 0x29, 0x32, 0x36}) {
+    for (unsigned missing : {0x04, 0x05, 0x13, 0x2c, 0x80, 0x07, 0x10, 0x1f, 0x21, 0x26, 0x28, 0x30, 0x31, 0x37, 0x32, 0x36}) {
         CHECK(!nxrt::svc_handler(missing));
         ::Ctx c{}; c.x[0] = UINT64_MAX;
         CHECK_EQ(call(c, missing), ks::kNotImplemented);
