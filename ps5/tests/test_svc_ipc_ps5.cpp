@@ -399,6 +399,76 @@ NXTEST(applet_proxy_requires_current_process_and_supports_cmif_and_tipc) {
     m.copy = {k::kPseudoCurrentProcess}; m.has_pid = false;
     CHECK_EQ(f.send(f.am, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kInvalidHandle);
 }
+NXTEST(trace_allows_real_empty_queue_results_without_weakening_failure_checks) {
+    AmFixture f; const auto common = f.child(f.open(), 0); REQUIRE(common);
+    CHECK_EQ(f.receive(common), 15u); CHECK_EQ(f.receive(common), UINT32_MAX);
+    auto reply = nxrt::diagnostic::decode_reply(reinterpret_cast<const uint32_t*>(f.base), 64, false);
+    CHECK_EQ(reply.result, k::make_result(128, 3));
+    CHECK(!nxrt::diagnostic::stop_on_reply(reply, "ICommonStateGetter", 1));
+    CHECK(nxrt::diagnostic::stop_on_reply(reply, "ICommonStateGetter", 66));
+    CHECK(nxrt::diagnostic::stop_on_reply(reply, "OtherService", 1));
+    reply.valid = false; CHECK(nxrt::diagnostic::stop_on_reply(reply, "ICommonStateGetter", 1));
+    nxrt::services::register_aoc(); const auto aoc = f.connect("aoc:u"), purchase = f.child(aoc, 100); REQUIRE(purchase);
+    for (uint32_t command : {3u, 4u}) {
+        REQUIRE(f.send(purchase, request(command)) == k::kOk);
+        reply = nxrt::diagnostic::decode_reply(reinterpret_cast<const uint32_t*>(f.base), 64, false);
+        CHECK_EQ(reply.result, k::make_result(164, 400));
+        CHECK(!nxrt::diagnostic::stop_on_reply(reply, "IPurchaseEventManager", command));
+        CHECK(nxrt::diagnostic::stop_on_reply(reply, "IPurchaseEventManager", 2));
+    }
+    for (auto result : {k::kNotImplemented, k::kStubService, k::kInvalidSize, k::kOutOfRange, uint32_t{0x202}}) {
+        reply = {true, result, 0x4f434653};
+        CHECK(nxrt::diagnostic::stop_on_reply(reply, "ICommonStateGetter", 1));
+        CHECK(nxrt::diagnostic::stop_on_reply(reply, "IPurchaseEventManager", 3));
+        CHECK(nxrt::diagnostic::stop_on_reply(reply, "fsp-srv", 200));
+    }
+    CHECK(!nxrt::diagnostic::stop_on_reply({true, 0, 0x4f434653}, "ICommonStateGetter", 66));
+}
+NXTEST(trace_argument_snapshot_preserves_wire_values_before_tls_is_overwritten) {
+    const auto decoded = [](const hipc::Message& input) {
+        std::array<uint32_t, 64> words{}; hipc::Message output;
+        if (!hipc::build(input, words.data(), words.size()) || !hipc::parse(words.data(), words.size(), output)) std::abort();
+        return output;
+    };
+    auto tipc = request(66, true); push(tipc.raw, uint32_t{2});
+    auto args = nxrt::diagnostic::snapshot_arguments(decoded(tipc), false);
+    CHECK(args.valid && args.exact_size); CHECK_EQ(args.bytes, size_t{4}); CHECK_EQ(args.captured, size_t{4});
+    CHECK_EQ(args.prefix[0], uint8_t{2});
+    auto inner = request(66); push(inner.raw, uint32_t{2});
+    args = nxrt::diagnostic::snapshot_arguments(decoded(inner), false);
+    CHECK(args.valid && !args.exact_size); CHECK(args.bytes >= 4); CHECK_EQ(args.prefix[0], uint8_t{2});
+    auto domain = request(0); domain.raw.clear();
+    push(domain.raw, uint8_t{1}); push(domain.raw, uint8_t{0}); push(domain.raw, uint16_t{20});
+    push(domain.raw, uint32_t{1}); push(domain.raw, uint64_t{0});
+    domain.raw.insert(domain.raw.end(), inner.raw.begin(), inner.raw.end());
+    auto message = decoded(domain); const auto before = message.raw;
+    args = nxrt::diagnostic::snapshot_arguments(message, true);
+    CHECK(args.valid && args.exact_size); CHECK_EQ(args.bytes, size_t{4}); CHECK_EQ(args.captured, size_t{4});
+    CHECK(message.raw == before); message.raw.assign(message.raw.size(), 0xff);
+    CHECK_EQ(args.prefix[0], uint8_t{2}); CHECK_EQ(args.prefix[1], uint8_t{0});
+    auto long_input = request(1, true); long_input.raw.resize(80, 0xa5);
+    args = nxrt::diagnostic::snapshot_arguments(long_input, false);
+    CHECK(args.valid && args.exact_size); CHECK_EQ(args.bytes, size_t{80}); CHECK_EQ(args.captured, size_t{16});
+    CHECK(std::all_of(args.prefix.begin(), args.prefix.end(), [](uint8_t value) { return value == 0xa5; }));
+}
+NXTEST(trace_argument_snapshot_refuses_truncated_headers_and_domain_close) {
+    for (size_t size : {0u, 1u, 15u, 16u, 31u}) {
+        auto m = request(0); m.raw.resize(size, 0);
+        CHECK(!nxrt::diagnostic::snapshot_arguments(m, true).valid);
+    }
+    auto m = request(0); m.raw.resize(40, 0); m.raw[0] = 1;
+    uint16_t size = 25; std::memcpy(m.raw.data() + 2, &size, 2);
+    CHECK(!nxrt::diagnostic::snapshot_arguments(m, true).valid);
+    size = 16; std::memcpy(m.raw.data() + 2, &size, 2);
+    CHECK(!nxrt::diagnostic::snapshot_arguments(m, true).valid);
+    const uint32_t magic = 0x49434653; std::memcpy(m.raw.data() + 16, &magic, 4);
+    const auto args = nxrt::diagnostic::snapshot_arguments(m, true);
+    CHECK(args.valid && args.exact_size); CHECK_EQ(args.bytes, size_t{0}); CHECK_EQ(args.captured, size_t{0});
+    m.raw[0] = 2; CHECK(!nxrt::diagnostic::snapshot_arguments(m, true).valid);
+    m = request(0); m.raw[0] = 0; CHECK(!nxrt::diagnostic::snapshot_arguments(m, false).valid);
+    m = request(0); m.type = hipc::kInvoke2ManagerMethodOld;
+    CHECK(!nxrt::diagnostic::snapshot_arguments(m, false).valid);
+}
 NXTEST(applet_messages_signal_shared_events_and_follow_notification_flags) {
     AmFixture f; const auto proxy = f.open(); REQUIRE(proxy);
     const auto common = f.child(proxy, 0), self = f.child(proxy, 1); REQUIRE(common && self);
@@ -456,12 +526,12 @@ NXTEST(applet_loading_hint_is_shared_cancellable_and_reset_per_application) {
     AmFixture f; const auto proxy = f.open();
     const auto first = f.child(proxy, 0), second = f.child(proxy, 0); REQUIRE(first && second);
     CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 0u);
-    for (uint32_t mode : {1u, 0u, 1u}) {
+    for (uint32_t mode : {2u, 0u, 1u}) {
         auto m = request(66); push(m.raw, mode);
         REQUIRE(f.send(first, m) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
         CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, mode);
     }
-    for (uint32_t mode : {2u, UINT32_MAX}) {
+    for (uint32_t mode : {3u, UINT32_MAX}) {
         auto m = request(66); push(m.raw, mode);
         REQUIRE(f.send(second, m) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kOutOfRange);
         CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 1u);
@@ -471,6 +541,31 @@ NXTEST(applet_loading_hint_is_shared_cancellable_and_reset_per_application) {
     auto m = request(66); push(m.raw, uint32_t{1}); REQUIRE(f.send(first, m) == k::kOk);
     nxrt::services::am_reset(); CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 0u);
     REQUIRE(f.send(first, m) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 0u);
+}
+NXTEST(applet_loading_hint_accepts_the_supplied_sdk_domain_wire_value) {
+    AmFixture f; const auto common = f.child(f.open(), 0); REQUIRE(common);
+    auto convert = request(0); convert.type = hipc::kInvoke2ManagerMethodOld;
+    REQUIRE(f.send(common, convert) == k::kOk); REQUIRE(word(f.reply().raw, 8) == 0);
+    const auto invoke = [&](uint32_t command, uint32_t mode) {
+        auto inner = request(command);
+        if (command == 66) push(inner.raw, mode);
+        auto m = request(0); m.raw.clear();
+        push(m.raw, uint8_t{1}); push(m.raw, uint8_t{0}); push(m.raw, static_cast<uint16_t>(inner.raw.size()));
+        push(m.raw, uint32_t{1}); push(m.raw, uint64_t{0});
+        m.raw.insert(m.raw.end(), inner.raw.begin(), inner.raw.end());
+        return m;
+    };
+    // nn::oe::SetCpuBoostMode(1) maps to applet command 66 with u32 value 2
+    // in this title's SDK. Exercise the domain envelope used by the real call.
+    for (uint32_t mode : {2u, 0u, 2u}) {
+        REQUIRE(f.send(common, invoke(66, mode)) == k::kOk);
+        const auto reply = f.reply(); CHECK_EQ(word(reply.raw, 24), 0u);
+        CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, mode);
+    }
+    REQUIRE(f.send(common, invoke(66, 3)) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), k::kOutOfRange);
+    CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 2u);
+    REQUIRE(f.send(common, invoke(67, 0)) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), 0u);
     CHECK_EQ(nxrt::services::amctl::startup_state().cpu_boost_mode, 0u);
 }
 NXTEST(applet_loading_hint_rejects_short_inputs_and_foreign_resources_without_mutation) {

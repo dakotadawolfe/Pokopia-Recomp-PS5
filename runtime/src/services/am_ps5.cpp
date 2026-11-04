@@ -99,7 +99,9 @@ Ptr common(const std::shared_ptr<State>& state) {
         s.add_cmd(66, "SetCpuBoostMode", [state](Request& req, Response&) -> uint32_t {
             if (const auto rc = scalar_request(req, sizeof(uint32_t))) return rc;
             const auto mode = req.arg<uint32_t>(0);
-            if (mode > 1) return kernel::kOutOfRange;
+            // The supplied SDK maps nn::oe fast-load enum 1 to applet wire
+            // value 2. Older libnx clients send 1 directly. Keep both hints.
+            if (mode > 2) return kernel::kOutOfRange;
             std::lock_guard lock(state->mu); state->startup.cpu_boost_mode = mode; return 0;
         });
         s.add_cmd(67, "CancelCpuBoostMode", [state](Request& req, Response&) -> uint32_t {

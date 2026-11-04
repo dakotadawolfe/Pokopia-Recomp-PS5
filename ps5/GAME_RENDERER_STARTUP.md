@@ -323,7 +323,64 @@ startup shaders are unchanged; no game assets were transferred. The collection
 helper (PID 104) and service-test process (PID 117) are gone, both owned slots
 were removed and port 2121 is closed. `game-renderer-budget-result-console.json`
 records their cleanup.
-Game execution beyond command 66 still requires a native app launch.
+The subsequent native report, `game-native-1793830958-126.log`, still stops at
+command 66, now with `0xee01` (out of range). The new handler was reached, but
+its initial validation admitted only the older service values 0 and 1. The
+134-case correction described below has not yet been game-tested.
+
+## Supplied SDK wire values and expected polling results
+
+Inspection of the actual supplied SDK explains the failed applet batch. Its
+public `nn::oe::SetCpuBoostMode` at `0x7500516620` accepts API values 0 and 1,
+then converts 1 to **service value 2** before calling the applet API. The applet
+wrapper at `0x75001c5dc0` admits only 0 and 2 (`tst w0, #0xfffffffd`) and forwards
+that value to the common-state service. The previous libnx reference describes
+an older direct wire value; it was insufficient to validate this title's SDK.
+
+These are static observations from the private compiled source and local
+Capstone disassembly of the hash-verified NSO text, recorded in
+`work/ps5/sdk-cpu-mode-evidence.txt`. SDK SHA-256:
+`7c12078e9f853f5d77f395155f7308f264fa6e93fadaeba8dca525f4483c09b2`.
+Text SHA-256:
+`a88ae2da4f7c8507f5d50a35ac81a2ae8cec6a7e80b49df37c4d1e9048cd408c`.
+The runtime stop identifies an out-of-range request; that older report did not
+capture its argument bytes. The value-2 explanation follows from the supplied
+SDK's validated call path, not a recorded argument dump.
+
+The corrected handler accepts 0, legacy 1 and this SDK's 2, retaining the fixed
+native clock policy. Its regression test exercises command 66 through a real
+CMIF domain envelope with a four-byte input, including reset/cancellation and
+rejection of value 3. This covers the protocol used by the game in addition to
+the existing plain-session tests.
+
+The startup observer now snapshots at most 16 raw argument bytes before the
+reply overwrites TLS. A fatal IPC report includes that prefix and the call
+addresses. Domain lengths exclude alignment and object IDs; plain CMIF lengths
+are explicitly marked inexact because they can contain padding. Malformed
+headers, bounded copying and retaining bytes across overwrite are tested.
+
+Two already-ported empty queues also no longer force a diagnostic exit:
+ICommonStateGetter command 1 with result `0x680`, and IPurchaseEventManager
+commands 3/4 with result `0x320a4`. Their original results reach the SDK
+unchanged. This is not a general error bypass: the same result on another
+endpoint/command, malformed replies, missing game data, invalid inputs and
+unimplemented operations still stop. Tests use the production service results
+and verify those negative cases.
+
+Final console service report `svc-runtime-1793831288-154.log` records **134
+cases, zero failures**. Payload SHA-256:
+`d636bc15b9dc8ad077296ed4e38df1e9484d3e7e1e016ee696199223304b047a`.
+The native build and packaging/linkage checks pass. FSELF: 278,343,361 bytes,
+SHA-256 `7b92f219069ffed9a1ab511ddca99e934e2f40c2e57888af8ab3c4b39d97f5ee`.
+Native ELF: 284,127,388 bytes, SHA-256
+`6a242a065e54c02ce34e42f63e4face91b53590ce8ccb3bceb13a272138e99c4`.
+`game-renderer-wire-install.json` records installation with the owned title
+stopped/unmounted, the previous executable backup, and full staged/installed
+readback hashes. Provenance, startup shaders and selected game files are
+unchanged. The helper (PID 128) and both service-test processes (PIDs 135/154)
+are gone; their three owned payload slots were removed and port 2121 is closed.
+Cleanup is recorded in `game-renderer-applet-result-console.json`.
+These service results do not establish game execution beyond command 66.
 
 ## Interpreting a run
 

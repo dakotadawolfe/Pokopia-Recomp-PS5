@@ -13,8 +13,8 @@ struct LifecyclePolicy {
 };
 LifecyclePolicy lifecycle_policy();
 struct StartupState {
-    // Guest loading hint: 0 = normal, 1 = fast load. The native PS5 profile
-    // keeps its clock policy fixed; this never requests a host overclock.
+    // Service wire values: 0 = normal, 1 = legacy fast load, 2 = this title's
+    // SDK fast load. The native clock policy remains fixed on PS5.
     uint32_t cpu_boost_mode = 0;
     bool notified_running = false;
 };

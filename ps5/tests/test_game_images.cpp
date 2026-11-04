@@ -488,6 +488,7 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
     size_t cmif_header = 0;
     std::string ipc_target;
     uint32_t ipc_command = UINT32_MAX;
+    nxrt::diagnostic::IpcArgumentSnapshot ipc_arguments;
     const uint64_t message_address = Number == 0x22 ? a : c->tpidrro;
     const uint64_t message_bytes = Number == 0x22 ? b : 0x100;
     if constexpr (Number == 0x21 || Number == 0x22) {
@@ -539,6 +540,7 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
                 if (target && (tipc_request || magic == 0x49434653)) {
                     check_ipc_result = true; cmif_header = header;
                     ipc_target = target->name(); ipc_command = command;
+                    ipc_arguments = nxrt::diagnostic::snapshot_arguments(message, session->domain);
                 }
             }
         }
@@ -610,10 +612,16 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
     if (check_ipc_result && c->x[0] == 0) {
         const auto reply = nxrt::diagnostic::decode_reply(reinterpret_cast<const uint32_t*>(message_address),
             message_bytes / 4, tipc_request, cmif_header);
-        if (!reply.valid || reply.result) {
+        if (nxrt::diagnostic::stop_on_reply(reply, ipc_target, ipc_command)) {
             std::printf("SDK_STOP service=%s command=%u protocol=%s result=%08x reply_magic=%08x malformed=%u\n",
                 ipc_target.c_str(), ipc_command, tipc_request ? "TIPC" : "CMIF", reply.result, reply.magic,
-                !reply.valid); stop_probe();
+                !reply.valid);
+            std::printf("SDK_STOP_ARGS valid=%u exact_size=%u bytes=%zu captured=%zu hex=",
+                ipc_arguments.valid, ipc_arguments.exact_size, ipc_arguments.bytes, ipc_arguments.captured);
+            for (size_t n = 0; n < ipc_arguments.captured; ++n) std::printf("%02x", ipc_arguments.prefix[n]);
+            std::printf(" fn=%llx lr=%llx\n", static_cast<unsigned long long>(c->fn),
+                static_cast<unsigned long long>(c->x[30]));
+            stop_probe();
         }
     }
     if constexpr (Number == 0x1f) {
