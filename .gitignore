@@ -19,6 +19,7 @@ romfs/
 *.o
 *.pdb
 *.map
+!/ps5/app/exports.map
 *.log
 pkp.ini
 pipeline_keys.bin

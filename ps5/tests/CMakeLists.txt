@@ -17,8 +17,9 @@ nxrecomp_add_module(subpage_fixture INPUT "${fixture_elf}" NAME subpage_fixture 
 target_compile_definitions(subpage_fixture PUBLIC NXRECOMP_SUBPAGE_CHECKS=1)
 include("${CMAKE_CURRENT_LIST_DIR}/../platform.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../core.cmake")
-add_executable(ps5_sync_tests sync_main.cpp "${root}/runtime/tests/test_sync.cpp"
+set(platform_test_sources sync_main.cpp "${root}/runtime/tests/test_sync.cpp"
     "${root}/runtime/tests/test_log_config.cpp" test_host_vm.cpp test_subpage.cpp)
+add_executable(ps5_sync_tests ${platform_test_sources})
 add_executable(ps5_memory_capabilities memory_capabilities.cpp)
 target_include_directories(ps5_sync_tests PRIVATE "${root}/runtime/include" "${root}/runtime/tests")
 target_compile_options(ps5_sync_tests PRIVATE -Wall -Wextra -Werror -mcx16)
@@ -27,6 +28,34 @@ if(PS5)
     target_sources(ps5_sync_tests PRIVATE test_guest_region.cpp)
     target_compile_definitions(ps5_sync_tests PRIVATE NXRT_TEST_PS5=1)
     target_compile_definitions(ps5_memory_capabilities PRIVATE NXRT_TEST_PS5=1)
+endif()
+
+option(PKP_BUILD_NATIVE_APP "Build the runtime suite as a native application" OFF)
+set(PKP_NATIVE_APP_ROOT "" CACHE PATH "Pinned ps5-native-app-boilerplate checkout")
+if(PKP_BUILD_NATIVE_APP)
+    if(NOT PS5 OR NOT EXISTS "${PKP_NATIVE_APP_ROOT}/tooling/native/app_crt.cpp")
+        message(FATAL_ERROR "Native app tests require the PS5 SDK and PKP_NATIVE_APP_ROOT")
+    endif()
+    set(native "${PKP_NATIVE_APP_ROOT}/tooling/native")
+    set(sdk "$ENV{PS5_PAYLOAD_SDK}")
+    add_executable(ps5_runtime_app ${platform_test_sources} test_guest_region.cpp
+        test_app_runtime.cpp "${native}/app_crt.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/runtime.cpp")
+    set_property(TARGET ps5_runtime_app PROPERTY SKIP_BUILD_RPATH TRUE)
+    target_include_directories(ps5_runtime_app PRIVATE "${root}/runtime/include" "${root}/runtime/tests")
+    target_compile_options(ps5_runtime_app PRIVATE -Wall -Wextra -Werror -mcx16)
+    target_compile_definitions(ps5_runtime_app PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_NATIVE_APP=1)
+    target_link_options(ps5_runtime_app PRIVATE -nostartfiles -nodefaultlibs
+        "LINKER:-T,${native}/ps5-pie.ld" "LINKER:-T,${CMAKE_CURRENT_LIST_DIR}/../app/unwind.ld"
+        "LINKER:--version-script,${CMAKE_CURRENT_LIST_DIR}/../app/exports.map"
+        "LINKER:--eh-frame-hdr" "LINKER:--no-dynamic-linker" "LINKER:-e,_start")
+    target_link_libraries(ps5_runtime_app PRIVATE nxrt_ps5_core subpage_fixture
+        "-Wl,--start-group" "${sdk}/target/lib/libc++.a" "${sdk}/target/lib/libc++abi.a"
+        "${sdk}/target/lib/libunwind.a" "-Wl,--end-group" "-Wl,--as-needed"
+        "${sdk}/target/lib/libSceLibcInternal.so" "${sdk}/target/lib/libkernel.so"
+        "${sdk}/target/lib/libc.a" "${sdk}/target/lib/libSceNet.so")
+    set_property(TARGET ps5_runtime_app APPEND PROPERTY LINK_DEPENDS
+        "${native}/ps5-pie.ld" "${CMAKE_CURRENT_LIST_DIR}/../app/unwind.ld"
+        "${CMAKE_CURRENT_LIST_DIR}/../app/exports.map")
 endif()
 enable_testing()
 add_test(NAME platform COMMAND ps5_sync_tests)

@@ -34,13 +34,21 @@ int main() {
         if (mkdir(path, 0777) != 0 && errno != EEXIST) return 4;
     }
     char report[160];
-    std::snprintf(report, sizeof report, "/data/pokopia-recomp/tests/platform-%lld-%d.log",
+#ifdef NXRT_TEST_NATIVE_APP
+    constexpr const char* prefix = "app-platform";
+#else
+    constexpr const char* prefix = "platform";
+#endif
+    std::snprintf(report, sizeof report, "/data/pokopia-recomp/tests/%s-%lld-%d.log", prefix,
                   static_cast<long long>(std::time(nullptr)), static_cast<int>(getpid()));
     if (!std::freopen(report, "w", stdout)) return 5;
     if (dup2(fileno(stdout), fileno(stderr)) < 0) return 6;
     if (setenv("NXRT_TEST_TEMP", "/data/pokopia-recomp/tests", 1) != 0) return 7;
 #endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+#ifdef NXRT_TEST_NATIVE_APP
+    std::puts("context=native-app title=PPSA98731");
+#endif
     nxrt::log_init({.path = "", .level = nxrt::LogLevel::Error, .to_stderr = false});
     for (const auto& test : nxtest::cases()) {
         std::printf("RUN %s\n", test.name);

@@ -225,6 +225,55 @@ address arena before initializing graphics. The existing RADV arena spans
 `0x4000000000` through `0x8000000000` and overlaps the lifted game layout.
 Do not combine the allocators until their ranges have been separated and tested.
 
+## ShadowMountPlus runtime app
+
+The runtime suite also builds as the native title **Pokopia Runtime Tests**,
+`PPSA98731`. This is an application-process check before game integration. It
+contains original ARM fixtures and runtime tests, with no Pokopia code or assets.
+It uses the native application CRT, kernel provider, C++ libraries and companion
+`libc.prx`, rather than the payload CRT. Two additional cases verify thread-local
+destruction and C++ exception cleanup, bringing the app suite to 68 cases.
+
+Use the pinned public native app toolchain, prepared locally:
+
+```sh
+git clone https://github.com/blackbearreloaded/ps5-native-app-boilerplate.git /path/to/native-tools
+git -C /path/to/native-tools checkout dd44bbdc75437332ed22e3ba95126733419ef25a
+bash /path/to/native-tools/tools/setup-native-dependencies.sh
+make -C /path/to/native-tools libc
+export LLVM_CONFIG=/usr/bin/llvm-config-18
+export NX_PYTHON=/path/to/recompiler/python
+bash ps5/build_runtime_app.sh /path/to/native-tools /path/to/private/app-build
+```
+
+If `PS5_PAYLOAD_SDK` is already set, it must point to the SDK inside that pinned
+toolchain. The script verifies the revision and clean source inputs, rebuilds
+the host tools as needed, checks the companion runtime's recorded hash, builds
+the app, converts/signs its native executable, and verifies mapped segments use
+16 KiB alignment. `native-app-manifest.json` records every packaged file's hash.
+The package uses the toolchain's placeholder icon, backgrounds and selection
+audio; its license is included. No GitHub build is involved.
+
+Copy the complete `package/PPSA98731` folder to `/data/homebrew/PPSA98731` and
+verify its files, publishing `sce_sys/param.json` last so scanning cannot register
+an incomplete title. Do not overwrite an existing title of that ID without first
+establishing it belongs to this test. ShadowMountPlus can then register it through
+its [scan API](https://github.com/drakmor/ShadowMountPlus/blob/1.7/docs/api.md).
+
+Launch **Pokopia Runtime Tests** from the PS5 home screen. This headless suite
+normally displays a blank screen while running and exits when finished. It writes
+`/data/pokopia-recomp/tests/app-platform-<time>-<pid>.log`, starting with
+`context=native-app title=PPSA98731`. Only a complete report with 68 cases and
+zero failures, together with process exit, establishes success. Registration,
+FSELF inspection and payload-suite results do not establish application runtime
+behavior. Native game boot and gameplay remain separate checks.
+
+On 2026-11-03 the app built locally, its FSELF integrity/alignment checks passed,
+and all nine packaged files were uploaded and readback-verified. ShadowMountPlus
+1.7beta11 reports the title installed, managed and available. The first app launch
+report is still pending. Executable SHA-256:
+`232bce4c68d1db585c5005fc1d4c401b3cecaa2009bede75bb3cb97d1e88cb32`.
+
 ## Repository ownership
 
 `origin` is `dakotadawolfe/Pokopia-Recomp-PS5`; `upstream` is the original
