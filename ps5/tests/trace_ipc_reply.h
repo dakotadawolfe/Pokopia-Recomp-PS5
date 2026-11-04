@@ -49,6 +49,12 @@ inline bool stop_on_reply(const IpcReplyResult& reply, std::string_view service,
         reply.result == ((400u << 9) | 164u)) return false;
     if (service == "IApplicationFunctions" && (command == 1 || command == 141 || command == 151) &&
         reply.result == ((2u << 9) | 128u)) return false;
+    // Offline account operations return the actual registration-required result
+    // to the SDK. Do not turn unported calls or malformed replies into success.
+    if (reply.result == ((200u << 9) | 124u)) {
+        if (service == "IManagerForApplication" && (command == 0 || command == 1 || command == 3 || command == 4)) return false;
+        if ((service == "IAsyncContext" || service == "IAsyncNetworkServiceLicenseKindContext") && command == 3) return false;
+    }
     return true;
 }
 inline IpcReplyResult decode_reply(const uint32_t* words, size_t count, bool tipc, size_t cmif_header = 0) {

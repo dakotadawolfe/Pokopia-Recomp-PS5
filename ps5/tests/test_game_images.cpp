@@ -53,6 +53,7 @@ namespace nxrt::services { void register_aoc(); void aoc_reset(); }
 namespace nxrt::services { void register_pctl(); }
 namespace nxrt::services { void register_fs(); void fs_reset(); }
 namespace nxrt::services { void register_time(); void time_reset(); }
+namespace nxrt::services { void register_acc(); void acc_reset(); }
 #endif
 
 NXTEST_GROUP(game_images)
@@ -676,6 +677,7 @@ struct RtldCleanup {
         if (installed) for (unsigned n = 0; n < rtld_handlers.size(); ++n) nxrt::svc_register(n, rtld_handlers[n]);
         nxrt::kernel::main_thread_release(); nxrt::kernel::kernel_reset(); nxrt::ipc::registry_reset(); nxrt::services::am_reset();
         nxrt::services::aoc_reset();
+        nxrt::services::acc_reset();
         nxrt::services::fs_reset();
         nxrt::services::time_reset();
         nxrt::svc_memory_reset_for_tests();
@@ -807,6 +809,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     nxrt::services::register_pctl();
     nxrt::services::fs_reset(); nxrt::services::register_fs();
     nxrt::services::time_reset(); nxrt::services::register_time();
+    nxrt::services::acc_reset(); nxrt::services::register_acc();
 #endif
     REQUIRE(mem::init({.heap_reserve = 12ull << 30}));
     nxrt::Module* rtld = nullptr;

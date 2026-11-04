@@ -476,7 +476,79 @@ The transfer helper (PID 111) and completed test process (PID 119) are gone;
 both owned payload slots were removed and port 2121 is closed, recorded in
 `game-renderer-fsp-result-console.json`. Game files and shader caches were not
 transferred or changed.
-Actual game execution beyond command 210 remains unverified.
+Report `game-native-1793833549-124.log` confirms command 210 succeeds. The title
+continues through display/performance queries and opens `acc:u0`, which was not
+registered in that build. The observer stops before any account command is
+sent, after 197 SVC calls and 811 ms of guest dispatch. Heap allocation and
+RomFS reads succeed. Renderer counters remain zero submits, draws and presents;
+the "Waiting for first game frame" text is host status, not a game frame.
+The app returns Home with the controlled dependency status 2.
+
+## Offline account startup batch
+
+The PS5 runtime now registers `acc:u0` and the read-only query subset of
+`acc:u1`. One fixed local profile is open at launch. User count, existence,
+lists, last-opened user, noninteractive selection, profile metadata and the
+launch record use the same process-owned identity. Initialization commands
+100/140/160 validate the PID-bearing eight-byte request and share initialization
+state across sessions. On `acc:u1`, command 140 retains its different meaning,
+ListQualifiedUsers. Registration, profile mutation and thumbnail writes remain
+unported and do not report success.
+
+The default UID is the existing runtime identity, first word `1`, second word
+`0x6e78727475736572`, with nickname `Player`. Optional `[account] uid` (exactly
+32 hexadecimal digits, nonzero) and `nickname` are snapshotted at registration.
+Invalid IDs fall back to the default with a warning. Existing profile objects
+retain their snapshot across reset, and handles cannot cross guest process
+boundaries. This identity lives in the runtime; it does not create or alter a
+PS5 shell account. Save-file import/mapping is not implemented by this batch.
+
+The applet preselected-user channel now supplies the registered profile once
+per launch using the 0x88-byte record consumed by
+[libnx account initialization](https://github.com/switchbrew/libnx/blob/master/nx/source/services/acc.c).
+It remains empty when no account service has been registered. ProfileBase is
+0x38 bytes, UserData is 0x80 bytes with stock icon ID 1 at offset 4, and no JPEG
+avatar bytes are supplied; those layouts follow
+[the account structures](https://github.com/switchbrew/libnx/blob/master/nx/include/switch/services/acc.h).
+Guest output permissions and lengths are validated before copying.
+
+The profile has no network-service account. Network availability, account-ID
+and token-cache requests return `124-200` without an invented ID or token.
+Async token/license requests return completed contexts with readable completion
+events and the same registration-required result; the license kind is zero.
+Only that exact result at the implemented account endpoints passes through the
+startup observer. Unknown commands, malformed replies and unrelated failures
+still stop. Requesting a network-qualified user returns an empty UID, and the
+fixed single-profile frontend reports account switching locked.
+
+The actual supplied SDK's application proxies at `0x7500190bfc` (140) and
+`0x7500190c2c` (160) use `0x75000c76c4`, which marshals an eight-byte argument
+and sends the PID. This is static evidence from the private generated SDK
+source, not proof that the game's next runtime command will be either one.
+
+Console report `svc-runtime-1793833969-131.log` records **156 cases, zero
+failures**. The ten added cases cover domain IPC, receive-list buffers,
+preselection storage, PID/init state, identity consistency, profile byte layout,
+buffer boundaries, process isolation, reset snapshots, offline results,
+completion-event ownership and handle exhaustion. Payload: 4,405,936 bytes,
+SHA-256 `cd12f8d8a95a91dd6e4d02e4ac658bb294e772917999a42eb9a5c03718b4652e`.
+This is console service validation; a game launch through the account batch is
+still unverified.
+
+The local native build, exception-linkage checks and packaging pass. FSELF:
+278,441,793 bytes, SHA-256
+`02feb52e59d376e6e43484cc8c4a3d57b565e67d1e0b3515454e4b604e9135c2`.
+Native ELF: 284,240,116 bytes, SHA-256
+`b2287e0bbd2ea437bbdcb76c2bd33cb7e59a9fbd43900e23dfa8675de3c433de`.
+The private module stamp, RADV/platform libraries and startup shader package
+are unchanged. Source and build instructions remain in Git; compiled game
+code and console reports remain in the ignored local work directory.
+`game-renderer-account-install.json` records a stopped/unmounted title check,
+the previous executable backup, and complete matching staged/installed SHA-256
+readbacks. The owned transfer helper (PID 126) and service test (PID 131) are
+gone, their two temporary payload slots are removed, and port 2121 is closed.
+Cleanup is recorded in `game-renderer-channels-result-console.json`. No game
+files or shader caches were transferred or changed.
 
 ## Interpreting a run
 

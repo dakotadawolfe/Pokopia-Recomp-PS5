@@ -52,7 +52,7 @@ if(PS5)
         BASE 0x7300000000 KIND static_elf SHARDS 1 JOBS 1)
     target_compile_definitions(svc_fixture PUBLIC NXRECOMP_SUBPAGE_CHECKS=1)
     add_executable(ps5_svc_tests sync_main.cpp test_svc_posix.cpp test_svc_memory_ps5.cpp test_svc_info_ps5.cpp test_svc_ipc_ps5.cpp test_fs_ps5.cpp
-        test_time_clock.cpp test_time_zone.cpp test_time_ps5.cpp protect_fault.cpp "${root}/ps5/app/thread_exit.cpp")
+        test_time_clock.cpp test_time_zone.cpp test_time_ps5.cpp test_acc_ps5.cpp protect_fault.cpp "${root}/ps5/app/thread_exit.cpp")
     target_include_directories(ps5_svc_tests PRIVATE "${root}/runtime/tests")
     target_compile_definitions(ps5_svc_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_SVC=1)
     target_compile_options(ps5_svc_tests PRIVATE -Wall -Wextra -Werror -mcx16)
@@ -115,7 +115,7 @@ file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/test_fs_ps5.cpp" fs_cases REGEX "^NXTEST
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_fs_ps5.cpp")
 list(LENGTH fs_cases fs_case_count)
 math(EXPR ipc_svc_count "${ipc_svc_count} + ${fs_case_count}")
-foreach(time_source test_time_clock.cpp test_time_zone.cpp test_time_ps5.cpp)
+foreach(time_source test_time_clock.cpp test_time_zone.cpp test_time_ps5.cpp test_acc_ps5.cpp)
     file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/${time_source}" time_cases REGEX "^NXTEST\\(")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/${time_source}")
     list(LENGTH time_cases time_case_count)
@@ -210,7 +210,7 @@ if(PKP_BUILD_NATIVE_APP)
     set(native "${PKP_NATIVE_APP_ROOT}/tooling/native")
     set(sdk "$ENV{PS5_PAYLOAD_SDK}")
     add_executable(ps5_runtime_app ${platform_test_sources} test_guest_region.cpp test_kernel_posix.cpp test_svc_posix.cpp test_svc_memory_ps5.cpp test_svc_info_ps5.cpp test_svc_ipc_ps5.cpp test_fs_ps5.cpp
-        test_time_clock.cpp test_time_zone.cpp test_time_ps5.cpp
+        test_time_clock.cpp test_time_zone.cpp test_time_ps5.cpp test_acc_ps5.cpp
         test_app_runtime.cpp test_app_heap.cpp heap_fault.cpp "${CMAKE_CURRENT_LIST_DIR}/../app/heap.cpp"
         "${native}/app_crt.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/runtime.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/../app/thread_exit.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/lifecycle.cpp"

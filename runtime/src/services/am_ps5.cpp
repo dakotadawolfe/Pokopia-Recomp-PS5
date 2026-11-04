@@ -4,6 +4,7 @@
 #include "services_internal.h"
 #include "gsv_ps5.h"
 #include "nxrt/am_ps5.h"
+#include "nxrt/acc_ps5.h"
 #include "nxrt/config.h"
 #include "nxrt/kernel.h"
 #include "nxrt/subpage.h"
@@ -51,6 +52,7 @@ struct State {
     std::shared_ptr<kernel::EventState> event210 = std::make_shared<kernel::EventState>();
     std::vector<std::shared_ptr<Storage>> user_channel;
     size_t user_channel_bytes = 0;
+    bool launch_user_consumed = false;
     std::deque<uint32_t> messages{focus_changed};
     bool docked = true, focused = true, foreground = false;
     bool operation_notify = false, performance_notify = false;
@@ -220,10 +222,19 @@ Ptr application(const std::shared_ptr<State>& state) {
             if (const auto rc = scalar_request(req, 4)) return rc;
             const auto kind = req.arg<uint32_t>(0);
             if (kind != 1 && kind != 2) return kernel::kOutOfRange;
-            // The folder picker does not select a guest account. No fabricated
-            // preselected-user record is returned for kind 2.
             std::lock_guard lock(state->mu);
-            if (kind == 2 || state->user_channel.empty()) return no_channel_data;
+            if (kind == 2) {
+                uint64_t hi = 0, lo = 0;
+                if (state->launch_user_consumed || !accapi::launch_user(&hi, &lo)) return no_channel_data;
+                auto data = std::make_shared<Storage>(0x88);
+                constexpr uint32_t magic = 0xc79497ca;
+                std::memcpy(data->bytes.data(), &magic, 4); data->bytes[4] = 1;
+                std::memcpy(data->bytes.data() + 8, &hi, 8);
+                std::memcpy(data->bytes.data() + 16, &lo, 8);
+                rsp.push_object(std::make_shared<AppletStorage>(data));
+                state->launch_user_consumed = true; return 0;
+            }
+            if (state->user_channel.empty()) return no_channel_data;
             auto data = state->user_channel.back();
             rsp.push_object(std::make_shared<AppletStorage>(data));
             state->user_channel.pop_back(); state->user_channel_bytes -= data->bytes.size();

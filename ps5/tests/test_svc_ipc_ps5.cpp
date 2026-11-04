@@ -8,6 +8,7 @@
 #include "nxrt/log.h"
 #include "nxrt/services_api.h"
 #include "nxrt/am_ps5.h"
+#include "nxrt/acc_ps5.h"
 #include "nxrt/config.h"
 #include "nxrt/game.h"
 #include "nxrt/services.h"
@@ -964,6 +965,60 @@ NXTEST(applet_basic_queries_return_native_locale_title_version_and_capabilities)
     CHECK(std::memcmp(rsp.out.data(), "123456789012345\0", 16) == 0);
     req.cmd = 65; rsp = {}; CHECK_EQ(service->handle(req, rsp), 0u); REQUIRE(rsp.out.size() == 1); CHECK_EQ(rsp.out[0], 0);
     req.cmd = 123; rsp = {}; CHECK_EQ(service->handle(req, rsp), 0u); CHECK_EQ(word(rsp.out, 0), UINT32_MAX);
+}
+namespace {
+struct AccountGuard {
+    AccountGuard() { nxrt::services::acc_reset(); nxrt::services::register_acc(); }
+    ~AccountGuard() { nxrt::services::acc_reset(); }
+};
+}
+NXTEST(account_sdk_domain_initialization_profile_and_receive_list_use_real_wire_layouts) {
+    Fixture f; AccountGuard guard; const auto account = f.connect("acc:u0"); REQUIRE(account);
+    auto convert = request(0); convert.type = hipc::kInvoke2ManagerMethodOld;
+    REQUIRE(f.send(account, convert) == k::kOk); CHECK_EQ(word(f.reply().raw, 16), 1u);
+    const auto domain = [](uint32_t target, hipc::Message inner) {
+        auto body = std::move(inner.raw); inner.raw.clear();
+        push(inner.raw, uint8_t{1}); push(inner.raw, uint8_t{0}); push(inner.raw, static_cast<uint16_t>(body.size()));
+        push(inner.raw, target); push(inner.raw, uint64_t{0}); inner.raw.insert(inner.raw.end(), body.begin(), body.end());
+        return inner;
+    };
+    auto init = request(160); init.has_pid = true;
+    REQUIRE(f.send(account, domain(1, init)) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), k::kInvalidSize);
+    push(init.raw, uint64_t{0});
+    REQUIRE(f.send(account, domain(1, init)) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), 0u);
+    auto last = domain(1, request(4)); REQUIRE(f.send(account, last) == k::kOk);
+    const auto last_reply = f.reply(); REQUIRE(last_reply.raw.size() >= 48);
+    std::array<uint8_t, 16> uid{}; std::memcpy(uid.data(), last_reply.raw.data() + 32, uid.size());
+    auto get = request(5); get.raw.insert(get.raw.end(), uid.begin(), uid.end());
+    REQUIRE(f.send(account, domain(1, get)) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), 0u);
+    const auto profile = word(f.reply().raw, 32); REQUIRE(profile > 1 && profile != UINT32_MAX);
+    auto full = request(0); full.recv_list_flags = 2; full.recv_list.push_back({f.base + 0x1000, 0x80});
+    REQUIRE(f.send(account, domain(profile, full)) == k::kOk);
+    const auto response = f.reply(); CHECK_EQ(word(response.raw, 24), 0u); REQUIRE(response.raw.size() >= 88);
+    CHECK(std::memcmp(response.raw.data() + 32, uid.data(), uid.size()) == 0);
+    CHECK_EQ(*reinterpret_cast<const uint32_t*>(f.base + 0x1004), 1u);
+    auto users = request(2); users.recv_list_flags = 2; users.recv_list.push_back({f.base + 0x1100, 0x80});
+    REQUIRE(f.send(account, domain(1, users)) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), 0u);
+    CHECK(std::memcmp(reinterpret_cast<void*>(f.base + 0x1100), uid.data(), uid.size()) == 0);
+}
+NXTEST(applet_preselected_user_storage_matches_account_uid_is_consumed_once_and_resets_per_launch) {
+    AmFixture f; AccountGuard guard; auto application = f.child(f.open(), 20); REQUIRE(application);
+    auto pop = request(1); push(pop.raw, uint32_t{2}); REQUIRE(f.send(application, pop) == k::kOk);
+    auto response = f.reply(); CHECK_EQ(word(response.raw, 8), 0u); REQUIRE(response.move.size() == 1);
+    const auto accessor = f.child(response.move[0], 0); REQUIRE(accessor);
+    REQUIRE(f.send(accessor, request(0)) == k::kOk); CHECK_EQ(word(f.reply().raw, 16), 0x88u);
+    auto read = request(11); push(read.raw, int64_t{0}); read.recv.push_back({f.base + 0x1000, 0x88, 0});
+    REQUIRE(f.send(accessor, read) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    const auto bytes = reinterpret_cast<const uint8_t*>(f.base + 0x1000);
+    uint32_t magic = 0; std::memcpy(&magic, bytes, 4); CHECK_EQ(magic, 0xc79497cau); CHECK_EQ(bytes[4], 1u);
+    uint64_t hi = 0, lo = 0; REQUIRE(nxrt::services::accapi::launch_user(&hi, &lo));
+    CHECK(std::memcmp(bytes + 8, &hi, 8) == 0); CHECK(std::memcmp(bytes + 16, &lo, 8) == 0);
+    CHECK(std::all_of(bytes + 24, bytes + 0x88, [](auto v) { return !v; }));
+    REQUIRE(f.send(application, pop) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 2));
+    nxrt::services::am_reset(); application = f.child(f.open(), 20); REQUIRE(application);
+    REQUIRE(f.send(application, pop) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    nxrt::services::am_reset(); nxrt::services::acc_reset(); application = f.child(f.open(), 20); REQUIRE(application);
+    REQUIRE(f.send(application, pop) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 2));
 }
 NXTEST(applet_capture_policy_disables_guest_capture_and_does_not_enable_unbacked_sharing) {
     AmFixture f; const auto p = f.open(), application = f.child(p, 20), self = f.child(p, 1);
