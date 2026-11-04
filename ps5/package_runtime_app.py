@@ -81,8 +81,13 @@ def main():
                 "files": {name: {"bytes": (app / name).stat().st_size, "sha256": sha(app / name)} for name in sorted(expected)}}
     (args.build / "native-app-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Native runtime test package: {app}")
-    print("Launch through ShadowMountPlus; " + ("this diagnostic includes the recompiled rtld and stops at the SDK handoff."
-          if suite.get("executes_game_rtld") else "this package contains no Pokopia game code or assets."))
+    if suite.get("executes_game_sdk"):
+        detail = "this diagnostic includes rtld and SDK code, stopping before applet-manager initialization."
+    elif suite.get("executes_game_rtld"):
+        detail = "this diagnostic includes the recompiled rtld and stops at the SDK handoff."
+    else:
+        detail = "this package contains no Pokopia game code or assets."
+    print("Launch through ShadowMountPlus; " + detail)
 
 
 if __name__ == "__main__":

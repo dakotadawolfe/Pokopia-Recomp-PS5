@@ -17,6 +17,8 @@
 #include "nxrt/kernel.h"
 #include "nxrt/nxmodule.h"
 #include "nxrt/services.h"
+#include "nxrt/ipc.h"
+#include "nxrt/hipc.h"
 #include "nxrt/subpage.h"
 #include "nxrt/svc.h"
 #include <chrono>
@@ -25,6 +27,7 @@
 #include <thread>
 #include <utility>
 namespace nxrt { void svc_memory_reset_for_tests(); void svc_info_reset_for_tests(); }
+namespace nxrt::services { void register_logfault(); void logfault_reset(); }
 #endif
 
 NXTEST_GROUP(game_images)
@@ -130,15 +133,48 @@ NXTEST(decrypted_game_images_map_with_original_contents_and_permissions) {
 #ifdef NXRT_TEST_RTLD
 namespace {
 extern "C" const NxModule nxmod_rtld;
+#ifdef NXRT_TEST_SDK
+extern "C" const NxModule nxmod_sdk;
+extern "C" const uint32_t nxmod_sdk_abi;
+#endif
 struct Handoff {};
 struct ProbeStop {};
 std::array<nxrt::SvcHandler, nxrt::kSvcCount> rtld_handlers{};
 unsigned rtld_calls = 0;
 uint64_t rtld_handoff_handle = 0;
+bool sdk_applet_boundary = false;
+#ifdef NXRT_TEST_SDK
+nxrt::GuestFn sdk_start = nullptr;
+std::array<nxrt::GuestFn, 3> sdk_callbacks{};
+std::array<unsigned, 3> sdk_callback_returns{};
+template<unsigned N> void sdk_callback(::Ctx* c) {
+    std::printf("SDK_CALLBACK begin=%u\n", N); sdk_callbacks[N](c); ++sdk_callback_returns[N];
+    std::printf("SDK_CALLBACK returned=%u\n", N);
+}
+void trace_sdk_start(::Ctx* c) {
+    rtld_handoff_handle = c->x[0];
+    constexpr nxrt::GuestFn wrappers[] = {sdk_callback<0>, sdk_callback<1>, sdk_callback<2>};
+    for (unsigned n = 0; n < 3; ++n) {
+        sdk_callbacks[n] = nxrt::fn_lookup(c->x[n + 2]); sdk_callback_returns[n] = 0;
+        if (!sdk_callbacks[n]) throw ProbeStop{};
+        nxrt::fn_register(c->x[n + 2], wrappers[n]);
+    }
+    std::printf("SDK_ENTER main_handle=%llx\n", static_cast<unsigned long long>(rtld_handoff_handle));
+    sdk_start(c);
+}
+#endif
 template<size_t Number> void rtld_svc(::Ctx* c) {
     if (++rtld_calls > 10000) { std::puts("RTLD_STOP system-call limit"); throw ProbeStop{}; }
     const uint64_t a = c->x[0], b = c->x[1], d = c->x[2];
-    if (!rtld_handlers[Number] || (Number != 2 && Number != 3 && Number != 6 && Number != 0x27 && Number != 0x29)) {
+#ifdef NXRT_TEST_SDK
+    constexpr bool allowed = Number == 1 || Number == 2 || Number == 3 || Number == 6 || Number == 0xc ||
+        Number == 0xd || Number == 0xe || Number == 0xf || Number == 0x10 || Number == 0x16 ||
+        Number == 0x1e || Number == 0x1f || Number == 0x21 || Number == 0x22 || Number == 0x24 ||
+        Number == 0x25 || Number == 0x27 || Number == 0x29 || Number == 0x6f || Number == 0x7c;
+#else
+    constexpr bool allowed = Number == 2 || Number == 3 || Number == 6 || Number == 0x27 || Number == 0x29;
+#endif
+    if (!rtld_handlers[Number] || !allowed) {
         std::printf("RTLD_STOP svc=%02zx fn=%llx lr=%llx x0=%llx x1=%llx x2=%llx\n", Number,
             static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]),
             static_cast<unsigned long long>(a), static_cast<unsigned long long>(b), static_cast<unsigned long long>(d));
@@ -149,7 +185,46 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
         if (n && mem::SubpageMap::allows(a, n, 1))
             std::printf("RTLD_DEBUG %.*s\n", static_cast<int>(n), reinterpret_cast<const char*>(a));
     }
+#ifdef NXRT_TEST_SDK
+    if constexpr (Number == 0x21) {
+        const auto session = nxrt::kernel::handle_as<nxrt::ipc::KSession>(a);
+        if (session && session->svc->name() == "sm:" && mem::SubpageMap::allows(c->tpidrro, 0x100, 3)) {
+            nxrt::hipc::Message message;
+            if (nxrt::hipc::parse(reinterpret_cast<const uint32_t*>(c->tpidrro), 64, message)) {
+                uint32_t magic = 0, command = UINT32_MAX;
+                if (message.raw.size() >= 24) {
+                    std::memcpy(&magic, message.raw.data(), 4); std::memcpy(&command, message.raw.data() + 8, 4);
+                }
+                const bool cmif = message.type == nxrt::hipc::kInvoke2MethodOld || message.type == nxrt::hipc::kInvoke2Method;
+                const bool wants_applet = cmif && magic == 0x49434653 && command == 1 &&
+                    std::memcmp(message.raw.data() + 16, "appletOE", 8) == 0;
+                const bool tipc_applet = message.type == nxrt::hipc::kTipcBase + 1 && message.raw.size() >= 8 &&
+                    std::memcmp(message.raw.data(), "appletOE", 8) == 0;
+                if (wants_applet || tipc_applet) {
+                    sdk_applet_boundary = true;
+                    std::puts("SDK_BOUNDARY requested appletOE; stopped before service lookup; applet manager and title startup not executed");
+                    throw Handoff{};
+                }
+            }
+        }
+    }
+#endif
     rtld_handlers[Number](c);
+#ifdef NXRT_TEST_SDK
+    if constexpr (Number == 0x1f) {
+        std::printf("SDK_PORT %s result=%llx handle=%llx\n", c->x[0] == 0 ? reinterpret_cast<const char*>(b) : "(rejected)",
+            static_cast<unsigned long long>(c->x[0]), static_cast<unsigned long long>(c->x[1]));
+    }
+    if constexpr (Number == 0x21 || Number == 0x22) {
+        std::printf("SDK_IPC %s\n", nxrt::ipc::ipc_summary().c_str());
+        const auto missing = nxrt::ipc::stub_names_requested();
+        if (!missing.empty()) {
+            for (const auto& name : missing) std::printf("SDK_STOP unported service=%s fn=%llx lr=%llx\n", name.c_str(),
+                static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]));
+            throw ProbeStop{};
+        }
+    }
+#endif
     if (rtld_calls <= 80 || c->x[0]) std::printf("RTLD_SVC n=%u svc=%02zx a=%llx b=%llx d=%llx rc=%llx out=%llx\n",
         rtld_calls, Number, static_cast<unsigned long long>(a), static_cast<unsigned long long>(b),
         static_cast<unsigned long long>(d), static_cast<unsigned long long>(c->x[0]), static_cast<unsigned long long>(c->x[1]));
@@ -162,7 +237,7 @@ struct RtldCleanup {
     bool installed = false;
     ~RtldCleanup() {
         if (installed) for (unsigned n = 0; n < rtld_handlers.size(); ++n) nxrt::svc_register(n, rtld_handlers[n]);
-        nxrt::kernel::main_thread_release(); nxrt::kernel::kernel_reset();
+        nxrt::kernel::main_thread_release(); nxrt::kernel::kernel_reset(); nxrt::ipc::registry_reset();
         nxrt::modules_unload_all(); nxrt::nxmodules_clear(); nxrt::hle_clear(); nxrt::hle_restore_current(nullptr);
         nxrt::svc_info_reset_for_tests(); nxrt::svc_memory_reset_for_tests(); mem::shutdown();
         nxrt::game::set_current(previous);
@@ -180,12 +255,24 @@ struct RtldDeadline {
 };
 }
 
+#ifdef NXRT_TEST_SDK
+// Fail explicitly if startup reaches guest exception machinery before it is ported.
+extern "C" void nx_catch_call(Ctx* c, void (*)(Ctx*, uint64_t)) {
+    std::printf("SDK_STOP guest exception frame fn=%llx\n", static_cast<unsigned long long>(c->fn));
+    throw ProbeStop{};
+}
+NXTEST(decrypted_sdk_reaches_applet_boundary_after_service_and_logger_initialization) {
+#else
 NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
+#endif
     nxrt::game::Info game{.platform = nxrt::game::Platform::Switch2};
     RtldCleanup cleanup;
-    nxrt::kernel::kernel_reset(); nxrt::modules_unload_all(); nxrt::nxmodules_clear(); nxrt::hle_clear();
+    nxrt::kernel::kernel_reset(); nxrt::ipc::registry_reset(); nxrt::modules_unload_all(); nxrt::nxmodules_clear(); nxrt::hle_clear();
     nxrt::svc_memory_reset_for_tests(); nxrt::svc_info_reset_for_tests(); mem::shutdown();
     nxrt::game::set_current(&game);
+#ifdef NXRT_TEST_SDK
+    nxrt::services::logfault_reset(); nxrt::services::register_logfault();
+#endif
     REQUIRE(mem::init({.heap_reserve = 12ull << 30}));
     nxrt::Module* rtld = nullptr;
     for (const auto& expected : game_image_inputs) {
@@ -197,6 +284,21 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         REQUIRE(module);
         if (std::strcmp(expected.name, "rtld") == 0) rtld = module;
     }
+#ifdef NXRT_TEST_SDK
+    auto registered = nxrt::nxmodule_register(nxrt::module_by_name("sdk"), &nxmod_sdk, nxmod_sdk_abi);
+    REQUIRE(registered.ok()); REQUIRE(registered.functions == static_cast<size_t>(nxmod_sdk.nfns));
+    const auto sdk_entry = nxrt::nxmodule_find_export("_ZN2nn4init5StartEmmPFvvES2_S2_");
+    sdk_start = nxrt::fn_lookup(sdk_entry); REQUIRE(sdk_start); nxrt::fn_register(sdk_entry, trace_sdk_start);
+    for (int n = 0; n < nxmod_sdk.nsyms; ++n) {
+        const auto& symbol = nxmod_sdk.syms[n];
+        if (symbol.defined || !symbol.name || !*symbol.name) continue;
+        nxrt::hle_register(symbol.name, +[](::Ctx* c) {
+            std::printf("SDK_STOP external call %s fn=%llx lr=%llx\n", c->in_import,
+                static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]));
+            throw ProbeStop{};
+        });
+    }
+#endif
     REQUIRE(rtld); REQUIRE(nxrt::module_protect_all());
     REQUIRE(nxrt::module_register_nxmodule(rtld, &nxmod_rtld) == static_cast<size_t>(nxmod_rtld.nfns));
     unsigned imports = 0, start_imports = 0;
@@ -220,7 +322,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         });
     }
     REQUIRE(imports == 2 && start_imports == 1);
-    nxrt::svc_init(); nxrt::svc_reset_counters(); rtld_calls = 0; rtld_handoff_handle = 0;
+    nxrt::svc_init(); nxrt::svc_reset_counters(); rtld_calls = 0; rtld_handoff_handle = 0; sdk_applet_boundary = false;
     install_rtld_svcs(std::make_index_sequence<nxrt::kSvcCount>{}); cleanup.installed = true;
     const auto main_handle = nxrt::kernel::main_thread_adopt(0x100000, "rtld-probe"); REQUIRE(main_handle);
     auto* context = nxrt::kernel::current_ctx(); REQUIRE(context);
@@ -230,10 +332,25 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         RtldDeadline deadline;
         try { nxrt::dispatch_call(context, rtld->base()); }
         catch (const Handoff&) { handoff = true; }
-        catch (const ProbeStop&) { std::puts("RTLD_STOP before SDK handoff"); }
+        catch (const ProbeStop&) { std::puts("BOOT_STOP before expected diagnostic boundary"); }
     }
-    CHECK(handoff); CHECK_EQ(rtld_handoff_handle, main_handle);
+    CHECK(handoff);
+#ifdef NXRT_TEST_SDK
+    CHECK(sdk_applet_boundary); CHECK_EQ(rtld_handoff_handle, main_handle);
+    CHECK_EQ(sdk_callback_returns[0], 1u); CHECK_EQ(sdk_callback_returns[1], 0u); CHECK_EQ(sdk_callback_returns[2], 0u);
+    CHECK(nxrt::ipc::stub_names_requested().empty());
+    bool saw_sm = false, saw_logger = false;
+    for (const auto& stats : nxrt::ipc::service_stats()) {
+        CHECK(!stats.stub); CHECK(stats.unhandled.empty());
+        if (stats.name == "sm:" && stats.requests >= 2) saw_sm = true;
+        if (stats.name == "lm" && stats.requests >= 1) saw_logger = true;
+    }
+    CHECK(saw_sm); CHECK(saw_logger);
+#else
+    CHECK_EQ(rtld_handoff_handle, main_handle);
+#endif
     CHECK(rtld_calls > 0); CHECK_EQ(nxrt::svc_unknown_total(), 0u);
+    std::printf("SDK_RESULT applet_boundary=%u\n", sdk_applet_boundary);
     std::printf("RTLD_RESULT handoff=%u svc_calls=%u lifted_functions=%d; no gameplay executed\n", handoff, rtld_calls, nxmod_rtld.nfns);
 }
 #endif

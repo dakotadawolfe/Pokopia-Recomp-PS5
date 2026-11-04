@@ -2,11 +2,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-template=$(realpath "${1:?Usage: build_runtime_app.sh BOILERPLATE_CHECKOUT BUILD_DIRECTORY [DECRYPTED_INPUT] [rtld]}")
+template=$(realpath "${1:?Usage: build_runtime_app.sh BOILERPLATE_CHECKOUT BUILD_DIRECTORY [DECRYPTED_INPUT] [rtld|sdk] [MODULE_BUILD]}")
 output=$(realpath -m "${2:?Build directory required}")
 game_input=${3:-}
 rtld=OFF
-if [[ ${4:-} == rtld ]]; then rtld=ON; elif [[ -n ${4:-} ]]; then echo "Fourth argument must be rtld" >&2; exit 2; fi
+sdk_test=OFF
+module_build=${5:-}
+case ${4:-} in
+    rtld) rtld=ON ;;
+    sdk) rtld=ON; sdk_test=ON; [[ -n $module_build ]] || { echo "SDK probe requires a module build directory" >&2; exit 2; } ;;
+    "") ;;
+    *) echo "Fourth argument must be rtld or sdk" >&2; exit 2 ;;
+esac
 : "${NX_PYTHON:?Set NX_PYTHON to the host interpreter with recomp requirements}"
 revision=dd44bbdc75437332ed22e3ba95126733419ef25a
 [[ $(git -C "$template" rev-parse HEAD) == "$revision" ]] || {
@@ -26,10 +33,19 @@ test -f "$template/runtime/libc.prx" || bash "$template/tools/rebuild-libc.sh"
 (cd "$template/runtime" && sha256sum --check --strict libc.prx.sha256)
 tool="$template/build/host/ps5-native-tool"
 bash "$template/tools/build-host-tools.sh"
+if [[ $sdk_test == ON ]]; then
+    module_build=$(realpath "$module_build")
+    grep -Fxq "CMAKE_HOME_DIRECTORY:INTERNAL=$root/ps5" "$module_build/CMakeCache.txt" || {
+        echo "SDK probe requires this checkout's PS5 module build" >&2; exit 2;
+    }
+    cmake --build "$module_build" --target pkp_sdk --parallel "$jobs"
+    "$NX_PYTHON" "$root/ps5/check_modules.py" "$module_build"
+fi
 cmake -S "$root/ps5/tests" -B "$output" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/toolchain/prospero.cmake" \
     -DNX_PYTHON="$NX_PYTHON" -DPKP_BUILD_NATIVE_APP=ON -DPKP_NATIVE_APP_ROOT="$template" \
-    -DPKP_GAME_IMAGE_INPUT="$game_input" -DPKP_TEST_RTLD="$rtld"
+    -DPKP_GAME_IMAGE_INPUT="$game_input" -DPKP_TEST_RTLD="$rtld" \
+    -DPKP_TEST_SDK="$sdk_test" -DPKP_SDK_MODULE_BUILD="$module_build"
 cmake --build "$output" --target ps5_runtime_app --parallel "$jobs"
 "$tool" link --in "$output/ps5_runtime_app" --out "$output/eboot.elf" \
     --stub-dir "$PS5_PAYLOAD_SDK/target/lib" --module-sdk 0x02000009 \

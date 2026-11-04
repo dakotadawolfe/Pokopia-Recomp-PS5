@@ -14,7 +14,9 @@
 // fatal: ThrowFatal / ThrowFatalWithPolicy / ThrowFatalWithCpuContext write a crash report (<exe>_fatal.txt next to the exe, or
 // [fatal] report_path), log it at Error, signal the fatal event of fatal:p and terminate the process with exit code 5 unless
 // [fatal] terminate is false.
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <cstdio>
 #include <cstring>
@@ -24,7 +26,9 @@
 #include <vector>
 
 #include "nxrt/config.h"
+#ifdef _WIN32
 #include "nxrt/diag.h"
+#endif
 #include "nxrt/ipc.h"
 #include "nxrt/log.h"
 #include "nxrt/services.h"
@@ -225,7 +229,9 @@ struct LoggerState {
 struct State {
     std::mutex mu;
     uint32_t destination = 1;      // ILogger SetDestination mask (TMA); stored as a global value, nothing else reads it
+#ifdef _WIN32
     ServiceEvent fatal_event;      // fatal:p GetFatalEvent; ThrowFatal* signals it
+#endif
 };
 State& state() {
     static State s;
@@ -263,6 +269,7 @@ std::shared_ptr<ipc::Service> make_logger() {
     });
 }
 
+#ifdef _WIN32
 // ---- fatal -----------------------------------------------------------------------------------------------------------------------
 constexpr size_t kCpuContextSize = 0x250;     // the CPU context buffer of ThrowFatalWithCpuContext (Switchbrew Fatal services)
 
@@ -436,6 +443,8 @@ std::shared_ptr<ipc::Service> make_fatal_p() {
     });
 }
 
+#endif
+
 std::shared_ptr<ipc::Service> make_lm() {
     return make_iface("lm", [](ipc::Service& s) {
         // OpenLogger(u64 pid) -> ILogger (a move handle in a plain session).
@@ -460,15 +469,19 @@ uint32_t logfault_destination() {
 
 void register_logfault() {
     add("lm", [] { return make_lm(); });
+#ifdef _WIN32
     add("fatal:u", [] { return make_fatal_u(); });
     add("fatal:p", [] { return make_fatal_p(); });
+#endif
 }
 
 void logfault_reset() {
     State& g = state();
     std::lock_guard<std::mutex> lk(g.mu);
     g.destination = 1;
+#ifdef _WIN32
     g.fatal_event.clear();
+#endif
 }
 
 }  // namespace nxrt::services
