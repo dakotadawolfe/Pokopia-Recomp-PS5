@@ -1205,11 +1205,18 @@ first run failed the saved-folder asset check before mapping game modules. The
 next build applies the working graphics app's PS5 directory bindings and uses
 descriptor metadata checks for RomFS. All 17 host RomFS cases pass. The native
 run now indexes the selected USB assets, registers all four modules and reaches
-the real main-module startup. It exits at the deliberate 512 MiB heap guard;
-the game's 10.36 GiB request has not yet been allocated. The next diagnostic
-admits that request only after checking native free memory with 1 GiB of host
-headroom, and records the actual allocation result. Game performance and
-rendering remain unverified.
+the real main-module startup. After the initial 512 MiB guard run, the full
+allocation diagnostic successfully allocated the game's **10.36 GiB in 714 ms**
+and returned from `nninitStartup`. SDK initialization then reached the old
+guest catch-frame guard and exited normally to Home.
+
+The next build integrates the guest exception runtime, with five verified SDK
+entry hooks and directly linked SDK jump-context functions. Its 38 exception
+cases pass in the console payload process and run again before game startup in
+the native app. The candidate retains the 11 GiB diagnostic heap threshold and
+1 GiB pre-allocation headroom check. Native exception execution and subsequent
+startup await the next manual test; game performance and rendering remain
+unverified. See [guest exception integration](GAME_STARTUP_TRACE.md#guest-exception-runtime).
 
 `console_probe.py` automates bounded diagnostic runs and report collection using
 an explicitly hashed FTP helper. It records ownership of helpers, temporary

@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+from elftools.elf.elffile import ELFFile
 
 from package_runtime_app import check_fself
 
@@ -18,6 +19,21 @@ from package_runtime_app import check_fself
 def digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def check_nonlocal(path):
+    with path.open("rb") as stream:
+        elf = ELFFile(stream)
+        table = elf.get_section_by_name(".symtab")
+        if table is None:
+            raise ValueError("Unconverted startup executable needs symbols for verification")
+        for name in ("nxrt_ps5_setjmp", "nxrt_ps5_longjmp"):
+            entries = table.get_symbol_by_name(name) or []
+            if len(entries) != 1 or not isinstance(entries[0]["st_shndx"], int) or entries[0]["st_size"] < 16:
+                raise ValueError(f"Startup is missing the compiled {name} implementation")
+        for symbol in table.iter_symbols():
+            if symbol.name in ("setjmp", "longjmp", "_setjmp", "_longjmp") and symbol["st_shndx"] == "SHN_UNDEF":
+                raise ValueError(f"Startup imports an unqualified jump implementation: {symbol.name}")
 
 
 def main():
@@ -43,6 +59,7 @@ def main():
     if len(platform) != 1 or len(platform_sha) != 1 or digest(Path(platform[0])) != platform_sha[0]:
         raise ValueError("Native directory platform archive differs from the configured input")
     check_fself(executable)
+    check_nonlocal(args.build / "ps5_game_startup_app")
     with (args.build / "startup-fself-inspection.txt").open("w") as output:
         subprocess.run([str(args.tool), "self", "--inspect", "--file", str(executable)], stdout=output, check=True)
     manifest = {"title_id": "PPSA98732", "context": "native-app", "diagnostic": "full-game-startup",
@@ -50,6 +67,8 @@ def main():
                 "uses_saved_selection": True, "renderer": False, "gameplay_verified": False,
                 "generated_code_optimization": optimization[0],
                 "directory_platform_sha256": platform_sha[0],
+                "guest_exception_runtime": True, "exception_selftest_cases": 38,
+                "nonlocal_jump_object_sha256": digest(args.build / "nxrt_ps5_nonlocal.o"),
                 "bootstrap_report": "/data/pokopia-recomp/tests/native-bootstrap.log",
                 "guest_heap_stop_threshold_bytes": int(threshold[0]) << 20,
                 "native_heap_minimum_headroom_bytes": 1 << 30,

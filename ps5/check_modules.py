@@ -10,10 +10,46 @@ import subprocess
 import sys
 
 from elftools.elf.elffile import ELFFile
+from elftools.elf.relocation import RelocationSection
 from elftools.common.exceptions import ELFError
 
 MODULES = {"main": 230, "sdk": 45, "subsdk0": 4, "rtld": 1}
 ABI = 4
+SDK_EH_ENTRIES = (0x750078f440, 0x750078f660, 0x750078f940, 0x750078f8a0, 0x750078f7e0)
+
+
+def verify_eh_hooks(build, ar_tool):
+    """Require the hook in emitted code and a call relocation in each compiled function."""
+    found = {}
+    for unit in sorted((build / "lift/sdk").glob("c_*.cpp")):
+        source = unit.read_text(encoding="utf-8")
+        addresses = [a for a in SDK_EH_ENTRIES if f"if (nx_hook_entry(c, 0x{a:x}ULL)) return;" in source]
+        if not addresses:
+            continue
+        elf = ELFFile(io.BytesIO(ar(ar_tool, "p", build / "libpkp_sdk.a", unit.name + ".o")))
+        symbols = elf.get_section_by_name(".symtab")
+        for address in addresses:
+            functions = [s for s in symbols.iter_symbols() if f"f_{address:x}" in s.name
+                         and s["st_info"]["type"] == "STT_FUNC"]
+            if len(functions) != 1 or address in found:
+                raise ValueError(f"Missing or duplicate compiled EH entry {address:x}")
+            function = functions[0]
+            calls = 0
+            for section in elf.iter_sections():
+                if not isinstance(section, RelocationSection) or section["sh_info"] != function["st_shndx"]:
+                    continue
+                table = elf.get_section(section["sh_link"])
+                for relocation in section.iter_relocations():
+                    offset = relocation["r_offset"]
+                    if function["st_value"] <= offset < function["st_value"] + function["st_size"]:
+                        if table.get_symbol(relocation["r_info_sym"]).name == "nx_hook_entry":
+                            calls += 1
+            if calls != 1:
+                raise ValueError(f"Compiled EH entry {address:x} has {calls} hook calls, expected one")
+            found[address] = unit.name
+    if set(found) != set(SDK_EH_ENTRIES):
+        raise ValueError("SDK exception entry hooks missing; rebuild modules with sdk_exception.sites")
+    return [hex(a) for a in SDK_EH_ENTRIES]
 
 
 def digest(path):
@@ -76,6 +112,7 @@ def inspect(build, ar_tool):
             raise ValueError(f"Generated function counts disagree for {module}")
         result["modules"][module] = {"abi": abi, "function_entries": functions,
                                      "translation_units": len(units), "untranslated_units": unsupported}
+    result["sdk_exception_hooks"] = verify_eh_hooks(build, ar_tool)
     result["gameplay_verified"] = False
     return result
 

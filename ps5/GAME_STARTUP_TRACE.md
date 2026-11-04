@@ -12,9 +12,11 @@ resolve to their real guest addresses; only absent imports receive stop
 handlers. In particular, `nninitStartup` resolves to `main` at `0x71000A44E0`.
 Its diagnostic wrapper logs entry and forwards to the real function. The trace
 also checks that no import is forced to a host override.
+Five SDK unwind entries have explicit hooks into the guest exception runtime;
+these preserve guest exception handling for both direct and indirect calls.
 
 The trace stops on an unsupported dependency, nonzero CMIF response, guest
-exception-frame boundary, unknown system-register operation, untranslated
+termination or forced unwind, unknown system-register operation, untranslated
 instruction, guest trap or unbacked call. It also stops after 10,000 system calls
 or a 60-second execution watchdog. A service error can be a legitimate game
 error path, so the captured result must be interpreted before calling it an
@@ -268,15 +270,75 @@ STARTUP_HEAP_LIMIT_MIB=11264 NX_PYTHON=/path/to/python-with-recomp-requirements 
 The allocation candidate builds and passes native packaging checks:
 **257,726,771 bytes**, SHA-256
 `d125e44440af29a2974c4ed5ea21f381f15a1bf62d7ecc97cf2e32251e4d35be`.
-Its manifest records the heap threshold and host headroom. Console allocation
-and subsequent game startup remain unverified. No renderer or game menu is
-included in this diagnostic.
+Its manifest records the heap threshold and host headroom. No renderer or game
+menu is included in this diagnostic.
 
 Installation and full SHA-256 readback are recorded in
 `work/ps5/game-native-heap-install.json`. The first transfer attempt found its
 helper gone after console services restarted, before any executable upload;
 the replacement completed after reconnecting and verifying the prior hash.
 Both owned helper sessions are closed and their temporary payload slots removed.
+
+Report `game-native-1793820469-94.log` confirms successful native allocation of
+**11,123,294,208 bytes in 714 ms**, followed by `GAME_RETURN nninitStartup`.
+SDK static initialization then reaches the old catch-frame guard at
+`0x750072c508` (the standard stream-buffer constructor) and exits to Home.
+Entering a catch frame does not mean an exception was thrown. This result
+establishes that the requested heap fits this native launch; it does not measure
+the game's eventual working set, GPU allocations or performance.
+
+### Guest exception runtime
+
+The full-startup targets now link the existing two-phase guest unwinder,
+typeinfo matching, cleanup/landing-pad handling and per-thread catch frames.
+Host exceptions escaping a catch-frame body remove its TLS record and restore
+dispatch state, preventing a stale pointer to an exited host stack frame.
+Forced guest unwinding remains unsupported and explicitly stops the diagnostic.
+
+`sdk_exception.sites` adds entry hooks at the five verified `_Unwind_*` exports.
+Runtime registration checks the exact addresses and owning SDK descriptor, and
+requires all nine typeinfo vtables. Import binding still uses real providers.
+`check_modules.py` requires both emitted hook sites and a compiled relocation
+to `nx_hook_entry` within each of those five functions. The private startup
+stamp records this evidence and rejects older archives without verified hooks.
+All 200,586 function entries remain registered; only one SDK translation unit
+changed when adding the sites.
+
+The native companion's `_setjmp`/`_longjmp` compatibility exports are placeholders.
+`exceptions.cmake` extracts the SDK's FreeBSD `_setjmp.o`, gives its two functions
+private names and links them directly. No replacement assembly or new runtime
+module is supplied. Packaging verifies the defined implementations, rejects
+unresolved jump imports and records the object hash. The SDK build needs
+`llvm-objcopy-18` or `llvm-objcopy` on the host.
+
+The production exception library is exercised by 38 cases covering typed and
+catch-all handlers, cleanup ordering, nested/repeated landings, register
+restoration, dependent exceptions, old ABI detection, exception specifications,
+imported typeinfo, inheritance/pointer matching and host exception cleanup.
+Fixtures used for guest-readability checks allocate real guest mappings instead
+of weakening `mem::is_mapped` to accept static host arrays.
+
+Build the separate bounded payload in a configured PS5 test directory with:
+
+```sh
+cmake --build /path/to/ps5-test-build --target ps5_eh_tests --parallel 4
+```
+
+Console report `eh-runtime-1793821166-107.log` records **38 cases, zero failures**
+using the statically linked jump implementation; its payload SHA-256 is
+`6aff152daee8dc2cdbbc1960d16f2bf7b788615993b904fd950716e4e79315fb`.
+The same suite runs first inside the native startup application. Any failure
+prevents game startup, so payload success is not treated as native-app proof.
+The earlier bounded loader and SDK-only targets also still compile and link.
+
+The native exception candidate is **257,918,099 bytes**, SHA-256
+`deef7e362f893145d27955599c5218acbb49899478d7528c5c6e97fa709ecc2c`.
+It retains the 11 GiB diagnostic threshold and 1 GiB pre-allocation headroom
+check. Native exception execution and progress beyond the old constructor guard
+await the next manual launch. The renderer and game menu remain absent.
+Installation and complete SHA-256 readback are recorded in
+`work/ps5/game-native-exceptions-install.json`. The previous full-heap build is
+retained as the installer backup. No game assets were transferred.
 
 ## Evidence as of 2026-11-04
 

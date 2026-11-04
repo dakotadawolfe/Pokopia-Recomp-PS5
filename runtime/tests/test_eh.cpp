@@ -15,6 +15,7 @@
 #include "nxrt/hooks.h"
 #include "nxrt/log.h"
 #include "nxrt/module.h"
+#include "nxrt/memory.h"
 #include "nxrt/nxmodule.h"
 #include "test_framework.h"
 NXTEST_GROUP(eh)
@@ -58,7 +59,7 @@ const NxFde kFdes[] = {
     {B + 0x300, B + 0x400, 2, 1, 1, 1, 0},
 };
 // the actions/types referenced by the Fmain site: filter 1 -> types[0] = A, filter 2 -> types[1] = 0
-NxEh g_eh = {kFdes, 3, kRows, kSaved, kSites, kActions, kTypes};
+NxEh g_eh = {kFdes, 3, kRows, kSaved, kSites, kActions, kTypes, nullptr, nullptr};
 
 void fn_noop(::Ctx*) {}
 void cleanup_resume(::Ctx* c, uint64_t pad);
@@ -82,7 +83,6 @@ struct Seen {
     int order = 0, cleanup_order = 0, handler_order = 0;
 };
 Seen g_seen;
-::Ctx* g_ctx_for_cleanup = nullptr;
 
 nxrt::eh::Thrown make_thrown(uint64_t exc, uint64_t type) {
     nxrt::eh::Thrown t;
@@ -148,6 +148,19 @@ void reset_world() {
 }
 
 bool register_module() { return NXRT_REGISTER_NXMODULE(nullptr, g_mod).ok(); }
+
+// These fixtures must satisfy the production guest-address ownership checks.
+// Static host arrays are not mapped guest memory on platforms such as PS5.
+template<class T> struct GuestFixture {
+    T* data = nullptr;
+    GuestFixture() {
+        if (mem::init()) {
+            auto address = mem::alloc_kernel(sizeof(T));
+            if (address) data = new (reinterpret_cast<void*>(address)) T{};
+        }
+    }
+    ~GuestFixture() { if (data) data->~T(); mem::shutdown(); }
+};
 
 void cleanup_resume(::Ctx* c, uint64_t pad) {
     g_seen.cleanup_runs++;
@@ -520,17 +533,21 @@ NXTEST(older_libcxxabi_layout_is_detected_and_used) {
     reset_world();
     REQUIRE(register_module());
     // typeinfos with real kinds so that detection can tell the layouts apart
-    static void* vt_class[8];
+    struct Data { void* vt_class[8]; Ti ti; unsigned char exception[0x100]; };
+    GuestFixture<Data> fixture;
+    REQUIRE(fixture.data);
+    static Data* data;
+    data = fixture.data;
+    auto* vt_class = data->vt_class;
     nxrt::eh::TypeinfoVtables v;
     v.klass = reinterpret_cast<uint64_t>(vt_class);
     nxrt::eh::set_typeinfo_vtables(v);
-    static Ti ti_real = {vt_class + 2, "1A"};            // same name as the module's catch type A (g_ti_a), a real class typeinfo
+    data->ti = {vt_class + 2, "1A"};
     // the SDK-style header: no reserve word, so exceptionType is at ue-0x58, adjustedPtr at ue-0x10; ue-0x50 holds something else
-    alignas(16) static unsigned char exc_mem[0x100];
-    std::memset(exc_mem, 0, sizeof exc_mem);
+    auto* exc_mem = data->exception;
     const uint64_t hdr = reinterpret_cast<uint64_t>(exc_mem);
     const uint64_t ue = hdr + 0x60;
-    put(ue - 0x58, reinterpret_cast<uint64_t>(&ti_real));
+    put(ue - 0x58, reinterpret_cast<uint64_t>(&data->ti));
     put(ue - 0x50, 0x12345);                              // the destructor slot of the older layout: not a typeinfo
     put(ue, 0x434C4E47432B2B00ull);
     struct Body {
@@ -540,7 +557,7 @@ NXTEST(older_libcxxabi_layout_is_detected_and_used) {
             put(entry_sp - 8, 0);
             c->x[31] = entry_sp - 32;
             c->x[30] = B + 0x144;
-            c->x[0] = reinterpret_cast<uint64_t>(exc_mem) + 0x60;
+            c->x[0] = reinterpret_cast<uint64_t>(data->exception) + 0x60;
             nxrt::eh::unwind_raise_exception(c);
             g_seen.x0 = 0xbad;
         }
@@ -563,28 +580,35 @@ NXTEST(older_libcxxabi_layout_is_detected_and_used) {
 NXTEST(uncaught_report_calls_what_of_std_exception_types) {
     reset_world();
     REQUIRE(register_module());
-    static void* vt_class[8];
-    static void* vt_si[8];
+    struct TiSi { const void* vptr; const char* name; const void* base; };
+    struct Data {
+        void* vt_class[8]; void* vt_si[8]; Ti ti_exception; TiSi ti_mine;
+        char what_text[32]; uint64_t vtable[3]; unsigned char exception[0x100];
+    };
+    GuestFixture<Data> fixture;
+    REQUIRE(fixture.data);
+    static Data* data;
+    data = fixture.data;
+    auto* vt_class = data->vt_class;
+    auto* vt_si = data->vt_si;
     nxrt::eh::TypeinfoVtables v;
     v.klass = reinterpret_cast<uint64_t>(vt_class);
     v.si_class = reinterpret_cast<uint64_t>(vt_si);
     nxrt::eh::set_typeinfo_vtables(v);
-    struct TiSi { const void* vptr; const char* name; const void* base; };
-    static Ti ti_exception = {vt_class + 2, "St9exception"};
-    static TiSi ti_mine = {vt_si + 2, "N4game5ErrorE", &ti_exception};
+    data->ti_exception = {vt_class + 2, "St9exception"};
+    data->ti_mine = {vt_si + 2, "N4game5ErrorE", &data->ti_exception};
     // the thrown object: a vptr to a three-slot vtable whose third slot (what) is a lifted function returning a string
-    static const char what_text[] = "out of cheese";
+    std::strcpy(data->what_text, "out of cheese");
     static int what_calls = 0;
     what_calls = 0;
     const uint64_t what_addr = 0x7240000100ull;
-    fn_register(what_addr, [](::Ctx* c) { what_calls++; c->x[0] = reinterpret_cast<uint64_t>(what_text); });
-    static uint64_t vtable[3];
+    fn_register(what_addr, [](::Ctx* c) { what_calls++; c->x[0] = reinterpret_cast<uint64_t>(data->what_text); });
+    auto* vtable = data->vtable;
     vtable[2] = what_addr;
-    alignas(16) static unsigned char exc_mem[0x100];
-    std::memset(exc_mem, 0, sizeof exc_mem);
+    auto* exc_mem = data->exception;
     const uint64_t hdr = reinterpret_cast<uint64_t>(exc_mem);
     const uint64_t ue = hdr + 0x60, obj = hdr + 0x80;
-    put(ue - 0x50, reinterpret_cast<uint64_t>(&ti_mine));
+    put(ue - 0x50, reinterpret_cast<uint64_t>(&data->ti_mine));
     put(ue, 0x434C4E47432B2B00ull);
     put(obj, reinterpret_cast<uint64_t>(vtable));         // the object's vptr
     ::Ctx c{};
@@ -597,4 +621,25 @@ NXTEST(uncaught_report_calls_what_of_std_exception_types) {
     CHECK_EQ(what_calls, 1);                              // the report asked the exception what it was
     fn_clear();
     nxrt::eh::set_typeinfo_vtables({});
+}
+
+NXTEST(host_exception_removes_nested_guest_catch_frames) {
+    reset_world();
+    Ctx c{};
+    c.in_import = "original";
+    c.import_from = 42;
+    bool caught = false;
+    try {
+        nx_catch_call(&c, +[](Ctx* context, uint64_t) {
+            nx_catch_call(context, +[](Ctx* inner, uint64_t) {
+                inner->in_import = "changed";
+                inner->import_from = 99;
+                throw 17;
+            });
+        });
+    } catch (int value) { caught = value == 17; }
+    CHECK(caught);
+    CHECK_EQ(nxrt::eh::catch_frame_depth(), 0u);
+    CHECK(std::strcmp(c.in_import, "original") == 0);
+    CHECK_EQ(c.import_from, 42u);
 }

@@ -6,6 +6,8 @@
 #include "nxrt/log.h"
 #include <cstdio>
 #include <exception>
+#include <algorithm>
+#include <cstring>
 #if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP) || defined(NXRT_GAME_STARTUP_NATIVE)
 #include "../app/heap.h"
 extern "C" int64_t sceKernelGetDirectMemorySize();
@@ -58,6 +60,8 @@ int main() {
     constexpr const char* prefix = "romfs-runtime";
 #elif defined(NXRT_TEST_FS)
     constexpr const char* prefix = "fs-runtime";
+#elif defined(NXRT_TEST_EH)
+    constexpr const char* prefix = "eh-runtime";
 #elif defined(NXRT_TEST_TIME)
     constexpr const char* prefix = "time-runtime";
 #elif defined(NXRT_TEST_LOADER)
@@ -112,7 +116,19 @@ int main() {
     if (fsync(fileno(stdout))) return 8;
 #endif
 #endif
+#ifdef NXRT_GAME_EH
+    // Run the exception suite first, independent of static initialization order.
+    std::stable_sort(nxtest::cases().begin(), nxtest::cases().end(), [](const auto& a, const auto& b) {
+        return (std::strcmp(a.group, "game_images") != 0) > (std::strcmp(b.group, "game_images") != 0);
+    });
+#endif
     for (const auto& test : nxtest::cases()) {
+#ifdef NXRT_GAME_EH
+        if (!std::strcmp(test.group, "game_images")) {
+            std::printf("GAME_EH_SELFTEST failures=%d\n", nxtest::failures);
+            if (nxtest::failures) return 1;
+        }
+#endif
         std::printf("RUN %s\n", test.name);
         try { test.fn(); }
         catch (const std::exception& error) {

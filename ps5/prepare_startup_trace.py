@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import re
 
-from check_modules import ABI, digest
+from check_modules import ABI, SDK_EH_ENTRIES, digest
 
 ORDER = ("main", "sdk", "subsdk0", "rtld")
 
@@ -17,6 +17,8 @@ def prepare(manifest_path, build, output):
     report = json.loads(report_path.read_text(encoding="utf-8"))
     if report.get("abi") != ABI:
         raise ValueError("Module verification report has the wrong ABI")
+    if report.get("sdk_exception_hooks") != [hex(a) for a in SDK_EH_ENTRIES]:
+        raise ValueError("Startup needs verified SDK exception hooks; rebuild and rerun check_modules.py")
     cache_path = build / "CMakeCache.txt"
     cache = cache_path.read_text(encoding="utf-8")
     match = re.search(r"^PKP_INPUT:PATH=(.+)$", cache, re.M)
@@ -52,6 +54,7 @@ def prepare(manifest_path, build, output):
              "main_build_id": manifest["main_build_id"], "modules": records,
              "image_manifest_sha256": digest(manifest_path), "module_report_sha256": digest(report_path),
              "module_build_cache_sha256": digest(cache_path), "executes_guest_code": True,
+             "sdk_exception_hooks": report["sdk_exception_hooks"], "guest_exception_runtime": True,
              "gameplay_verified": False}
     encoded = (json.dumps(stamp, indent=2) + "\n").encode()
     stamp_hash = hashlib.sha256(encoded).hexdigest()

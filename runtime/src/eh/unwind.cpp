@@ -22,7 +22,11 @@
 // Reference: the oracle's recomp/oracle/e2e/rt/eh_rt.cpp (S1, GPL-3.0-or-later) for the table walk and landing protocol; this file adds
 // two-phase search, typeinfo matching with class hierarchies (typeinfo.cpp), the libc++abi exception header protocol, per-thread
 // state, rethrow, nested exceptions and uncaught-exception reporting.
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <cstdlib>
+#endif
 
 #include <atomic>
 #include <cstdarg>
@@ -295,7 +299,7 @@ void legacy_forget(uint64_t exc) {
             g_stats.catch_landings.fetch_add(1, std::memory_order_relaxed);
             NXLOG_D(kTag, "landing in catch frame (cfa 0x%llx) at pad 0x%llx selector %lld", static_cast<unsigned long long>(frame_cfa),
                     static_cast<unsigned long long>(pad), static_cast<long long>(selector));
-            longjmp(rec->jb, 1);
+            NXRT_EH_LONGJMP(rec->jb, 1);
         }
     }
     // A function with no catch frame: only cleanup pads (and terminate pads) are resumed this way, through NxModule.resume.
@@ -555,7 +559,13 @@ void terminate_process(::Ctx* c, const char* why) {
         h(c, why);
         return;
     }
+#ifdef _WIN32
     TerminateProcess(GetCurrentProcess(), kTerminateExitCode);
+#else
+    // Applications can provide their shell-exit handler above. If none is
+    // installed, an uncaught guest exception must not return as success.
+    std::abort();
+#endif
 }
 
 Stats stats() {

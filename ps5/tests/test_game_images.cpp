@@ -5,6 +5,10 @@
 #include "nxrt/memory.h"
 #include "nxrt/module.h"
 #include "nxrt/dispatch.h"
+#ifdef NXRT_GAME_EH
+#include "nxrt/eh.h"
+#include "nxrt/hooks.h"
+#endif
 #ifdef NXRT_GAME_STARTUP_TRACE
 #include "private_startup_inputs.h"
 #endif
@@ -171,6 +175,13 @@ constexpr bool startup_trace = true;
 constexpr bool startup_trace = false;
 #endif
 [[noreturn]] void stop_probe() {
+#ifdef NXRT_GAME_EH
+    const auto eh = nxrt::eh::stats();
+    std::printf("GAME_EH raised=%llu caught=%llu cleanups=%llu uncaught=%llu landings=%llu\n",
+        static_cast<unsigned long long>(eh.raised), static_cast<unsigned long long>(eh.caught),
+        static_cast<unsigned long long>(eh.cleanups), static_cast<unsigned long long>(eh.uncaught),
+        static_cast<unsigned long long>(eh.catch_frame_landings));
+#endif
     if constexpr (startup_trace) {
         std::puts(game_startup_trace ?
             "GAME_TRACE_END stopped at dependency or diagnostic limit; not a passing test or gameplay result" :
@@ -224,8 +235,8 @@ bool register_game_modules() {
         std::printf("GAME_MODULE name=%s index=%u abi=%u functions=%d source_sha256=%s archive_sha256=%s\n",
             expected.name, nx->index, versions[n], nx->nfns, expected.source_sha256, expected.archive_sha256);
     }
-    // Register every provider first. Guard only missing imports; no game export
-    // is replaced by a host implementation or hidden behind a stop handler.
+    // Bind imports to real providers. Guest unwinding is handled by entry hooks
+    // below, including calls emitted directly inside the SDK translation unit.
     for (const auto* nx : descriptors) {
         size_t resolved = 0, missing = 0;
         for (int n = 0; n < nx->nsyms; ++n) {
@@ -256,6 +267,31 @@ bool register_game_modules() {
     if (!entry || !game_start || nxrt::nxmodule_at(entry) != &nxmod_main) return false;
     nxrt::fn_register(entry, trace_game_start);
     std::printf("GAME_BIND nninitStartup=%llx module=main\n", static_cast<unsigned long long>(entry));
+#ifdef NXRT_GAME_EH
+    nxrt::hooks_clear();
+    nxrt::eh::set_abi_autodetect(); nxrt::eh::stats_reset();
+    nxrt::eh::set_typeinfo_vtables({});
+    nxrt::eh::set_terminate_handler(+[](::Ctx*, const char* why) {
+        std::printf("GAME_STOP guest terminate=%s\n", why); stop_probe();
+    });
+    const struct { const char* name; uint64_t address; nxrt::SiteHookFn hook; } hooks[] = {
+        {"_Unwind_RaiseException", 0x750078f440, nxrt::eh::hook_unwind_raise_exception},
+        {"_Unwind_Resume", 0x750078f660, nxrt::eh::hook_unwind_resume},
+        {"_Unwind_Resume_or_Rethrow", 0x750078f940, nxrt::eh::hook_unwind_resume_or_rethrow},
+        {"_Unwind_DeleteException", 0x750078f8a0, nxrt::eh::hook_unwind_delete_exception},
+        {"_Unwind_ForcedUnwind", 0x750078f7e0, +[](::Ctx*, uint64_t, void*) -> int {
+            std::puts("GAME_STOP forced unwinding is unsupported"); stop_probe();
+        }},
+    };
+    for (const auto& hook : hooks) {
+        const auto address = nxrt::nxmodule_find_export(hook.name);
+        if (address != hook.address || nxrt::nxmodule_at(address) != &nxmod_sdk ||
+            !nxrt::hook_add_entry(address, hook.hook)) return false;
+    }
+    const auto vtables = nxrt::eh::discover_typeinfo_vtables();
+    std::printf("GAME_EH_READY hooks=%zu typeinfo_vtables=%zu\n", std::size(hooks), vtables);
+    if (vtables != 9 || nxrt::eh::catch_frame_depth()) return false;
+#endif
     return true;
 }
 #endif
@@ -509,6 +545,10 @@ struct RtldCleanup {
     const nxrt::game::Info* previous = nxrt::game::current();
     bool installed = false;
     ~RtldCleanup() {
+#ifdef NXRT_GAME_EH
+        nxrt::hooks_clear(); nxrt::eh::set_typeinfo_vtables({});
+        nxrt::eh::set_terminate_handler(nullptr); nxrt::eh::set_abi_autodetect();
+#endif
         if (installed) for (unsigned n = 0; n < rtld_handlers.size(); ++n) nxrt::svc_register(n, rtld_handlers[n]);
         nxrt::kernel::main_thread_release(); nxrt::kernel::kernel_reset(); nxrt::ipc::registry_reset(); nxrt::services::am_reset();
         nxrt::services::aoc_reset();
@@ -538,11 +578,13 @@ struct RtldDeadline {
 extern "C" [[noreturn]] void nxrt_game_startup_stop() { stop_probe(); }
 #endif
 #ifdef NXRT_TEST_SDK
+#ifndef NXRT_GAME_EH
 // Fail explicitly if startup reaches guest exception machinery before it is ported.
 extern "C" void nx_catch_call(Ctx* c, void (*)(Ctx*, uint64_t)) {
     std::printf("SDK_STOP guest exception frame fn=%llx\n", static_cast<unsigned long long>(c->fn));
     stop_probe();
 }
+#endif
 #ifdef NXRT_GAME_STARTUP_TRACE
 NXTEST(decrypted_full_game_startup_trace_stops_without_reporting_a_pass) {
 #else

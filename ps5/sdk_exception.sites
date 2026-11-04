@@ -1,0 +1,7 @@
+# SDK SHA-256 7c12078e9f853f5d77f395155f7308f264fa6e93fadaeba8dca525f4483c09b2.
+# Keep direct and indirect guest unwind calls on the runtime's guest-stack unwinder.
+entryhook 0x750078f440
+entryhook 0x750078f660
+entryhook 0x750078f940
+entryhook 0x750078f8a0
+entryhook 0x750078f7e0

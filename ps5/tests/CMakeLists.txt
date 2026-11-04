@@ -17,6 +17,7 @@ nxrecomp_add_module(subpage_fixture INPUT "${fixture_elf}" NAME subpage_fixture 
 target_compile_definitions(subpage_fixture PUBLIC NXRECOMP_SUBPAGE_CHECKS=1)
 include("${CMAKE_CURRENT_LIST_DIR}/../platform.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../core.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/../exceptions.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../kernel.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../svc.cmake")
 set(platform_test_sources sync_main.cpp "${root}/runtime/tests/test_sync.cpp"
@@ -28,6 +29,14 @@ target_include_directories(ps5_sync_tests PRIVATE "${root}/runtime/include" "${r
 target_compile_options(ps5_sync_tests PRIVATE -Wall -Wextra -Werror -mcx16)
 target_link_libraries(ps5_sync_tests PRIVATE nxrt_ps5_core subpage_fixture)
 if(PS5)
+    add_executable(ps5_eh_tests sync_main.cpp "${root}/runtime/tests/test_eh.cpp"
+        "${root}/runtime/tests/test_eh_abi3.cpp" "${root}/runtime/tests/test_eh_typeinfo.cpp"
+        "${root}/ps5/app/thread_exit.cpp")
+    target_include_directories(ps5_eh_tests PRIVATE "${root}/runtime/tests")
+    target_compile_definitions(ps5_eh_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_EH=1)
+    target_compile_options(ps5_eh_tests PRIVATE -Wall -Wextra -Werror -mcx16)
+    target_link_libraries(ps5_eh_tests PRIVATE nxrt_ps5_eh)
+    target_link_options(ps5_eh_tests PRIVATE "LINKER:--wrap,pthread_create")
     set(svc_fixture_elf "${CMAKE_CURRENT_BINARY_DIR}/svc_fixture.elf")
     add_custom_command(OUTPUT "${svc_fixture_elf}"
         COMMAND "${NX_HOST_CLANG}" --target=aarch64-none-elf -nostdlib -static -fuse-ld=lld

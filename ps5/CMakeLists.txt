@@ -31,7 +31,8 @@ nxrecomp_add_module(pkp_main INPUT "${PKP_EXEFS}/main" NAME main INDEX 0 BASE 0x
     GAME pkp SHARDS 230 JOBS ${PKP_LIFT_JOBS} SITES "${PKP_ROOT}/recomp/games/pkp/main.sites"
     OUTDIR "${CMAKE_BINARY_DIR}/lift/main")
 nxrecomp_add_module(pkp_sdk INPUT "${PKP_EXEFS}/sdk" NAME sdk INDEX 1 BASE 0x7500000000
-    GAME pkp SHARDS 45 JOBS ${PKP_LIFT_JOBS} OUTDIR "${CMAKE_BINARY_DIR}/lift/sdk")
+    GAME pkp SHARDS 45 JOBS ${PKP_LIFT_JOBS} SITES "${CMAKE_CURRENT_LIST_DIR}/sdk_exception.sites"
+    OUTDIR "${CMAKE_BINARY_DIR}/lift/sdk")
 nxrecomp_add_module(pkp_subsdk0 INPUT "${PKP_EXEFS}/subsdk0" NAME subsdk0 INDEX 2 BASE 0x7600000000
     GAME pkp SHARDS 4 JOBS ${PKP_LIFT_JOBS} OUTDIR "${CMAKE_BINARY_DIR}/lift/subsdk0")
 nxrecomp_add_module(pkp_rtld INPUT "${PKP_EXEFS}/rtld" NAME rtld INDEX 3 BASE 0x7700000000

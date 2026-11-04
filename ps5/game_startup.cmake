@@ -4,6 +4,9 @@ if(NOT PS5 OR NOT PKP_TEST_SDK OR NOT PKP_GAME_IMAGE_INPUT)
     message(FATAL_ERROR "Game startup tracing requires PS5, PKP_TEST_RTLD, PKP_TEST_SDK and verified game images")
 endif()
 set(startup_modules main sdk subsdk0 rtld)
+include("${CMAKE_CURRENT_LIST_DIR}/exceptions.cmake")
+set(startup_eh_tests "${root}/runtime/tests/test_eh.cpp" "${root}/runtime/tests/test_eh_abi3.cpp"
+    "${root}/runtime/tests/test_eh_typeinfo.cpp")
 set(startup_archives "")
 foreach(name IN LISTS startup_modules)
     set(archive "${PKP_SDK_MODULE_BUILD}/libpkp_${name}.a")
@@ -40,14 +43,14 @@ if(PKP_BUILD_NATIVE_GAME_STARTUP)
         message(FATAL_ERROR "Native directory platform archive differs from its expected SHA-256")
     endif()
     add_executable(ps5_game_startup_app EXCLUDE_FROM_ALL
-        sync_main.cpp test_game_images.cpp game_trace_guards.cpp "${startup_header}"
+        sync_main.cpp test_game_images.cpp game_trace_guards.cpp ${startup_eh_tests} "${startup_header}"
         "${root}/ps5/app/folder_picker_paths.cpp" "${root}/ps5/app/heap.cpp"
         "${root}/ps5/app/startup_checkpoint.cpp"
         "${native}/app_crt.cpp" "${root}/ps5/app/runtime.cpp"
         "${root}/ps5/app/thread_exit.cpp" "${root}/ps5/app/lifecycle.cpp")
     target_include_directories(ps5_game_startup_app PRIVATE "${root}/runtime/tests" "${game_expectations}" "${startup_expectations}")
     target_compile_definitions(ps5_game_startup_app PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_GAME_IMAGES=1
-        NXRT_TEST_RTLD=1 NXRT_TEST_SDK=1 NXRT_SDK_STARTUP_TRACE=1 NXRT_GAME_STARTUP_TRACE=1 NXRT_GAME_STARTUP_NATIVE=1)
+        NXRT_TEST_RTLD=1 NXRT_TEST_SDK=1 NXRT_SDK_STARTUP_TRACE=1 NXRT_GAME_STARTUP_TRACE=1 NXRT_GAME_STARTUP_NATIVE=1 NXRT_GAME_EH=1)
     target_compile_definitions(ps5_game_startup_app PRIVATE PKP_NATIVE_STARTUP_HEAP_LIMIT_MIB=${PKP_NATIVE_STARTUP_HEAP_LIMIT_MIB})
     target_compile_options(ps5_game_startup_app PRIVATE -Wall -Wextra -Werror -mcx16)
     set_property(TARGET ps5_game_startup_app PROPERTY SKIP_BUILD_RPATH TRUE)
@@ -65,7 +68,7 @@ if(PKP_BUILD_NATIVE_GAME_STARTUP)
     foreach(symbol opendir fdopendir readdir rewinddir dirfd closedir)
         target_link_options(ps5_game_startup_app PRIVATE "LINKER:--defsym,${symbol}=ps5_${symbol}")
     endforeach()
-    target_link_libraries(ps5_game_startup_app PRIVATE nxrt_ps5_svc startup_main test_sdk startup_subsdk0 startup_rtld
+    target_link_libraries(ps5_game_startup_app PRIVATE nxrt_ps5_svc startup_main test_sdk startup_subsdk0 startup_rtld nxrt_ps5_eh
         "-Wl,--start-group" "${sdk}/target/lib/libc++.a" "${sdk}/target/lib/libc++abi.a"
         "${sdk}/target/lib/libunwind.a" "${PKP_NATIVE_PLATFORM_ARCHIVE}" "-Wl,--end-group" "-Wl,--as-needed"
         "${sdk}/target/lib/libSceLibcInternal.so" "${sdk}/target/lib/libkernel.so"
@@ -82,12 +85,12 @@ add_custom_command(OUTPUT "${startup_header}" "${startup_expectations}/startup-i
         "${root}/ps5/prepare_startup_trace.py" "${root}/ps5/check_modules.py" "${root}/ps5/validate_input.py"
     COMMENT "Verifying full-startup input and archive identities" VERBATIM)
 add_executable(ps5_game_startup_trace EXCLUDE_FROM_ALL
-    sync_main.cpp test_game_images.cpp game_trace_guards.cpp "${root}/ps5/app/thread_exit.cpp" "${startup_header}")
+    sync_main.cpp test_game_images.cpp game_trace_guards.cpp ${startup_eh_tests} "${root}/ps5/app/thread_exit.cpp" "${startup_header}")
 target_include_directories(ps5_game_startup_trace PRIVATE "${root}/runtime/tests" "${game_expectations}" "${startup_expectations}")
 target_compile_definitions(ps5_game_startup_trace PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_GAME_IMAGES=1
-    NXRT_TEST_RTLD=1 NXRT_TEST_SDK=1 NXRT_SDK_STARTUP_TRACE=1 NXRT_GAME_STARTUP_TRACE=1)
+    NXRT_TEST_RTLD=1 NXRT_TEST_SDK=1 NXRT_SDK_STARTUP_TRACE=1 NXRT_GAME_STARTUP_TRACE=1 NXRT_GAME_EH=1)
 target_compile_options(ps5_game_startup_trace PRIVATE -Wall -Wextra -Werror -mcx16)
-target_link_libraries(ps5_game_startup_trace PRIVATE nxrt_ps5_svc startup_main test_sdk startup_subsdk0 startup_rtld)
+target_link_libraries(ps5_game_startup_trace PRIVATE nxrt_ps5_svc startup_main test_sdk startup_subsdk0 startup_rtld nxrt_ps5_eh)
 foreach(symbol pthread_create guest_mrs guest_msr guest_trap guest_unimpl call_indirect host_import)
     target_link_options(ps5_game_startup_trace PRIVATE "LINKER:--wrap,${symbol}")
 endforeach()

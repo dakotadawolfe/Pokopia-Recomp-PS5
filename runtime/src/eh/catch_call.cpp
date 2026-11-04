@@ -19,16 +19,29 @@ extern "C" void nx_catch_call(Ctx* c, void (*body)(Ctx*, uint64_t)) {
     const uint64_t saved_import_from = c->import_from;
     const uint32_t saved_cb_flags = nxrt::host_callback_flags();   // a host bit set inside a guest callback the exception left
     volatile uint64_t pad = 0;
-    for (;;) {
-        if (setjmp(rec.jb) == 0) {
-            body(c, pad);
-            break;
+    try {
+        for (;;) {
+            if (NXRT_EH_SETJMP(rec.jb) == 0) {
+                body(c, pad);
+                break;
+            }
+            pad = rec.pad;                                   // landed here by an exception
+            nxrt::hle_restore_current(saved_hle);
+            c->in_import = saved_in_import;
+            c->import_from = saved_import_from;
+            nxrt::host_callback_restore(saved_cb_flags);
         }
-        pad = rec.pad;                                   // landed here by an exception
+    } catch (...) {
+        // A host service can throw through guest code. Its catch record must
+        // not remain in TLS after this stack frame has gone away.
+        auto& st = catch_stack();
+        for (size_t i = st.size(); i-- > 0;)
+            if (st[i] == &rec) { st.resize(i); break; }
         nxrt::hle_restore_current(saved_hle);
         c->in_import = saved_in_import;
         c->import_from = saved_import_from;
         nxrt::host_callback_restore(saved_cb_flags);
+        throw;
     }
     auto& st = catch_stack();
     for (size_t i = st.size(); i-- > 0;)
