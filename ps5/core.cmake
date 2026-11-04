@@ -12,4 +12,5 @@ target_compile_options(nxrt_ps5_core PRIVATE -mcx16 -fno-strict-aliasing)
 # HLE call log stays available; do not link placeholder tracing implementations.
 target_compile_definitions(nxrt_ps5_core PRIVATE NXRT_DISABLE_FRAME_TRACE=1)
 target_link_libraries(nxrt_ps5_core PUBLIC nxrt_ps5_platform)
-# Guest threads and wait queues are in the kernel component; SVC/services remain.
+# Guest threads and wait queues are in the kernel component; SVC handlers are
+# linked separately by svc.cmake. Services and game integration remain.

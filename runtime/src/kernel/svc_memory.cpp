@@ -2,7 +2,12 @@
 // Semantics adapted from SuperMarioWonderRecomp runtime/src/kernel.cpp and svc_process.cpp (MIT, Copyright (c) 2026 BelmanteGu); see THIRD_PARTY_NOTICES.md.
 // Memory SVC group (include/nxrt/svc.h): heap, MapMemory/UnmapMemory, QueryMemory, permission and attribute calls, shared,
 // transfer and physical memory views in the alias region. The address space and the Horizon vm map are in include/nxrt/memory.h.
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "nxrt/subpage.h"
+#endif
+#include <algorithm>
 
 #include <bit>
 
@@ -14,7 +19,9 @@
 #include <vector>
 
 #include "nxrt/game.h"
+#ifdef _WIN32
 #include "nxrt/ftrace.h"
+#endif
 #include "nxrt/abi.h"
 #include "nxrt/gauge.h"
 #include "nxrt/kernel.h"
@@ -40,12 +47,15 @@ inline unsigned long long U(uint64_t v) { return v; }
 std::mutex g_mu;
 uint64_t g_heap_cur = 0;                           // bytes; meaningful while mem::heap_exists()
 
+#ifdef _WIN32
 // MapMemory mappings: dst (stack region) is a view of src (heap) that stays writable only through dst.
 struct MapRec {
     uint64_t dst, src, size;
     uint32_t src_state, src_perm;   // what the source was before the map (heap, or CodeData for a module's static buffer): UnmapMemory puts it back
 };
 std::vector<MapRec> g_maps;
+#endif
+
 // Ranges given the PermissionLocked attribute (SetMemoryAttribute, 16.0.0+): start -> size. The SDK's rtld locks each module's
 // RELRO after making it read-only; the kernel then refuses SetMemoryPermission there and QueryMemory reports the attribute.
 std::map<uint64_t, uint64_t> g_perm_locked;
@@ -59,6 +69,7 @@ bool overlaps_perm_locked(uint64_t addr, uint64_t size) {   // call with g_mu he
     return it != g_perm_locked.end() && it->first < addr + size;
 }
 
+#ifdef _WIN32
 // Host views in the alias region made by MapSharedMemory and MapTransferMemory, keyed by their address (MapPhysicalMemory: g_phys).
 enum class WinKind : uint8_t { Shared, Transfer };
 struct Window {
@@ -67,6 +78,8 @@ struct Window {
     uint64_t saved;  // Shared: the object's own buffer while mapped. Transfer: the owner's address.
 };
 std::map<uint64_t, Window> g_windows;
+
+#endif
 
 uint64_t heap_now() { return mem::heap_exists() ? g_heap_cur : 0; }  // call with g_mu held
 
@@ -89,6 +102,24 @@ bool all_code_data(uint64_t addr, uint64_t size) {
     return true;
 }
 
+#ifndef _WIN32
+// The page table requires one state/permission across a reprotected range.
+// Use metadata here so a committed no-access page can become accessible again;
+// mem::protect verifies backing before changing the host/subpage permissions.
+bool uniform_memory(uint64_t addr, uint64_t size, mem::VmInfo& first) {
+    if (!size || addr + size <= addr) return false;
+    first = mem::vm_query(addr);
+    if (first.state == mem::kMemFree || first.state == mem::kMemInaccessible) return false;
+    for (uint64_t at = addr, end = addr + size; at < end;) {
+        const auto block = mem::vm_query(at);
+        if (block.state != first.state || block.perm != first.perm || block.addr + block.size <= at) return false;
+        at = block.addr + block.size;
+    }
+    return true;
+}
+#endif
+
+#ifdef _WIN32
 // The map region: where MapSharedMemory / MapTransferMemory / MapPhysicalMemory destinations may be, the ASLR region GetInfo reports
 // (svc_info.cpp: 0x8000000 + 0x7FF8000000). The SDK picks random free addresses in it (StackGuardManager::MapAtRandomAddress) and retries
 // on a refusal, so any address the host can give out exactly is accepted.
@@ -101,6 +132,8 @@ bool in_map_region(uint64_t addr, uint64_t size) {
 
 std::map<uint64_t, uint64_t> g_reserve_base;   // window address -> base of its host reservation (differs when addr is not 64 KiB aligned)
 
+#endif
+
 // ---- gauges (include/nxrt/gauge.h): every callback takes g_mu, the lock of the state it reads ----
 // Removes its gauge when the file's statics are torn down (declared after the containers above, so it goes first).
 struct GaugeHook {
@@ -112,6 +145,7 @@ GaugeHook gauge_heap_bytes("mem.heap_bytes", [] {   // SetHeapSize value (guest 
     std::lock_guard lk(g_mu);
     return static_cast<int64_t>(heap_now());
 });
+#ifdef _WIN32
 GaugeHook gauge_maps("mem.maps", [] {   // MapMemory mappings still live (the list only shrinks on UnmapMemory)
     std::lock_guard lk(g_mu);
     return static_cast<int64_t>(g_maps.size());
@@ -166,6 +200,8 @@ void alias_free(uint64_t addr) {
     }
 }
 
+#endif
+
 // Logs the refused call with its argument values and sets the result code.
 void fail(::Ctx* c, const char* what, uint32_t rc, uint64_t a, uint64_t b, uint64_t d) {
     NXLOG_W(kTag, "%s returned 0x%X (args %llx, %llx, %llx)", what, rc, U(a), U(b), U(d));
@@ -202,6 +238,23 @@ void set_heap_size(::Ctx* c) {
         g_heap_cur = 0;  // a fresh heap (first call, or after mem::shutdown)
     }
     const uint64_t old = g_heap_cur;
+#ifndef _WIN32
+    if (size < old) {
+        mem::VmInfo tail;
+        if (!uniform_memory(mem::kHeapBase + size, old - size, tail) ||
+            tail.state != mem::kMemHeap || tail.perm != kPermRW ||
+            overlaps_perm_locked(mem::kHeapBase + size, old - size)) {
+            fail(c, "SetHeapSize (tail in use)", kernel::kInvalidMemoryState, size, old, 0);
+            return;
+        }
+        std::vector<std::pair<uint64_t, uint64_t>> aliases;
+        mem::heap_alias_ranges(aliases);
+        for (const auto& [offset, bytes] : aliases) if (offset < old && offset + bytes > size) {
+            fail(c, "SetHeapSize (aliased tail)", kernel::kInvalidMemoryState, size, offset, bytes);
+            return;
+        }
+    }
+#endif
     if (size > old && !mem::heap_commit(old, size - old)) {
         fail(c, "SetHeapSize (commit)", kernel::kOutOfMemory, size, old, 0);
         return;
@@ -210,6 +263,11 @@ void set_heap_size(::Ctx* c) {
         fail(c, "SetHeapSize (decommit)", kernel::kInvalidMemoryState, size, old, 0);
         return;
     }
+#ifndef _WIN32
+    // SharedHeap retains backing for its aliases. Newly exposed heap bytes must
+    // still be zero after a shrink/regrow, without disturbing the retained prefix.
+    if (size > old) std::memset(reinterpret_cast<void*>(mem::kHeapBase + old), 0, size - old);
+#endif
     // Only the changed tail is touched in the vm map, so permissions set by SetMemoryPermission on the rest survive.
     if (size > old) mem::vm_set(mem::kHeapBase + old, size - old, mem::kMemHeap, kPermRW);
     if (size < old) mem::vm_set(mem::kHeapBase + size, old - size, mem::kMemFree, 0);
@@ -231,13 +289,24 @@ void set_memory_permission(::Ctx* c) {
         fail(c, "SetMemoryPermission", kernel::kInvalidSize, addr, size, perm);
         return;
     }
+    if (addr + size <= addr) {
+        fail(c, "SetMemoryPermission", kernel::kInvalidMemoryState, addr, size, perm);
+        return;
+    }
     if (perm != 0 && perm != kPermR && perm != kPermRW) {
         fail(c, "SetMemoryPermission", kernel::kInvalidPermission, addr, size, perm);
         return;
     }
     std::lock_guard lk(g_mu);
     const bool inside = in_heap(addr, size, heap_now()) || in_stack(addr, size) || all_code_data(addr, size);
+#ifdef _WIN32
     if (!inside || !mem::is_mapped(addr, size) || overlaps_perm_locked(addr, size)) {
+#else
+    mem::VmInfo before;
+    const bool uniform = uniform_memory(addr, size, before);
+    const bool reprotected = before.state == mem::kMemHeap || before.state == mem::kMemCodeData || before.state == 0x09;
+    if (!inside || !uniform || !reprotected || overlaps_perm_locked(addr, size)) {
+#endif
         fail(c, "SetMemoryPermission", kernel::kInvalidMemoryState, addr, size, perm);
         return;
     }
@@ -253,7 +322,8 @@ void set_memory_permission(::Ctx* c) {
 
 // ---- SetMemoryAttribute (0x03) -----------------------------------------------------------------------------------------------
 // The mask and value checks are mesosphere's: the bits are Uncached (8) and PermissionLocked (16); PermissionLocked can only be set.
-// Uncached is a no-op here. PermissionLocked needs module .data/.bss (CodeData, mesosphere FlagCanPermissionLock) and is recorded.
+// Windows retains its uncached no-op; PS5 rejects it until cache/GPU integration.
+// PermissionLocked needs module .data/.bss (CodeData, mesosphere FlagCanPermissionLock).
 void set_memory_attribute(::Ctx* c) {
     const uint64_t addr = reg(c, 0), size = reg(c, 1);
     const uint32_t mask = static_cast<uint32_t>(reg(c, 2)), value = static_cast<uint32_t>(reg(c, 3));
@@ -275,18 +345,54 @@ void set_memory_attribute(::Ctx* c) {
         fail(c, "SetMemoryAttribute", kernel::kInvalidMemoryState, addr, mask, value);
         return;
     }
+#ifndef _WIN32
+    std::lock_guard lk(g_mu);
+    mem::VmInfo before;
+    if (!uniform_memory(addr, size, before)) {
+        fail(c, "SetMemoryAttribute (range)", kernel::kInvalidMemoryState, addr, size, mask);
+        return;
+    }
+    // A real uncached mapping needs PS5/GPU integration; never silently accept it.
+    if (mask & kAttrUncached) {
+        fail(c, "SetMemoryAttribute (uncached)", kernel::kNotImplemented, addr, size, mask);
+        return;
+    }
+#endif
     if (mask & kAttrPermissionLocked) {
+#ifdef _WIN32
         std::lock_guard lk(g_mu);
         if (!all_code_data(addr, size) || overlaps_perm_locked(addr, size)) {
+#else
+        if (!all_code_data(addr, size)) {
+#endif
             fail(c, "SetMemoryAttribute (permission lock)", kernel::kInvalidMemoryState, addr, mask, value);
             return;
         }
+#ifdef _WIN32
         g_perm_locked.emplace(addr, size);
+#else
+        uint64_t begin = addr, end = addr + size;
+        auto first = g_perm_locked.lower_bound(addr);
+        if (first != g_perm_locked.begin()) {
+            auto previous = std::prev(first);
+            if (previous->first + previous->second >= addr) first = previous;
+        }
+        for (auto it = first; it != g_perm_locked.end() && it->first <= end; ++it) {
+            begin = std::min(begin, it->first); end = std::max(end, it->first + it->second);
+        }
+        // Allocate before removing prior intervals, so allocation failure cannot
+        // drop a live lock. Reapplying a lock and adjoining locks are idempotent.
+        auto [merged, inserted] = g_perm_locked.try_emplace(begin, end - begin);
+        (void)inserted; merged->second = end - begin;
+        auto next = std::next(merged);
+        while (next != g_perm_locked.end() && next->first <= end) next = g_perm_locked.erase(next);
+#endif
     }
     NXLOG_D(kTag, "SetMemoryAttribute(%llx, %llx, mask %u, value %u)", U(addr), U(size), mask, value);
     svc_ret(c, kernel::kOk);
 }
 
+#ifdef _WIN32
 // ---- SetGpuMemoryAttribute (0x80, Switch 2) ----------------------------------------------------------------------------------
 // Switch 2 kernels add GPU memory attribute calls (0x80-0x82). Guest memory is plain host memory here and the GPU is the host's
 // Vulkan device, so there is no attribute to change: log the arguments (the layout is not documented yet) and succeed.
@@ -391,6 +497,8 @@ void unmap_memory(::Ctx* c) {
     fail(c, "UnmapMemory (no such mapping)", kernel::kInvalidMemoryState, dst, src, size);
 }
 
+#endif
+
 // ---- QueryMemory (0x06) ------------------------------------------------------------------------------------------------------
 // Writes the 0x28-byte MemoryInfo at x0; x1 (PageInfo) is 0.
 struct MemoryInfo {
@@ -407,8 +515,14 @@ static_assert(sizeof(MemoryInfo) == 0x28, "MemoryInfo is 0x28 bytes");
 
 void query_memory(::Ctx* c) {
     const uint64_t out = reg(c, 0), addr = reg(c, 2);
+    std::lock_guard lk(g_mu);
+#ifdef _WIN32
     if (!out) {
         fail(c, "QueryMemory", kernel::kInvalidAddress, out, addr, 0);
+#else
+    if (!mem::SubpageMap::allows(out, sizeof(MemoryInfo), 2)) {
+        fail(c, "QueryMemory", kernel::kInvalidPointer, out, addr, 0);
+#endif
         return;
     }
     const mem::VmInfo vi = mem::vm_query(addr);
@@ -417,10 +531,25 @@ void query_memory(::Ctx* c) {
     info.size = vi.size;
     info.type = vi.state;
     info.permission = vi.perm;
-    {
-        std::lock_guard lk(g_mu);
-        if (vi.state != mem::kMemFree && overlaps_perm_locked(vi.addr, vi.size)) info.attribute |= kAttrPermissionLocked;
+    if (vi.state != mem::kMemFree && vi.state != mem::kMemInaccessible) {
+        // PermissionLocked can split a larger VM block. Return only the run
+        // containing the queried address, with its exact attribute.
+        uint64_t begin = vi.addr, end = vi.addr + vi.size;
+        auto next = g_perm_locked.upper_bound(addr);
+        if (next != g_perm_locked.begin()) {
+            const auto previous = std::prev(next);
+            const auto stop = previous->first + previous->second;
+            if (stop > addr) {
+                begin = std::max(begin, previous->first); end = std::min(end, stop);
+                info.attribute = kAttrPermissionLocked;
+            } else begin = std::max(begin, stop);
+        }
+        if (next != g_perm_locked.end()) end = std::min(end, next->first);
+        info.base_address = begin; info.size = end - begin;
     }
+#ifndef _WIN32
+    if (vi.state == mem::kMemInaccessible && vi.size == 0) info.size = 0 - vi.addr;
+#endif
     std::memcpy(reinterpret_cast<void*>(out), &info, sizeof info);
     reg(c, 1) = 0;
     NXLOG_D(kTag, "QueryMemory(%llx) -> base %llx size %llx type %u perm %u", U(addr), U(vi.addr), U(vi.size), vi.state,
@@ -428,6 +557,7 @@ void query_memory(::Ctx* c) {
     svc_ret(c, kernel::kOk);
 }
 
+#ifdef _WIN32
 // ---- MapSharedMemory (0x13) / UnmapSharedMemory (0x14) ----------------------------------------------------------------------
 // The guest picks the address in the alias region. The object's buffer is copied to it and the object then works on that view
 // (s->host = addr), so services write straight into the guest's copy. Unmap copies the view back into the object's own buffer.
@@ -755,6 +885,8 @@ void flush_data_cache(::Ctx* c) {
     svc_ret(c, kernel::kOk);
 }
 
+#endif
+
 }  // namespace
 
 uint64_t svc_current_heap_size() {
@@ -766,10 +898,11 @@ void svc_register_memory_group() {
     svc_register(0x01, set_heap_size);
     svc_register(0x02, set_memory_permission);
     svc_register(0x03, set_memory_attribute);
+    svc_register(0x06, query_memory);
+#ifdef _WIN32
     svc_register(0x80, set_gpu_memory_attribute);
     svc_register(0x04, map_memory);
     svc_register(0x05, unmap_memory);
-    svc_register(0x06, query_memory);
     svc_register(0x13, map_shared_memory);
     svc_register(0x14, unmap_shared_memory);
     svc_register(0x15, create_transfer_memory);
@@ -780,17 +913,20 @@ void svc_register_memory_group() {
     svc_register(0x50, create_shared_memory);
     svc_register(0x51, map_transfer_memory);
     svc_register(0x52, unmap_transfer_memory);
+#endif
 }
 
 // Tests only: releases every alias-region window and forgets the MapMemory list and the heap size. The heap itself and
 // the vm map are reset by mem::shutdown().
 void svc_memory_reset_for_tests() {
     std::lock_guard lk(g_mu);
+#ifdef _WIN32
     for (auto& kv : g_windows) alias_free(kv.first);
     g_windows.clear();
     for (auto& kv : g_phys) VirtualFree(reinterpret_cast<void*>(kv.first), 0, MEM_RELEASE);
     g_phys.clear();
     g_maps.clear();
+#endif
     g_perm_locked.clear();
     g_heap_cur = 0;
 }

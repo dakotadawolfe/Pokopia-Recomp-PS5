@@ -26,7 +26,6 @@ constexpr uint64_t kCoreMaskApp = 0x7;                          // nxrt: cores 0
 constexpr uint64_t kPriorityMaskApp = 0x0FFFFFFFF0000000ull;    // nxrt: bits 28..59 = HOS priorities 0x1C..0x3B (kernel.h: applications 28..59)
 constexpr uint64_t kAslrRegionAddress = 0x0008000000ull;       // chosen value (Switchbrew: no value given)
 constexpr uint64_t kAslrRegionSize = 0x7FF8000000ull;           // chosen value (Switchbrew: no value given)
-constexpr uint64_t kTotalMemorySwitch2 = 0x2A0000000ull;        // Switch 2 application: 10.5 GiB (nxrt choice; Pokopia alone pools ~8 GiB)
 constexpr uint64_t kTotalMemoryAvailable = 0xCD500000ull;       // chosen value: ~3.2 GiB, like an application ([memory] app_memory_mb overrides)
 constexpr uint64_t kUsedMemoryOverhead = 0x4000000ull;          // chosen value: 64 MiB added to the heap size for "used"
 constexpr uint64_t kEntropyDefaultSeed = 0x1234567890ABCDEFull; // chosen value
@@ -38,12 +37,6 @@ constexpr uint64_t kProcessStateStarted = 2;                    // Switchbrew Pr
 constexpr uint64_t kSubAllCores = 0xFFFFFFFFFFFFFFFFull;        // ThreadTickCount sub-argument: the total over all cores (Switchbrew)
 
 }  // namespace
-uint64_t svc_total_memory() {
-    const int64_t mb = config_get_int("memory", "app_memory_mb", 0);
-    if (mb > 0) return static_cast<uint64_t>(mb) << 20;
-    // Switch 2 applications get far more memory (12 GiB console): 10.5 GiB, inside nxrt's 12 GiB heap region.
-    return game::info().platform == game::Platform::Switch2 ? kTotalMemorySwitch2 : kTotalMemoryAvailable;
-}
 namespace {
 uint64_t used_memory() {
     uint64_t images = 0;

@@ -91,3 +91,41 @@ svc_events:
 events_done:
     ret
 .size svc_events, .-svc_events
+
+.org 0x400
+.global svc_memory
+.type svc_memory, %function
+svc_memory:
+    mov x19, x0
+    mov x1, #0x200000
+    svc #0x01
+    str w0, [x19]
+    cbnz w0, memory_done
+    mov x20, x1
+    mov x2, #0x55aa
+    str x2, [x20]
+    mov x0, x20
+    mov x1, #0x1000
+    mov x2, #1
+    svc #0x02
+    str w0, [x19, #4]
+    cbnz w0, memory_done
+    add x0, x19, #32
+    mov x2, x20
+    svc #0x06
+    str w0, [x19, #8]
+    cbnz w0, memory_done
+    ldr x2, [x20]
+    str x2, [x19, #24]
+    mov x0, x20
+    mov x1, #0x1000
+    mov x2, #3
+    svc #0x02
+    str w0, [x19, #12]
+    cbnz w0, memory_done
+    mov x1, #0
+    svc #0x01
+    str w0, [x19, #16]
+memory_done:
+    ret
+.size svc_memory, .-svc_memory

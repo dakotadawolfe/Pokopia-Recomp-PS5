@@ -138,9 +138,13 @@ SvcHandler svc_handler(uint32_t number) { return number < kSvcCount ? g_handlers
 void svc_init() {
     std::call_once(g_init_once, [] {
         svc_register_thread_group();
-#ifndef NXRT_SVC_THREAD_GROUP_ONLY
+#ifndef NXRT_SVC_NO_MEMORY
         svc_register_memory_group();
+#endif
+#ifndef NXRT_SVC_NO_INFO
         svc_register_info_group();
+#endif
+#ifndef NXRT_SVC_NO_IPC
         svc_register_ipc_group();
 #endif
         size_t n = 0;
