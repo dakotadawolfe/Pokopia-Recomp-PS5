@@ -22,6 +22,8 @@ public:
     bool commit_at(uint64_t address, uint64_t bytes, Prot protection);
     bool protect(uint64_t address, uint64_t bytes, Prot protection);
     bool is_mapped(uint64_t address, uint64_t bytes) const;
+    bool is_committed(uint64_t address, uint64_t bytes) const;
+    uint64_t view_end(uint64_t address) const;
     uint64_t alias(uint64_t offset, uint64_t bytes, uint64_t at = 0, Prot protection = Prot::RW);
     bool unmap_alias(uint64_t address);
     void* private_view(uint64_t offset, uint64_t bytes);

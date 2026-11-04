@@ -38,6 +38,10 @@ int main() {
     constexpr const char* prefix = "app-platform";
 #elif defined(NXRT_TEST_SHARED_HEAP)
     constexpr const char* prefix = "heap-platform";
+#elif defined(NXRT_TEST_MEMORY_API)
+    constexpr const char* prefix = "memory-api";
+#elif defined(NXRT_TEST_THREAD_EXIT)
+    constexpr const char* prefix = "thread-runtime";
 #else
     constexpr const char* prefix = "platform";
 #endif

@@ -3,7 +3,14 @@
 
 #include "nxrt/memory.h"
 
+#ifdef NXRT_TEST_PS5
+#include "nxrecomp/ctx.h"
+#include <csignal>
+#include <csetjmp>
+#include <cstdlib>
+#else
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -30,6 +37,30 @@ constexpr uint32_t kFree = static_cast<uint32_t>(mem::kMemFree);
 
 uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 
+#ifdef NXRT_TEST_PS5
+sigjmp_buf fault_return;
+volatile sig_atomic_t expecting_fault = 0;
+void fault_handler(int signal) {
+    if (expecting_fault) siglongjmp(fault_return, 1);
+    _Exit(128 + signal);
+}
+int touch(uint64_t address, bool write) {
+    struct sigaction action{}, old_segv{}, old_bus{};
+    action.sa_handler = fault_handler; sigemptyset(&action.sa_mask);
+    if (sigaction(SIGSEGV, &action, &old_segv) != 0) return 0;
+    if (sigaction(SIGBUS, &action, &old_bus) != 0) { sigaction(SIGSEGV, &old_segv, nullptr); return 0; }
+    volatile int accessible = 0;
+    if (!sigsetjmp(fault_return, 1)) {
+        expecting_fault = 1;
+        if (write) wr8(address, 0x5a);
+        else { volatile auto value = rd8(address); (void)value; }
+        accessible = 1;
+    }
+    expecting_fault = 0;
+    sigaction(SIGBUS, &old_bus, nullptr); sigaction(SIGSEGV, &old_segv, nullptr);
+    return accessible;
+}
+#else
 // The access itself lives in a non-inlined callee: clang-cl's SEH only models faults at call sites (without
 // -fasync-exceptions), so a plain store inside the __try block would not reliably reach the handler.
 __declspec(noinline) void access_byte(uint64_t addr, bool write) {
@@ -52,19 +83,26 @@ __declspec(noinline) int touch(uint64_t addr, bool write) {
     }
     return ok;
 }
+#endif
 
 uint32_t* word_at(uint64_t addr) { return reinterpret_cast<uint32_t*>(addr); }
 
-// The host's answer for [addr, addr + size): VirtualQuery over the same page span that mem::is_mapped uses, with no page table.
+// Independent access check: VirtualQuery on Windows, real checked guest loads
+// on PS5, where 4 KiB guest pages share a 16 KiB host page.
 bool host_mapped(uint64_t addr, uint64_t size) {
     const uint64_t start = addr & ~(kPg - 1);
     const uint64_t end = (addr + size + kPg - 1) & ~(kPg - 1);
     for (uint64_t cur = start; cur < end;) {
+#ifdef NXRT_TEST_PS5
+        if (!touch(cur, false)) return false;
+        cur += kPg;
+#else
         MEMORY_BASIC_INFORMATION mbi{};
         if (VirtualQuery(reinterpret_cast<void*>(cur), &mbi, sizeof mbi) != sizeof mbi || mbi.RegionSize == 0) return false;
         if (mbi.State != MEM_COMMIT) return false;
         if ((mbi.Protect & 0xFF) == PAGE_NOACCESS || (mbi.Protect & PAGE_GUARD)) return false;
         cur = std::min<uint64_t>(end, reinterpret_cast<uint64_t>(mbi.BaseAddress) + mbi.RegionSize);
+#endif
     }
     return true;
 }
@@ -240,7 +278,11 @@ NXTEST(alias_commit_through_alias_view_is_seen_by_primary) {
     const uint64_t a = mem::heap_alias(0, kGr, 0, mem::Prot::RW);
     CHECK(a != 0);
     // Commit the range through the alias view itself, bypassing heap_commit.
+#ifdef NXRT_TEST_PS5
+    CHECK(mem::commit(a, kGr, mem::Prot::RW));
+#else
     CHECK(VirtualAlloc(reinterpret_cast<void*>(a), static_cast<SIZE_T>(kGr), MEM_COMMIT, PAGE_READWRITE) != nullptr);
+#endif
     word_at(a)[7] = 0xCAFE0001u;
     CHECK_EQ(word_at(mem::kHeapBase)[7], 0xCAFE0001u);  // visible through the primary view
     CHECK_EQ(mem::heap_committed(), 0ull);              // the module counter only counts heap_commit
@@ -560,7 +602,7 @@ NXTEST(heap_protect_cycle_is_fast_with_full_heap) {
     mem::shutdown();
     CHECK(mem::init());
     CHECK(mem::heap_create(kHeapSmall));
-    CHECK(mem::heap_commit(0, kHeapSmall));                      // the whole 256 MiB section committed
+    REQUIRE(mem::heap_commit(0, kHeapSmall));                    // the whole 256 MiB section committed
     const uint64_t src = mem::kHeapBase + (1ull << 20);
     const auto t0 = std::chrono::steady_clock::now();
     for (uint32_t i = 0; i < 50; i++) {

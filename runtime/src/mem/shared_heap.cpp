@@ -222,6 +222,20 @@ bool SharedHeap::is_mapped(uint64_t address, uint64_t bytes) const {
         if (!available_[view->offset / kPage + page] || !(view->permissions[page] & 1)) return false;
     return true;
 }
+bool SharedHeap::is_committed(uint64_t address, uint64_t bytes) const {
+    std::lock_guard lock(mutex_);
+    auto* view = find_view(address, bytes);
+    uint64_t first, end;
+    if (!view || !span(address - view->base, bytes, view->size, first, end)) return false;
+    first += view->offset / kPage; end += view->offset / kPage;
+    return std::all_of(available_.begin() + first, available_.begin() + end,
+                       [](uint8_t page) { return page != 0; });
+}
+uint64_t SharedHeap::view_end(uint64_t address) const {
+    std::lock_guard lock(mutex_);
+    const auto* view = find_view(address, 1);
+    return view ? view->base + view->size : 0;
+}
 
 uint64_t SharedHeap::alias(uint64_t offset, uint64_t bytes, uint64_t at, Prot protection) {
     std::lock_guard lock(mutex_);

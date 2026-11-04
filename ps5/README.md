@@ -99,7 +99,8 @@ bash ps5/check_platform.sh /path/to/private/build
 all generated game code and archives under the supplied private build directory.
 It reads the original dump without copying or changing it. The module bases,
 hook sites, floating-point contraction setting and generated-code optimization
-level match upstream. Their runtime memory layout remains to be implemented.
+level match upstream. The memory API preserves that layout; full loader
+integration remains to be tested.
 After compilation, `check_modules.py` inspects the ABI symbol inside each game
 archive, checks the generated function/unit counts and rejects emitted
 `guest_unimpl` calls. It writes hashes and coverage counts to
@@ -110,11 +111,12 @@ The component target produces `libpkp_main.a`, `libpkp_sdk.a`,
 `libpkp_subsdk0.a`, `libpkp_rtld.a`, `libnxrt_ps5_platform.a` and
 `libnxrt_ps5_core.a`. These are link inputs, not a finished game executable.
 The platform library contains synchronization, logging, configuration, the
-gauge registry, native memory primitives and sparse fixed guest regions.
+gauge registry and the PS5 guest-memory API, including sparse fixed regions,
+shared heaps and aliases.
 The core library contains dispatch, the generated-code ABI,
-module registration, hooks, NSO loading and linking. Memory, guest threads,
-services, exceptions and rendering still need platform implementations before
-the core can run the game.
+module registration, hooks, NSO loading and linking. Guest threads, services,
+guest exceptions, write tracking and rendering still need platform integration
+before the core can run the game.
 
 The platform check runs 57 cases on the host: 17 upstream cases for mutexes,
 condition variables, events and semaphores, 23 upstream cases for logging and
@@ -142,10 +144,13 @@ directory. This establishes platform behavior, not game boot or performance.
 
 ## Native memory foundation
 
-`nxrt/host_vm.h` owns POSIX anonymous/shared mappings and rejects unaligned,
+`nxrt/host_vm.h` owns anonymous/shared mappings and rejects unaligned,
 out-of-bounds or overflowing operations. Exact-address requests never replace
-an occupied mapping. These primitives are useful for host tests and small
-runtime allocations; large PS5 regions use `nxrt/ps5_vm.h` instead.
+an occupied mapping. Host shared objects use POSIX backing; PS5 shared objects
+use zeroed direct memory because `shm_open(SHM_ANON)` failed in the native app
+despite passing in a payload. Views retain their backing independently of the
+object. These primitives serve small allocations; large guest regions use the
+sparse owners built on `nxrt/ps5_vm.h`.
 
 The PS5 implementation reserves virtual ranges with
 `sceKernelReserveVirtualRange` and attaches direct-memory allocations only to
@@ -179,8 +184,8 @@ Hardware findings that determine the implementation:
 page behavior and native reservation/alias results under
 `/data/pokopia-recomp/tests/memory-<time>-<pid>.log`. The native capability run
 reported zero failures; the final platform suite exercises the production
-wrappers rather than substitutes. All target results so far are payload-process
-tests, not a launched homebrew game application.
+wrappers rather than substitutes. The initial capability results came from a
+payload; the native app now also passes the production memory-wrapper cases.
 
 `nxrt/subpage.h` records permissions at 4 KiB granularity and applies their
 union to each 16 KiB host page. A 32 MiB flag table covers the guest address
@@ -223,18 +228,28 @@ The separate `ps5_shared_heap_tests` payload passed all 13 cases on the console
 on 2026-11-03, including injected native mapping/protection failures, alias
 lifetimes, sparse commits, preserved contents and clean recreation. ELF SHA-256:
 `d3f5fcbda4581acfe58c89cc8894965c77f916cf8b2722cd72b4169edaa564a0`.
-The 57 host platform cases also passed. These are payload-process results;
-native-app heap validation remains pending.
+The 57 host platform cases also passed. Those 13 owner-level cases ran as a
+payload; the public heap API has since been exercised in the native suite below.
 
-The policy, helpers, fixed-region and heap owners are now hardware-tested, but
-are not yet connected to the complete guest memory/loader backend. Runtime/HLE buffer accesses also need
-their permission checks during that integration. Guard overhead has not been
-measured in Pokopia. The loader now propagates a failed protection operation
-instead of marking that module linked; that error path still needs its native
-loader integration test.
+`runtime/src/mem/memory_ps5.cpp` now connects these owners to the public memory
+API: initialization, fixed reservations, kernel allocations, primary/alias/private
+heap views, protection and VM metadata. Cross-reservation protection preflights
+all pages and restores earlier changes if a later operation fails. The control
+operations are serialized, and failed initialization preserves foreign mappings.
 
-Next: connect the allocation and permission layers to the guest memory and
-loader contracts, port write tracking, and partition the RADV
+The 30 memory API cases include 26 upstream cases and four PS5 cases for rollback,
+concurrent allocations and bounds. In a payload, 29 passed and the final 256 MiB
+commit failed with a native allocation error. The same full-size case passed in
+the native application, together with all other API cases. This establishes the
+tested allocation size in that context, not a full game memory budget.
+
+Runtime/HLE buffer accesses still need permission checks and write tracking.
+Guard overhead has not been measured in Pokopia. The loader propagates a failed
+protection operation instead of marking a module linked; that error path still
+needs its native loader integration test.
+
+Next: exercise the loader against this memory backend, port write tracking,
+and partition the RADV
 address arena before initializing graphics. The existing RADV arena spans
 `0x4000000000` through `0x8000000000` and overlaps the lifted game layout.
 Do not combine the allocators until their ranges have been separated and tested.
@@ -245,8 +260,16 @@ The runtime suite also builds as the native title **Pokopia Runtime Tests**,
 `PPSA98731`. This is an application-process check before game integration. It
 contains original ARM fixtures and runtime tests, with no Pokopia code or assets.
 It uses the native application CRT, kernel provider, C++ libraries and companion
-`libc.prx`, rather than the payload CRT. Two additional cases verify thread-local
-destruction and C++ exception cleanup, bringing the app suite to 68 cases.
+`libc.prx`, rather than the payload CRT. Its 102 cases comprise 66 platform cases,
+six thread-lifetime/exception cases and 30 memory API cases.
+
+The app supplies C++ thread-local destructor registration and wraps statically
+linked `pthread_create` calls. Worker cleanup handlers drain C++ destructors before
+the SDK frees emulated TLS storage, including normal return, `pthread_exit` and
+cancellation. Destructors may register further destructors. Modules must remain
+loaded until process exit; threads created inside external PRXs are outside this
+wrapper and need separate integration checks. The six focused cases passed both
+on the host and in a PS5 payload before the native app run.
 
 Use the pinned public native app toolchain, prepared locally:
 
@@ -277,20 +300,33 @@ its [scan API](https://github.com/drakmor/ShadowMountPlus/blob/1.7/docs/api.md).
 Launch **Pokopia Runtime Tests** from the PS5 home screen. This headless suite
 normally displays a blank screen while running and exits when finished. It writes
 `/data/pokopia-recomp/tests/app-platform-<time>-<pid>.log`, containing
-`context=native-app title=PPSA98731`. Only a complete report with 68 cases and
-zero failures, together with process exit, establishes success. Registration,
+`context=native-app title=PPSA98731`. Only a complete report with 102 cases and
+zero failures, together with a clean application exit, establishes success. Registration,
 FSELF inspection and payload-suite results do not establish application runtime
 behavior. Native game boot and gameplay remain separate checks.
 
-On 2026-11-03 the first app launch reached `main` and created its report, but
-returned status 6 when redirecting stderr with `dup2`; no test case ran. The
-kernel reported SIGSYS during `exit(6)`. The replacement explicitly opens both
-stdio streams in append mode, so it does not depend on stderr already having
-an open descriptor and the streams cannot overwrite each other's output.
-It also records setup failures before returning. Local build and FSELF checks
-passed, the replacement was uploaded/readback-verified, and the native retry is
-pending. Executable SHA-256:
-`1e225de6a2874dee1c4858e27fd892360aadbd7a014a50f26810dec6ab86fbe0`.
+On 2026-11-03 the first launch failed before tests because stderr redirection
+assumed an open descriptor. Opening both report streams explicitly fixed that.
+The next launch exposed native shared-object creation and missing thread-local
+destructors; those fixes are now verified in the application process.
+
+Report `app-platform-1793770437-125.log` contains **102 cases, zero failures**,
+including the full 256 MiB heap case. That executable's SHA-256 is
+`ab07c8e59e877b773923d5937fef3335697bd847c1a609c3d5983919b92ea45c`.
+The kernel then recorded `exit_value=0` followed by SIGSYS: the remaining error
+occurred after the tests, in the CRT's ordinary process-exit path.
+
+`ps5/app/lifecycle.cpp` now drains main-thread TLS, records the result, flushes
+the report and requests closure through `sceSystemServiceLoadExec("exit", nullptr)`.
+If that call returns, it records the result and waits for shell closure; it never
+falls through to the invalid exit syscall. Test failures remain visible in the
+report and recorded main status. Resources that require orderly application
+shutdown must be closed before returning from main; shell closure does not run
+the CRT's global finalizers.
+
+The shutdown candidate was locally built, inspected, installed and readback-verified;
+its native retry is pending. Executable SHA-256:
+`72cd362dc21be414345ecafb783be3bc8483b835639e944969c05f2e62f0c552`.
 
 ## Repository ownership
 

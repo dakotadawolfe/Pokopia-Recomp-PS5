@@ -5,6 +5,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 namespace nxrt::host_vm {
 
@@ -12,9 +13,11 @@ enum class Access { None, Read, ReadWrite };
 size_t page_size();
 
 class SharedObject;
+struct NativeMapping;
+struct NativeSharedObject;
 class Mapping {
 public:
-    Mapping() = default;
+    Mapping();
     ~Mapping();
     Mapping(Mapping&& other) noexcept;
     Mapping(const Mapping&) = delete;
@@ -32,30 +35,34 @@ public:
 
 private:
     friend class SharedObject;
-    Mapping(void* address, size_t size) : address_(address), size_(size) {}
+    Mapping(void* address, size_t size);
     void* address_ = nullptr;
     size_t size_ = 0;
+    std::unique_ptr<NativeMapping> native_;
 };
 
 class SharedObject {
 public:
-    SharedObject() = default;
+    SharedObject();
     ~SharedObject();
     SharedObject(SharedObject&& other) noexcept;
     SharedObject(const SharedObject&) = delete;
     SharedObject& operator=(const SharedObject&) = delete;
     SharedObject& operator=(SharedObject&&) = delete;
 
-    // Anonymous sparse backing. Closing the object does not invalidate views.
+    // Anonymous shared backing, zeroed before exposure. POSIX backing is sparse;
+    // PS5 direct memory is allocated here. Large guest heaps use SharedHeap.
+    // Closing the object does not invalidate views.
     static SharedObject create(size_t size);
-    explicit operator bool() const { return fd_ >= 0; }
+    explicit operator bool() const { return fd_ >= 0 || static_cast<bool>(native_); }
     size_t size() const { return size_; }
     Mapping map(size_t offset, size_t size, Access access, uintptr_t address = 0) const;
 
 private:
-    SharedObject(int fd, size_t size) : fd_(fd), size_(size) {}
+    SharedObject(int fd, size_t size);
     int fd_ = -1;
     size_t size_ = 0;
+    std::unique_ptr<NativeSharedObject> native_;
 };
 
 } // namespace nxrt::host_vm

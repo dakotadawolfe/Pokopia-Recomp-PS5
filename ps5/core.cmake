@@ -9,4 +9,4 @@ target_include_directories(nxrt_ps5_core PUBLIC "${core_root}/include"
     "${CMAKE_CURRENT_LIST_DIR}/../recomp/include")
 target_compile_options(nxrt_ps5_core PRIVATE -mcx16 -fno-strict-aliasing)
 target_link_libraries(nxrt_ps5_core PUBLIC nxrt_ps5_platform)
-# Memory, services and guest-thread backends are still required by this library.
+# Services and guest-thread backends remain; the memory API is in the platform library.

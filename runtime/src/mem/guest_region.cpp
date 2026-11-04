@@ -46,6 +46,14 @@ GuestRegion::~GuestRegion() {
     if (!reset()) { std::perror("guest region: release"); std::abort(); }
 }
 
+bool GuestRegion::is_committed(uint64_t address, uint64_t size) const {
+    std::lock_guard lock(mutex_);
+    uint64_t first, end;
+    if (!span(address, size, first, end)) return false;
+    return std::all_of(committed_pages_.begin() + first, committed_pages_.begin() + end,
+                       [](uint8_t page) { return page != 0; });
+}
+
 bool GuestRegion::span(uint64_t address, uint64_t size, uint64_t& first, uint64_t& end) const {
     if (!permissions_ || address < base_ || address - base_ > size_ || size > size_ - (address - base_)) return false;
     first = (address - base_) / kPage;
