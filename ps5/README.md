@@ -6,9 +6,11 @@ The initial upstream revision is `2c29515b23a6d78d967775fd7e9f24f50402cca7`.
 
 ## Product scope
 
-- Load decrypted ExeFS and RomFS from `C:/Games/pokopia` during local preparation.
+- Load decrypted ExeFS and RomFS from `C:/Games/pokopia` during local compilation.
   An explicit input path can point to an existing dump elsewhere. Do not request
-  keys or firmware; this application consumes extracted game files.
+  keys or firmware; this application consumes extracted game files. At console
+  launch, let the user browse USB or internal storage for their existing game
+  folder, validate it, and remember that choice without copying the assets.
 - Produce a native PS5 application launched through ShadowMountPlus, using
   the existing homebrew SDK, RADV and native presentation work where appropriate.
   Deliver the complete title folder with `eboot.bin`, `sce_sys` metadata and
@@ -39,14 +41,15 @@ hardware testing; a base-console run does not establish PS5 Pro behavior.
 Local preparation consumes the user's decrypted dump. The final native
 application will contain the recompiled x86-64 game code and platform runtime,
 packaged as `eboot.bin` and any required modules for ShadowMountPlus. Game assets
-remain separate under `/data/pokopia-recomp/game/`; they are not embedded in the
-ELF. The current loader requires the decrypted ExeFS images for their original
-mapped contents and layout as well as the separately compiled code. RomFS asset
-staging and loading are still to be implemented.
+remain separate in the existing USB or internal-storage folder chosen by the
+user; they are not embedded in the ELF or automatically moved. The current
+loader requires the decrypted ExeFS images for their original mapped contents
+and layout as well as the separately compiled code. Earlier diagnostics use
+the already-staged `/data/pokopia-recomp/game/exefs/` images. Connecting the
+selected folder to full game startup and asset loading remains separate work.
 
-The intended default is internal PS5 storage, with USB or FTP used for transfer.
-After installation, playing should not require the PC, keys or firmware. Loading
-the full game directly from USB is a separate, unverified option. Save data and
+After installation, playing should not require the PC, keys or firmware.
+USB and internal-storage gameplay both require runtime validation. Save data and
 controller/audio preferences will live in writable application-data directories,
 separate from game inputs and the app package.
 
@@ -84,7 +87,8 @@ Validated locally on 2026-11-03:
 
 1. Validate the decrypted inputs and establish reproducible local preparation.
    Module hashes are verified and all four game modules have been lifted.
-   Asset preparation and full game linking remain.
+   Full game linking is available in the bounded startup diagnostic; console
+   startup and asset-service integration remain under investigation.
 2. Port memory reservations, aliases, protection and fault handling. Coordinate
    guest addresses with the PS5 GPU allocator before combining the runtimes.
 3. Port thread, synchronization, filesystem and exception services, and exercise
@@ -1160,9 +1164,35 @@ driver allocations use a private rebuilt arena below `0x6000000000`; explicit
 fixed/capture-replay/sparse allocations still require a separate ownership
 audit. No game modules or assets are included. The executable is 19,069,699 bytes,
 SHA-256 `81ad5acc606e7716dd25f324cc22bb0c13ce6f722338483ef45b5b6d4de8be0d`.
-All package files were readback-verified at `/data/homebrew/PPSA98732`. This new
-mode writes `graphics-memory-*.log` and awaits a manual native-app test; the prior
-clear-only result does not validate it.
+All package files were readback-verified at `/data/homebrew/PPSA98732`.
+The native launch report `graphics-memory-1793791305-402.log` passes eight Vulkan
+synchronization rounds and eight explicit-cache rounds, each checking 4,096
+words in both directions through the primary and alias mappings. There are no
+word mismatches, guest protection/guard markers remain intact, all 300 frames
+present, and cleanup completes before process exit. This is bounded GPU-memory
+and presentation evidence, not validation of game rendering or frame rate.
+
+The installed integration uses the real runtime `Device`, `Renderer` and textured
+`TestScene`, with a native controller-driven folder picker before the scene.
+The picker selects existing inputs and persists only the chosen path. Its
+console interaction and the runtime renderer still need a manual native launch.
+All 18 package files were readback-verified at `/data/homebrew/PPSA98732`;
+`eboot.bin` is 19,640,625 bytes with SHA-256
+`32d91526c20f21a5d9ec9bcc7c5d5a0d3a6b25a23969eb0c8e69e8c5c3c7d590`.
+See [full game startup diagnostic](GAME_STARTUP_TRACE.md) for the independent
+four-module trace and its explicit stop conditions.
+That full trace now reaches the real main module's `nninitStartup`; its first
+10.36 GiB heap request fails in the payload process. Native-app memory capacity
+and eager backing are the next memory questions, not evidence that the native
+PS5 application cannot fit the game.
+
+`console_probe.py` automates bounded diagnostic runs and report collection using
+an explicitly hashed FTP helper. It records ownership of helpers, temporary
+payload slots and diagnostic files, verifies staged ELFs by full readback
+SHA-256, and removes only its own resources with the `close` command. Payload
+Manager v0.6.3 has a [512 MiB HTTP upload limit](https://github.com/itsPLK/ps5-payload-manager/blob/v0.6.3/include/http_server.h).
+Larger diagnostic ELFs use `run --transport ftp` and the manager's existing
+loader; this transfers development executables, never game asset folders.
 
 ## Repository ownership
 

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Renderer (declarations in include/nxrt/gfx.h): swapchain or offscreen image ring, present modes, frames in flight, GPU
 // timestamps, resize and minimise handling, screenshots, overlay hook.
+#if !defined(NXRT_TARGET_PS5)
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_surface.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -96,6 +98,11 @@ void wait_screenshot_writes() {
 }
 
 bool save_png_rgba(const std::string& path, const uint8_t* rgba, uint32_t w, uint32_t h) {
+#if defined(NXRT_TARGET_PS5)
+    (void)path; (void)rgba; (void)w; (void)h;
+    NXLOG_E(kTag, "PNG file encoding is unavailable on PS5; use capture_next_frame for RGBA readback");
+    return false;
+#else
     SDL_Surface* s = SDL_CreateSurfaceFrom(static_cast<int>(w), static_cast<int>(h), SDL_PIXELFORMAT_RGBA32, const_cast<uint8_t*>(rgba),
                                            static_cast<int>(w * 4));
     if (!s) return false;
@@ -103,9 +110,15 @@ bool save_png_rgba(const std::string& path, const uint8_t* rgba, uint32_t w, uin
     SDL_DestroySurface(s);
     if (!ok) NXLOG_E(kTag, "could not write %s: %s", path.c_str(), SDL_GetError());
     return ok;
+#endif
 }
 
 bool load_png_rgba(const std::string& path, std::vector<uint8_t>* rgba, uint32_t* w, uint32_t* h) {
+#if defined(NXRT_TARGET_PS5)
+    (void)path; (void)rgba; (void)w; (void)h;
+    NXLOG_E(kTag, "PNG file decoding is unavailable on PS5");
+    return false;
+#else
     SDL_Surface* s = SDL_LoadPNG(path.c_str());
     if (!s) return false;
     SDL_Surface* c = SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32);
@@ -117,6 +130,7 @@ bool load_png_rgba(const std::string& path, std::vector<uint8_t>* rgba, uint32_t
     for (int y = 0; y < c->h; ++y) std::memcpy(rgba->data() + static_cast<size_t>(y) * c->w * 4, static_cast<uint8_t*>(c->pixels) + static_cast<size_t>(y) * c->pitch, static_cast<size_t>(c->w) * 4);
     SDL_DestroySurface(c);
     return true;
+#endif
 }
 
 ImageDiff compare_rgba(const uint8_t* a, uint32_t aw, uint32_t ah, const uint8_t* b, uint32_t bw, uint32_t bh) {
@@ -322,7 +336,9 @@ struct Renderer::Impl {
                     if (f.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT && (f.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || f.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32)) o10 = true;
                     if (f.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT && f.format == VK_FORMAT_R16G16B16A16_SFLOAT) osc = true;
                 }
+#if !defined(NXRT_TARGET_PS5)
                 extras::query_display_hdr(platform::native_hwnd(), &di);
+#endif
                 NXLOG_I(kTag, "HDR: surface offers HDR10 %s, scRGB %s; display %s: hdr %s, peak %.0f nits, SDR white %.0f nits (%s)", o10 ? "yes" : "no", osc ? "yes" : "no",
                         di.monitor, di.hdr_enabled ? "on" : "off", di.max_nits, di.sdr_white_nits, di.how);
             }
@@ -592,6 +608,16 @@ struct Renderer::Impl {
 };
 
 std::unique_ptr<Renderer> Renderer::create(Device& dev, const RendererDesc& desc_in, std::string* error) {
+#if defined(NXRT_TARGET_PS5)
+    // Console presentation is fixed until HDR metadata and display-mode changes
+    // have their own native implementation and console validation.
+    const auto settings = extras::settings();
+    if (settings.hdr.mode != extras::HdrMode::Off || settings.upscale.mode != extras::UpscaleMode::Off ||
+        settings.upscale.frame_generation || settings.latency.mode != extras::LatencyMode::Off) {
+        if (error) *error = "PS5 renderer currently requires SDR, native resolution, frame generation off and latency extras off";
+        return nullptr;
+    }
+#endif
     std::unique_ptr<Renderer> r(new Renderer());
     r->impl_ = new Impl();
     Impl& s = *r->impl_;

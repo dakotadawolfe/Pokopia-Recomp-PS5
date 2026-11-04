@@ -5,13 +5,19 @@
 
 #include "nxrt/log.h"
 
+#if defined(NXRT_TARGET_PS5)
+#include <cerrno>
+#include <ctime>
+#else
 #include <windows.h>
+#endif
 #include <emmintrin.h>  // _mm_pause
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <mutex>
 #include <vector>
 
@@ -33,7 +39,11 @@ struct FrameLimiter::Impl {
     std::atomic<double> target_fps{0.0};
     std::atomic<FrameLimiter::PreFrameFn> pre_fn{nullptr};
     std::atomic<void*> pre_user{nullptr};
+#if defined(NXRT_TARGET_PS5)
+    bool timer = true;       // POSIX nanosleep with the same monotonic schedule.
+#else
     HANDLE timer = nullptr;  // high-resolution waitable timer; null means the Sleep(1) coarse wait
+#endif
 
     // Guards the state below. begin_frame holds it only for bookkeeping, never during the wait.
     std::mutex mu;
@@ -71,6 +81,12 @@ struct FrameLimiter::Impl {
     // The timer is per thread: the main and render threads can both pace on one limiter, and a shared auto-reset timer wakes only one
     // waiter, leaving the other blocked for good (the window-play hang at frame 4). The wait is also bounded so a lost signal can't hang.
     bool coarse_wait_timer(uint64_t coarse_ns) {
+#if defined(NXRT_TARGET_PS5)
+        const uint64_t set_at = FrameLimiter::now_ns();
+        timespec remaining{static_cast<time_t>(coarse_ns / 1000000000ull), static_cast<long>(coarse_ns % 1000000000ull)};
+        while (nanosleep(&remaining, &remaining) != 0)
+            if (errno != EINTR) return false;
+#else
         thread_local HANDLE tl_timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
         if (!tl_timer) return false;
         LARGE_INTEGER due;
@@ -79,6 +95,7 @@ struct FrameLimiter::Impl {
         const uint64_t set_at = FrameLimiter::now_ns();
         if (!SetWaitableTimerEx(tl_timer, &due, 0, nullptr, nullptr, nullptr, 0)) return false;
         WaitForSingleObject(tl_timer, static_cast<DWORD>(coarse_ns / 1000000ull) + 50);
+#endif
         const uint64_t woke = FrameLimiter::now_ns();
         const uint64_t requested = set_at + coarse_ns;
         const double over = woke > requested ? static_cast<double>(woke - requested) : 0.0;
@@ -97,7 +114,12 @@ struct FrameLimiter::Impl {
                     if (coarse_wait_timer(remaining - margin_ns())) continue;
                     // The timer call failed: spin the rest.
                 } else {
+#if defined(NXRT_TARGET_PS5)
+                    timespec delay{0, 1000000};
+                    nanosleep(&delay, nullptr);
+#else
                     Sleep(1);  // fallback when no high-resolution timer exists; no timeBeginPeriod
+#endif
                     continue;
                 }
             }
@@ -108,11 +130,15 @@ struct FrameLimiter::Impl {
 };
 
 FrameLimiter::FrameLimiter() : impl_(new Impl) {
+#if !defined(NXRT_TARGET_PS5)
     impl_->timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+#endif
 }
 
 FrameLimiter::~FrameLimiter() {
+#if !defined(NXRT_TARGET_PS5)
     if (impl_->timer) CloseHandle(impl_->timer);
+#endif
     delete impl_;
 }
 
@@ -270,6 +296,11 @@ uint64_t FrameLimiter::last_late_ns() const {
 }
 
 uint64_t FrameLimiter::now_ns() {
+#if defined(NXRT_TARGET_PS5)
+    timespec now{};
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) std::abort();
+    return static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
+#else
     static const uint64_t freq = [] {
         LARGE_INTEGER f;
         QueryPerformanceFrequency(&f);
@@ -280,6 +311,7 @@ uint64_t FrameLimiter::now_ns() {
     const uint64_t q = static_cast<uint64_t>(c.QuadPart);
     // Split so the multiplication cannot overflow: (q % freq) < freq, so the product stays below 1e9 * freq.
     return (q / freq) * 1000000000ull + ((q % freq) * 1000000000ull) / freq;
+#endif
 }
 
 double suggest_vrr_cap(double refresh_hz) {

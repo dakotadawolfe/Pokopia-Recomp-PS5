@@ -5,6 +5,9 @@
 #include "nxrt/memory.h"
 #include "nxrt/module.h"
 #include "nxrt/dispatch.h"
+#ifdef NXRT_GAME_STARTUP_TRACE
+#include "private_startup_inputs.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -55,7 +58,7 @@ uint32_t crc_update(uint32_t value, const uint8_t* data, size_t size) {
     for (size_t i = 0; i < size; ++i) value = table[(value ^ data[i]) & 255] ^ (value >> 8);
     return value;
 }
-uint32_t crc(const uint8_t* data, size_t size) { return crc_update(~0u, data, size) ^ ~0u; }
+[[maybe_unused]] uint32_t crc(const uint8_t* data, size_t size) { return crc_update(~0u, data, size) ^ ~0u; }
 bool check_file(const std::string& path, const GameImageInput& expected) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file || file.tellg() != static_cast<std::streamoff>(expected.bytes)) return false;
@@ -80,6 +83,7 @@ struct Cleanup {
 };
 }
 
+#ifndef NXRT_GAME_STARTUP_TRACE
 NXTEST(decrypted_game_images_map_with_original_contents_and_permissions) {
     Cleanup cleanup;
     nxrt::modules_unload_all(); mem::shutdown();
@@ -135,6 +139,7 @@ NXTEST(decrypted_game_images_map_with_original_contents_and_permissions) {
     }
     std::puts("GAME_IMAGE four images checked and unloaded; no guest code executed");
 }
+#endif
 
 #ifdef NXRT_TEST_RTLD
 namespace {
@@ -142,6 +147,13 @@ extern "C" const NxModule nxmod_rtld;
 #ifdef NXRT_TEST_SDK
 extern "C" const NxModule nxmod_sdk;
 extern "C" const uint32_t nxmod_sdk_abi;
+#endif
+#ifdef NXRT_GAME_STARTUP_TRACE
+extern "C" const NxModule nxmod_main, nxmod_subsdk0;
+extern "C" const uint32_t nxmod_main_abi, nxmod_subsdk0_abi, nxmod_rtld_abi;
+constexpr bool game_startup_trace = true;
+#else
+constexpr bool game_startup_trace = false;
 #endif
 struct Handoff {};
 struct ProbeStop {};
@@ -152,7 +164,9 @@ constexpr bool startup_trace = false;
 #endif
 [[noreturn]] void stop_probe() {
     if constexpr (startup_trace) {
-        std::puts("SDK_TRACE_END stopped at dependency or diagnostic limit; not a passing test or gameplay result");
+        std::puts(game_startup_trace ?
+            "GAME_TRACE_END stopped at dependency or diagnostic limit; not a passing test or gameplay result" :
+            "SDK_TRACE_END stopped at dependency or diagnostic limit; not a passing test or gameplay result");
         std::fflush(stdout); std::fflush(stderr);
         std::_Exit(2); // Ends this diagnostic process and all of its guest workers.
     }
@@ -170,6 +184,68 @@ bool sdk_worker_wait = false;
 nxrt::GuestFn sdk_start = nullptr;
 std::array<nxrt::GuestFn, 3> sdk_callbacks{};
 std::array<unsigned, 3> sdk_callback_returns{};
+#ifdef NXRT_GAME_STARTUP_TRACE
+nxrt::GuestFn game_start = nullptr;
+void trace_game_start(::Ctx* c) {
+    std::puts("GAME_ENTER nninitStartup; executing registered main code");
+    game_start(c);
+    std::puts("GAME_RETURN nninitStartup");
+}
+bool register_game_modules() {
+    const NxModule* descriptors[] = {&nxmod_main, &nxmod_sdk, &nxmod_subsdk0, &nxmod_rtld};
+    const uint32_t versions[] = {nxmod_main_abi, nxmod_sdk_abi, nxmod_subsdk0_abi, nxmod_rtld_abi};
+    static_assert(std::size(descriptors) == std::size(startup_module_inputs));
+    std::printf("GAME_INPUT stamp=%s\n", startup_input_stamp);
+    for (size_t n = 0; n < std::size(descriptors); ++n) {
+        const auto* nx = descriptors[n];
+        const auto& expected = startup_module_inputs[n];
+        const auto* image = nxrt::module_by_name(expected.name);
+        if (!image || std::strcmp(nx->name, expected.name) || nx->base != expected.base ||
+            nx->index != expected.index || nx->nfns != expected.functions || versions[n] != expected.abi) return false;
+        const auto result = nxrt::nxmodule_register(nxrt::module_by_name(expected.name), nx, versions[n]);
+        if (!result.ok() || result.functions != static_cast<size_t>(nx->nfns)) {
+            std::printf("GAME_STOP registration module=%s reason=%s count=%zu/%d\n",
+                expected.name, result.message.c_str(), result.functions, nx->nfns);
+            return false;
+        }
+        std::printf("GAME_MODULE name=%s index=%u abi=%u functions=%d source_sha256=%s archive_sha256=%s\n",
+            expected.name, nx->index, versions[n], nx->nfns, expected.source_sha256, expected.archive_sha256);
+    }
+    // Register every provider first. Guard only missing imports; no game export
+    // is replaced by a host implementation or hidden behind a stop handler.
+    for (const auto* nx : descriptors) {
+        size_t resolved = 0, missing = 0;
+        for (int n = 0; n < nx->nsyms; ++n) {
+            const auto& symbol = nx->syms[n];
+            if (symbol.defined || !symbol.name || !*symbol.name) continue;
+            if (nxrt::module_symbol_overridden(symbol.name)) return false;
+            auto target = nxrt::nxmodule_find_export(symbol.name, nx);
+            if (!target) {
+                const auto mapped = nxrt::module_find_symbol(symbol.name);
+                if (mapped && nxrt::fn_lookup(mapped)) target = mapped;
+            }
+            if (target) {
+                if (nxrt::import_resolve(NX_IMPORT_ID(nx->index, n)) != target || nxrt::hle_is_thunk(target)) return false;
+                ++resolved;
+            } else {
+                nxrt::hle_register(symbol.name, +[](::Ctx* c) {
+                    std::printf("GAME_STOP unresolved import=%s fn=%llx lr=%llx\n", c->in_import,
+                        static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]));
+                    stop_probe();
+                });
+                ++missing;
+            }
+        }
+        std::printf("GAME_BIND module=%s resolved=%zu missing=%zu; missing imports stop only if called\n", nx->name, resolved, missing);
+    }
+    const auto entry = nxrt::nxmodule_find_export("nninitStartup");
+    game_start = nxrt::fn_lookup(entry);
+    if (!entry || !game_start || nxrt::nxmodule_at(entry) != &nxmod_main) return false;
+    nxrt::fn_register(entry, trace_game_start);
+    std::printf("GAME_BIND nninitStartup=%llx module=main\n", static_cast<unsigned long long>(entry));
+    return true;
+}
+#endif
 template<unsigned N> void sdk_callback(::Ctx* c) {
     std::printf("SDK_CALLBACK begin=%u\n", N); sdk_callbacks[N](c); ++sdk_callback_returns[N];
     std::printf("SDK_CALLBACK returned=%u\n", N);
@@ -188,7 +264,7 @@ void trace_sdk_start(::Ctx* c) {
 #endif
 template<size_t Number> void rtld_svc(::Ctx* c) {
     const unsigned call_number = ++rtld_calls;
-    if (call_number > (startup_trace ? 1000u : 10000u)) { std::puts("RTLD_STOP system-call limit"); stop_probe(); }
+    if (call_number > (game_startup_trace ? 10000u : startup_trace ? 1000u : 10000u)) { std::puts("RTLD_STOP system-call limit"); stop_probe(); }
     const uint64_t a = c->x[0], b = c->x[1], d = c->x[2];
     if constexpr (startup_trace) {
         std::printf("SDK_TRACE_ENTER n=%u svc=%02zx thread=%x fn=%llx lr=%llx a=%llx b=%llx d=%llx\n",
@@ -301,6 +377,12 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
     }
 #endif
     rtld_handlers[Number](c);
+    if constexpr (game_startup_trace) {
+        if (nxrt::svc_unknown_total()) {
+            std::printf("GAME_STOP unsupported system call=%02zx fn=%llx\n", Number, static_cast<unsigned long long>(c->fn));
+            stop_probe();
+        }
+    }
 #ifdef NXRT_TEST_SDK
     if constexpr (!startup_trace && Number == 0x08) {
         if (c->x[0] || !nxrt::kernel::handle_as<nxrt::kernel::KThread>(c->x[1])) stop_probe();
@@ -399,21 +481,39 @@ struct RtldDeadline {
 };
 }
 
+#ifdef NXRT_GAME_STARTUP_TRACE
+extern "C" [[noreturn]] void nxrt_game_startup_stop() { stop_probe(); }
+#endif
 #ifdef NXRT_TEST_SDK
 // Fail explicitly if startup reaches guest exception machinery before it is ported.
 extern "C" void nx_catch_call(Ctx* c, void (*)(Ctx*, uint64_t)) {
     std::printf("SDK_STOP guest exception frame fn=%llx\n", static_cast<unsigned long long>(c->fn));
     stop_probe();
 }
+#ifdef NXRT_GAME_STARTUP_TRACE
+NXTEST(decrypted_full_game_startup_trace_stops_without_reporting_a_pass) {
+#else
 NXTEST(decrypted_sdk_maps_its_stack_and_runs_a_worker_to_its_parent_mutex) {
+#endif
 #else
 NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
 #endif
     nxrt::game::Info game{.platform = nxrt::game::Platform::Switch2};
+#ifdef NXRT_GAME_STARTUP_TRACE
+    game.id = "pkp"; game.title = "Pokémon Pokopia";
+    game.program_id = startup_program_id; game.version = startup_version;
+    game.title_defaults = +[](nxrt::services::TitleProfile& profile) {
+        profile.program_id = startup_program_id;
+        profile.name = "Pokémon Pokopia";
+    };
+#endif
     RtldCleanup cleanup;
     nxrt::kernel::kernel_reset(); nxrt::ipc::registry_reset(); nxrt::modules_unload_all(); nxrt::nxmodules_clear(); nxrt::hle_clear();
     nxrt::svc_memory_reset_for_tests(); nxrt::svc_info_reset_for_tests(); mem::shutdown();
     nxrt::game::set_current(&game);
+#ifdef NXRT_GAME_STARTUP_TRACE
+    REQUIRE(nxrt::services::program_id_now() == startup_program_id);
+#endif
 #ifdef NXRT_TEST_SDK
     nxrt::services::logfault_reset(); nxrt::services::register_logfault(); nxrt::services::am_reset(); nxrt::services::register_am();
     nxrt::services::aoc_reset(); nxrt::services::register_aoc();
@@ -433,11 +533,15 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         if (std::strcmp(expected.name, "rtld") == 0) rtld = module;
     }
 #ifdef NXRT_TEST_SDK
+#ifdef NXRT_GAME_STARTUP_TRACE
+    REQUIRE(register_game_modules());
+#else
     auto registered = nxrt::nxmodule_register(nxrt::module_by_name("sdk"), &nxmod_sdk, nxmod_sdk_abi);
     REQUIRE(registered.ok()); REQUIRE(registered.functions == static_cast<size_t>(nxmod_sdk.nfns));
+#endif
     const auto sdk_entry = nxrt::nxmodule_find_export("_ZN2nn4init5StartEmmPFvvES2_S2_");
     sdk_start = nxrt::fn_lookup(sdk_entry); REQUIRE(sdk_start); nxrt::fn_register(sdk_entry, trace_sdk_start);
-    for (int n = 0; n < nxmod_sdk.nsyms; ++n) {
+    if constexpr (!game_startup_trace) for (int n = 0; n < nxmod_sdk.nsyms; ++n) {
         const auto& symbol = nxmod_sdk.syms[n];
         if (symbol.defined || !symbol.name || !*symbol.name) continue;
         nxrt::hle_register(symbol.name, +[](::Ctx* c) {
@@ -448,6 +552,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     }
 #endif
     REQUIRE(rtld); REQUIRE(nxrt::module_protect_all());
+#ifndef NXRT_GAME_STARTUP_TRACE
     REQUIRE(nxrt::module_register_nxmodule(rtld, &nxmod_rtld) == static_cast<size_t>(nxmod_rtld.nfns));
     unsigned imports = 0, start_imports = 0;
     for (int n = 0; n < nxmod_rtld.nsyms; ++n) {
@@ -470,6 +575,16 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         });
     }
     REQUIRE(imports == 2 && start_imports == 1);
+#else
+    // Let the supplied rtld apply relocations. Host linking would patch its
+    // input first and would no longer exercise the native loader path.
+    for (const auto& expected : game_image_inputs) {
+        REQUIRE(!nxrt::module_by_name(expected.name)->linked());
+        constexpr uint32_t permissions[] = {5, 1, 3};
+        for (unsigned n = 0; n < 3; ++n)
+            REQUIRE(mem::vm_query(expected.base + expected.segments[n].offset).perm == permissions[n]);
+    }
+#endif
     nxrt::svc_init(); nxrt::svc_reset_counters(); rtld_calls = 0; rtld_handoff_handle = 0; sdk_map_boundary = false; sdk_thread_boundary = false; sdk_stack_address = 0; sdk_worker_handle = 0; sdk_worker_wait = false;
     install_rtld_svcs(std::make_index_sequence<nxrt::kSvcCount>{}); cleanup.installed = true;
     const auto main_handle = nxrt::kernel::main_thread_adopt(0x100000, "rtld-probe"); REQUIRE(main_handle);

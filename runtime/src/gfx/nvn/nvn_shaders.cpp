@@ -11,7 +11,9 @@
 // from the harness's results.tsv (apply_harness).
 #include "nvn_shaders.h"
 
+#if !defined(NXRT_TARGET_PS5)
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -1242,12 +1244,14 @@ bool ShaderCache::is_open() const {
 const std::string& ShaderCache::dir() const { return dir_; }
 
 // The folder of the running executable, or "" when it cannot be read.
+#if !defined(NXRT_TARGET_PS5)
 static std::string exe_folder() {
     char buf[MAX_PATH];
     const DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) return {};
     return std::filesystem::path(buf).parent_path().string();
 }
+#endif
 
 namespace {
 // Gauges (nxrt/gauge.h) for the process cache. Declared after the cache in shader_cache(), so it is destroyed before the cache.
@@ -1273,9 +1277,15 @@ ShaderCache& shader_cache() {
             cache.open(configured);  // logs its own failure
             return;
         }
+        // Console assets are separate from the native app mount. An explicit
+        // [nvn] shader_cache still takes precedence on either platform.
+#if defined(NXRT_TARGET_PS5)
+        std::vector<std::string> candidates = {"/data/pokopia-recomp/shader_cache/spirv"};
+#else
         // The working directory first, then the folder of the executable.
         std::vector<std::string> candidates = {"./shader_cache/spirv"};
         if (std::string exe = exe_folder(); !exe.empty()) candidates.push_back(exe + "/shader_cache/spirv");
+#endif
         for (const std::string& dir : candidates) {
             std::error_code ec;
             if (!std::filesystem::exists(dir + "/results.tsv", ec)) continue;

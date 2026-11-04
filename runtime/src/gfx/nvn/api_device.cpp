@@ -384,15 +384,24 @@ void nvnEventFinalize(NVNevent* event) {
 uint32_t nvnEventGetValue(const NVNevent* event) {
     uint32_t* w = event_word(be::host_of<be::Event>(event));
     if (!w) return 0;
+#if defined(NXRT_TARGET_PS5)
+    return __atomic_load_n(w, __ATOMIC_ACQUIRE);
+#else
     return std::atomic_ref<uint32_t>(*w).load(std::memory_order_acquire);
+#endif
 }
 
 void nvnEventSignal(NVNevent* event, NVNeventSignalMode mode, uint32_t value) {
     uint32_t* w = event_word(be::host_of<be::Event>(event));
     if (!w) return;
+#if defined(NXRT_TARGET_PS5)
+    if (mode == NVN_EVENT_SIGNAL_MODE_ADD) __atomic_fetch_add(w, value, __ATOMIC_RELEASE);
+    else __atomic_store_n(w, value, __ATOMIC_RELEASE);
+#else
     std::atomic_ref<uint32_t> a(*w);
     if (mode == NVN_EVENT_SIGNAL_MODE_ADD) a.fetch_add(value, std::memory_order_release);
     else a.store(value, std::memory_order_release);
+#endif
 }
 
 ptrdiff_t nvnEventGetMemoryOffset(const NVNevent* event) {

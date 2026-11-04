@@ -26,6 +26,10 @@
 
 #include <vk_mem_alloc.h>
 
+#if defined(NXRT_TARGET_PS5)
+extern "C" PFN_vkVoidFunction VKAPI_CALL radv_GetInstanceProcAddr(VkInstance, const char*);
+#endif
+
 namespace nxrt {
 
 // ---- live-object gauges (declared in vk_gauges.h) -------------------------------------------------------------------------------
@@ -263,7 +267,9 @@ void register_vma_gauges(VmaAllocator a, VkPhysicalDeviceType type) {
         g_guard_heap = mp ? vk_guard_discount_heap(*mp, type) : -1;
         g_guard_vma = a;
     }
-    nxrt::memguard_set_discount(&gpu_bytes_for_guard);
+#if !defined(NXRT_TARGET_PS5)
+    nxrt::memguard_set_discount(&gpu_bytes_for_guard); // Windows process-commit accounting.
+#endif
     auto cache = std::make_shared<VmaStatsCache>();
     nxrt::gauge_register("vma.device_usage_mb", [a, heap] {
         VmaBudget b[VK_MAX_MEMORY_HEAPS] = {};
@@ -282,7 +288,9 @@ void register_vma_gauges(VmaAllocator a, VkPhysicalDeviceType type) {
 }
 
 void unregister_vma_gauges() {
+#if !defined(NXRT_TARGET_PS5)
     nxrt::memguard_set_discount(nullptr);
+#endif
     {
         std::lock_guard<std::mutex> lk(g_guard_mu);   // waits for a guard read in flight; later reads see a null allocator
         g_guard_vma = nullptr;
@@ -344,8 +352,12 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     std::string gpu_want = !desc.gpu.empty() ? desc.gpu : config_get_str("gfx", "gpu", "");
 
     // DLSS / DLAA: Streamline must see the instance, device and swapchain calls, so the loader functions come from sl.interposer.dll
+#if defined(NXRT_TARGET_PS5)
+    volkInitializeCustom(radv_GetInstanceProcAddr);
+#else
     if (PFN_vkGetInstanceProcAddr sl_gipa = extras::streamline_preinit()) volkInitializeCustom(sl_gipa);
     else if (volkInitialize() != VK_SUCCESS) return fail("no Vulkan loader found (vulkan-1.dll)");
+#endif
     uint32_t inst_version = 0;
     vkEnumerateInstanceVersion(&inst_version);
     if (inst_version < VK_API_VERSION_1_3) return fail("Vulkan 1.3 is required; the loader offers less");

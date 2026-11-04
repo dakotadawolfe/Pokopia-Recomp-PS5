@@ -10,6 +10,8 @@
 extern "C" int pkp_graphics_display_probe();
 #ifdef PKP_GRAPHICS_MEMORY_TEST
 extern "C" int pkp_graphics_memory_probe();
+#elif defined(PKP_GRAPHICS_RUNTIME_TEST)
+extern "C" int pkp_graphics_runtime_probe();
 #endif
 
 int main() {
@@ -18,6 +20,8 @@ int main() {
     char report[192];
 #ifdef PKP_GRAPHICS_MEMORY_TEST
     constexpr const char* report_format = "/data/pokopia-recomp/tests/graphics-memory-%lld-%d.log";
+#elif defined(PKP_GRAPHICS_RUNTIME_TEST)
+    constexpr const char* report_format = "/data/pokopia-recomp/tests/graphics-runtime-%lld-%d.log";
 #else
     constexpr const char* report_format = "/data/pokopia-recomp/tests/graphics-display-%lld-%d.log";
 #endif
@@ -36,6 +40,8 @@ int main() {
     }
 #ifdef PKP_GRAPHICS_MEMORY_TEST
     const int result = pkp_graphics_memory_probe();
+#elif defined(PKP_GRAPHICS_RUNTIME_TEST)
+    const int result = pkp_graphics_runtime_probe();
 #else
     const int result = pkp_graphics_display_probe();
 #endif

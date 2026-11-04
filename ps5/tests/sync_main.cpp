@@ -60,6 +60,8 @@ int main() {
     constexpr const char* prefix = "time-runtime";
 #elif defined(NXRT_TEST_LOADER)
     constexpr const char* prefix = "loader-runtime";
+#elif defined(NXRT_GAME_STARTUP_TRACE)
+    constexpr const char* prefix = "game-startup";
 #elif defined(NXRT_SDK_STARTUP_TRACE)
     constexpr const char* prefix = "sdk-startup";
 #elif defined(NXRT_TEST_GAME_IMAGES)
