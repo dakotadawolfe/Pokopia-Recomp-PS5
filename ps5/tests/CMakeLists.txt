@@ -53,7 +53,7 @@ endif()
 
 option(PKP_BUILD_NATIVE_APP "Build the runtime suite as a native application" OFF)
 set(PKP_GAME_IMAGE_INPUT "" CACHE PATH "Optional verified decrypted dump for the game-image check")
-set(runtime_case_count 118)
+set(runtime_case_count 125)
 set(runtime_game_images false)
 if(PKP_GAME_IMAGE_INPUT)
     if(NOT PS5)
@@ -79,20 +79,24 @@ if(PKP_GAME_IMAGE_INPUT)
     target_compile_options(ps5_game_image_tests PRIVATE -Wall -Wextra -Werror -mcx16)
     target_link_libraries(ps5_game_image_tests PRIVATE nxrt_ps5_core)
     target_link_options(ps5_game_image_tests PRIVATE "LINKER:--wrap,pthread_create")
-    set(runtime_case_count 119)
+    set(runtime_case_count 126)
     set(runtime_game_images true)
 endif()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/runtime-suite.json"
     "{\"expected_cases\":${runtime_case_count},\"requires_game_images\":${runtime_game_images}}\n")
 set(PKP_NATIVE_APP_ROOT "" CACHE PATH "Pinned ps5-native-app-boilerplate checkout")
 if(PKP_BUILD_NATIVE_APP)
+    # Null/overflow/zero-size behavior must call the allocator, not LLVM's
+    # allocation-elision builtins (which assume success for unused storage).
+    set_source_files_properties(test_app_heap.cpp PROPERTIES COMPILE_OPTIONS "-fno-builtin")
     if(NOT PS5 OR NOT EXISTS "${PKP_NATIVE_APP_ROOT}/tooling/native/app_crt.cpp")
         message(FATAL_ERROR "Native app tests require the PS5 SDK and PKP_NATIVE_APP_ROOT")
     endif()
     set(native "${PKP_NATIVE_APP_ROOT}/tooling/native")
     set(sdk "$ENV{PS5_PAYLOAD_SDK}")
     add_executable(ps5_runtime_app ${platform_test_sources} test_guest_region.cpp
-        test_app_runtime.cpp "${native}/app_crt.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/runtime.cpp"
+        test_app_runtime.cpp test_app_heap.cpp heap_fault.cpp "${CMAKE_CURRENT_LIST_DIR}/../app/heap.cpp"
+        "${native}/app_crt.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/runtime.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/../app/thread_exit.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/lifecycle.cpp"
         test_memory_ps5.cpp protect_fault.cpp "${root}/runtime/tests/test_memory.cpp"
         "${root}/runtime/tests/test_loader.cpp")
@@ -116,6 +120,21 @@ if(PKP_BUILD_NATIVE_APP)
         "${sdk}/target/lib/libSceLibcInternal.so" "${sdk}/target/lib/libkernel.so"
         "${sdk}/target/lib/libc.a" "${sdk}/target/lib/libSceNet.so"
         "${sdk}/target/lib/libSceSystemService.so")
+    foreach(symbol malloc calloc realloc free posix_memalign aligned_alloc memalign malloc_usable_size
+                   sceKernelAllocateDirectMemory sceKernelReleaseDirectMemory)
+        target_link_options(ps5_runtime_app PRIVATE "LINKER:--wrap,${symbol}")
+    endforeach()
+    # Exercise the same heap bridge in a diagnostic before requesting a manual
+    # native launch. Native process behavior still requires the application run.
+    add_executable(ps5_app_heap_tests sync_main.cpp test_app_heap.cpp heap_fault.cpp "${CMAKE_CURRENT_LIST_DIR}/../app/heap.cpp")
+    target_include_directories(ps5_app_heap_tests PRIVATE "${root}/runtime/tests")
+    target_compile_definitions(ps5_app_heap_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_APP_HEAP=1)
+    target_compile_options(ps5_app_heap_tests PRIVATE -Wall -Wextra -Werror -mcx16)
+    target_link_libraries(ps5_app_heap_tests PRIVATE nxrt_ps5_platform)
+    foreach(symbol malloc calloc realloc free posix_memalign aligned_alloc memalign malloc_usable_size
+                   sceKernelAllocateDirectMemory sceKernelReleaseDirectMemory)
+        target_link_options(ps5_app_heap_tests PRIVATE "LINKER:--wrap,${symbol}")
+    endforeach()
     set_property(TARGET ps5_runtime_app APPEND PROPERTY LINK_DEPENDS
         "${native}/ps5-pie.ld" "${CMAKE_CURRENT_LIST_DIR}/../app/unwind.ld"
         "${CMAKE_CURRENT_LIST_DIR}/../app/exports.map")

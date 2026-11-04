@@ -302,8 +302,9 @@ its [scan API](https://github.com/drakmor/ShadowMountPlus/blob/1.7/docs/api.md).
 Launch **Pokopia Runtime Tests** from the PS5 home screen. This headless suite
 normally displays a blank screen while running and exits when finished. It writes
 `/data/pokopia-recomp/tests/app-platform-<time>-<pid>.log`, containing
-`context=native-app title=PPSA98731`. Only a complete report with 118 cases and
-zero failures, together with a clean application exit, establishes success. Registration,
+`context=native-app title=PPSA98731`. The current baseline has 125 cases; enabling
+the game-image check makes 126. Only the expected complete report with zero
+failures, together with a clean application exit, establishes success. Registration,
 FSELF inspection and payload-suite results do not establish application runtime
 behavior. Native game boot and gameplay remain separate checks.
 
@@ -365,7 +366,7 @@ a clean return home. Executable SHA-256:
 The optional next check maps the real `main`, `sdk`, `subsdk0` and `rtld` NSOs at
 their compiled addresses. It does not register or execute the lifted game code,
 call game constructors, apply host relocations, access RomFS or touch saves.
-The normal 118-case suite still needs no game files. To build the additional
+The normal 125-case suite still needs no game files. To build the additional
 case, supply the dump as the third argument:
 
 ```sh
@@ -386,7 +387,7 @@ Stage only the four named files from that manifest under
 and retain a `source-manifest.json` in the parent directory. Preserve any existing
 unidentified input folder. Original PC files remain unchanged. The app package
 does not bundle these files; its manifest records `requires_game_images: true`
-and `expected_cases: 119`. Omitting the third build argument restores the normal
+and `expected_cases: 126`. Omitting the third build argument restores the normal
 suite. The standalone diagnostic target is `ps5_game_image_tests`.
 
 On 2026-11-04 the standalone diagnostic passed and exited: all four modules were
@@ -396,10 +397,66 @@ the stack, kernel and 12 GiB heap address ranges; that heap remained physically
 uncommitted. Report: `game-images-1793773633-137.log`; payload SHA-256:
 `f9e96ab8fab1828e7696199b7f43d9bf36295d24f421f524160eced563a30221`.
 
-The combined 119-case native build is installed and readback-verified; its native
-retry is pending. Executable SHA-256:
+The combined 119-case native build failed on 2026-11-04. Report
+`app-platform-1793773881-138.log` ends with libc internal-memory exhaustion and
+`std::bad_alloc`. The symbolicated abort stack reaches `SharedHeap::SharedHeap`
+from `heap_create`, before the first game file is loaded. Its 12 GiB virtual heap
+needs several 3 MiB metadata vectors; no 12 GiB physical allocation was attempted.
+That failed executable's SHA-256 is
 `77b1829775910efbd86412f78dbae9d8add60fe1d28b0c8a70d4321193ed48c2`.
 Game execution, native guest threads/services, graphics and gameplay remain ahead.
+
+## Native application allocations
+
+`ps5/app/heap.cpp` routes the application and its static libraries' malloc family
+through platform mspaces backed by owned PS5 direct memory. The pinned native
+converter already sets an expandable libc heap in its process parameters; that
+setting did not prevent the internal allocator failure above. The separate
+mspace approach also appears in the working Eglantine PS5 native port.
+
+The heap grows in spaces of at least 32 MiB, with larger spaces for larger requests.
+Each space is assembled from 2 MiB physical pieces with 16 KiB alignment inside
+one owned virtual reservation. CPU allocations stay in the range starting at
+`0x10_0000_0000`, below `0x40_0000_0000`, away from the intended graphics window and
+fixed guest images. The actual GPU integration must still validate the combined
+layout. No game heap, shader, graphics or performance setting is reduced.
+
+Space records are fixed-size and published atomically; allocator bootstrap never
+uses malloc, C++ new or thread-local storage. Existing mspaces service concurrent
+calls, with a separate lock only for growth. Freed blocks are reused. Spaces stay
+mapped until application process teardown so late destructors cannot use freed
+backing. There are at most 256 spaces; growth also obeys the platform's available
+memory. Empty-space reclamation and allocator throughput under game workloads
+remain to be measured. Physical allocation failures roll back the new reservation
+and its backing; an unmap failure retains the backing until process teardown.
+
+Foreign pointers from system libraries go back to their original allocator.
+`calloc` checks multiplication overflow; a failed `realloc` preserves its input;
+`posix_memalign` preserves the output and errno on failure. Seven native tests
+cover simultaneous 96 MiB of C++ buffers, resize/zero/overflow semantics,
+alignment, foreign-pointer ownership, concurrent allocation and cross-thread
+freeing, large-buffer reuse, and rollback after an injected physical-allocation
+failure. The test source disables allocation-elision builtins so the compiler
+cannot replace the overflow and null checks without calling the allocator.
+
+The test runner now reports uncaught C++ exceptions as failures and continues to
+its normal shutdown, instead of aborting without a final report. Failed tests
+still produce a nonzero main status.
+
+The standalone `ps5_app_heap_tests` diagnostic exposed a separate payload budget
+limit: it reported direct size zero and `0x80020023` while growing beyond about
+96 MiB of backing. Smaller allocation, alignment, foreign ownership and threading
+checks passed; the full diagnostic did not pass. Changing the physical piece size
+or alignment did not remove that limit. Payloads run in the system budget rather
+than a native title budget, as documented by the
+[PS5LM console probes](https://github.com/abhi245y/PS5LM-Plus/blob/main/docs/CONSOLE.md).
+These results do not establish the new heap's behavior in a native application.
+The full 126-case native build is installed and readback-verified; its native retry
+is pending. Executable SHA-256:
+`ac69369e251a9bd72f89d14cd4780fe0c9b668ea31e8c42f9194017340641f9b`.
+The unchanged real-image check remains included. Local host regression checks
+passed after updating the exception-reporting harness; those checks do not
+exercise the PS5 allocator.
 
 ## Repository ownership
 

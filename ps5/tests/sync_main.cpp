@@ -5,6 +5,12 @@
 #include "nxrt/gauge.h"
 #include "nxrt/log.h"
 #include <cstdio>
+#include <exception>
+#if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP)
+#include "../app/heap.h"
+extern "C" int64_t sceKernelGetDirectMemorySize();
+extern "C" int sceKernelAvailableDirectMemorySize(int64_t, int64_t, size_t, int64_t*, size_t*);
+#endif
 #ifdef NXRT_TEST_PS5
 #include <cerrno>
 #include <cstdlib>
@@ -29,7 +35,7 @@ void skip(const char* reason) {
 int main() {
 #ifdef NXRT_TEST_PS5
     // Each hardware run keeps a report; individual file tests remove their
-    // temporary files. No game or emulator files are accessed by this suite.
+    // temporary files. The optional game-image case reads the staged NSOs.
     for (const char* path : {"/data/pokopia-recomp", "/data/pokopia-recomp/tests"}) {
         if (mkdir(path, 0777) != 0 && errno != EEXIST) return 4;
     }
@@ -46,6 +52,8 @@ int main() {
     constexpr const char* prefix = "loader-runtime";
 #elif defined(NXRT_TEST_GAME_IMAGES)
     constexpr const char* prefix = "game-images";
+#elif defined(NXRT_TEST_APP_HEAP)
+    constexpr const char* prefix = "app-heap";
 #else
     constexpr const char* prefix = "platform";
 #endif
@@ -72,11 +80,34 @@ int main() {
     std::puts("context=native-app title=PPSA98731");
 #endif
     nxrt::log_init({.path = "", .level = nxrt::LogLevel::Error, .to_stderr = false});
+#if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP)
+    const int64_t limit = sceKernelGetDirectMemorySize();
+    int64_t available_at = -1;
+    size_t available_bytes = 0;
+    const int available_rc = sceKernelAvailableDirectMemorySize(0, limit, 16384, &available_at, &available_bytes);
+    std::printf("APP_HEAP direct_limit=%lld available_rc=%08x largest_free=%zu at=%lld\n",
+                static_cast<long long>(limit), static_cast<unsigned>(available_rc), available_bytes,
+                static_cast<long long>(available_at));
+#endif
     for (const auto& test : nxtest::cases()) {
         std::printf("RUN %s\n", test.name);
-        test.fn();
+        try { test.fn(); }
+        catch (const std::exception& error) {
+            ++nxtest::failures;
+            std::fprintf(stderr, "FAIL %s: exception: %s\n", test.name, error.what());
+        } catch (...) {
+            ++nxtest::failures;
+            std::fprintf(stderr, "FAIL %s: unknown exception\n", test.name);
+        }
         nxrt::sync::reset_all();
     }
+#if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP)
+    const auto heap = nxrt::app_heap::stats();
+    std::printf("APP_HEAP spaces=%zu backing_bytes=%zu live_blocks=%zu live_bytes=%zu\n",
+                heap.spaces, heap.backing_bytes, heap.live_blocks, heap.live_bytes);
+    std::printf("APP_HEAP last_failure operation=%u rc=%08x bytes=%zu\n",
+                heap.failed_operation, static_cast<unsigned>(heap.platform_error), heap.failed_bytes);
+#endif
     std::printf("%zu cases; %d failures\n", nxtest::cases().size(), nxtest::failures);
     nxrt::log_shutdown();
     return nxtest::failures ? 1 : 0;
