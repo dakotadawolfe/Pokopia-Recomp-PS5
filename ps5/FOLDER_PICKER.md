@@ -95,8 +95,10 @@ and `stat` are native `libkernel` imports. Import presence alone does not prove
 an operation is allowed in native application context.
 
 The integrated native picker/renderer package is built separately by the graphics
-target. Selecting a folder currently leads to the renderer test scene; it does
-not start Pokopia.
+target. The renderer-only mode leads to its test scene. The combined
+`PKP_GRAPHICS_GAME_STARTUP` mode changes to a startup status view, checks the
+selected modules and starts the recompiled game against the native renderer.
+This handoff has not yet produced verified game imagery or gameplay.
 
 ## Native storage-path correction
 

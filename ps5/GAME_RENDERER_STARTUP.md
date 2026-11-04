@@ -154,8 +154,8 @@ The native and RADV SDK copies of libc++, libc++abi and libunwind must all match
 Packaging now requires all nine core C++ exception functions to be defined
 locally, in addition to the qualified nonlocal-jump implementation and aliases.
 The corrected ELF passes these checks; a negative fixture with its personality
-symbol renamed is rejected and removed afterward. This establishes corrected
-linkage, not a successful console retry.
+symbol renamed is rejected and removed afterward. The subsequent console run
+below confirms the exception tests pass with this linkage.
 
 The correction is 278,224,929 bytes with SHA-256
 `79164e2877f3c7252dc335cb03f954b583c9c44b7d2f2f849348ae5cb5ec6656`.
@@ -167,8 +167,52 @@ executable backup and complete SHA-256 readback of both staged and installed
 files. The existing startup shader cache and app provenance are unchanged.
 The crash-report helper (PID 104) and replacement transfer helper (PID 93) were
 closed and their payload slots removed; `game-renderer-result-console.json`
-and `game-renderer-eh-console.json` record cleanup. The corrected build has
-not yet been launched on the console.
+and `game-renderer-eh-console.json` record cleanup.
+
+## Startup visibility and trace overhead
+
+Report `game-native-1793828278-96.log` confirms zero exception self-test failures,
+accepted folder selection, four mapped/registered game images, 44 RomFS files
+covering 7,246,055,230 bytes, and installation of the native graphics bridge.
+The renderer continued displaying the last picker frame while guest SDK startup
+ran. The user saw an apparently stuck picker followed by Home. The report
+instead records the 180-second watchdog, `GAME_TRACE_END`, and native exit
+status 2. It reached about 135 system calls, with no title graphics
+initialization, GPU submissions, draws or game presents. `nninitStartup` in the
+main game module was not reached. This is progress past the earlier host
+exception crash, not a menu or gameplay result.
+
+The combined diagnostic previously used unbuffered stdout/stderr and printed
+entry and exit details for every system call. It now uses static line buffers,
+retains the first entry/exit for each system-call number, and retains error
+results and named IPC requests. The GetSystemTick return is a tick value, so
+its nonzero result does not generate a false error trace. Other diagnostic
+targets retain their existing trace mode. Runtime rejection checks, memory
+headroom, the system-call limit and the 180-second deadline are unchanged.
+
+Fixed atomic counters measure completed handler time separately from the
+surrounding diagnostic work. Every ten seconds `GAME_STARTUP_PROGRESS` reports
+elapsed time and completed/active calls. `GAME_SVC_PROFILE` at stop includes
+per-call-type timings and the latest entry addresses. These are approximate
+concurrent snapshots and summed wall times across workers, not CPU utilization
+or per-thread backtraces. Console measurements are still required to establish
+how much of the slowdown is trace overhead versus guest/runtime work.
+
+After confirmation, the renderer replaces the picker with `STARTING POKOPIA`.
+It displays asset indexing, module checks, bridge setup and game-service startup
+as those steps execute on the loader thread. It does not draw from the watchdog
+or compete with guest presentation after dispatch. There is no synthetic game
+image or invented progress percentage.
+
+The updated candidate passes the native build, exception/jump linkage gates,
+FSELF packaging/inspection and the existing host folder-picker suite. FSELF:
+278,327,169 bytes, SHA-256
+`869494c5e6a9c43264e49f47bf042bd6c341abb8e27071266858db8addec977a`.
+Native ELF: 284,125,588 bytes, SHA-256
+`a76bc02ac695779e432a9e8ce55e7e030679479297fc6d39b97ef9cbeb194ba0`.
+Installation is pending ShadowMountPlus availability after the console restart.
+The report-collection helper (PID 97) was closed and its slot removed;
+`game-renderer-picker-console.json` records cleanup.
 
 ## Interpreting a run
 

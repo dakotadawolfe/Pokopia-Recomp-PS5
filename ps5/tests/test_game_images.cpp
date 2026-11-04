@@ -178,8 +178,12 @@ constexpr bool startup_trace = true;
 #else
 constexpr bool startup_trace = false;
 #endif
+#ifdef NXRT_GAME_RENDER_NATIVE
+void report_startup_profile(bool detailed);
+#endif
 [[noreturn]] void stop_probe() {
 #ifdef NXRT_GAME_RENDER_NATIVE
+    report_startup_profile(true);
     nxrt::ps5_graphics::report();
 #endif
 #ifdef NXRT_GAME_EH
@@ -206,6 +210,73 @@ constexpr bool startup_trace = false;
 std::mutex sdk_ipc_probe_mutex;
 std::array<nxrt::SvcHandler, nxrt::kSvcCount> rtld_handlers{};
 std::atomic<unsigned> rtld_calls{0};
+#ifdef NXRT_GAME_RENDER_NATIVE
+// Fixed storage keeps the measurements independent of the guest and renderer
+// allocators. Times are summed across workers, so they are not CPU percentages.
+struct StartupSvcStats {
+    std::atomic<uint64_t> entered{0}, completed{0}, active{0}, total_ns{0}, handler_ns{0}, max_ns{0};
+    std::atomic<uint64_t> last_fn{0}, last_lr{0};
+};
+std::array<StartupSvcStats, nxrt::kSvcCount> startup_svc_stats;
+std::atomic<uint64_t> startup_started_ns{0};
+uint64_t startup_now_ns() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+struct StartupSvcScope {
+    StartupSvcStats& stats;
+    const uint64_t started = startup_now_ns();
+    uint64_t handler_started = 0, handler_elapsed = 0;
+    bool first;
+    StartupSvcScope(size_t number, const Ctx* c) : stats(startup_svc_stats[number]),
+        first(stats.entered.fetch_add(1, std::memory_order_relaxed) == 0) {
+        stats.active.fetch_add(1, std::memory_order_relaxed);
+        stats.last_fn.store(c->fn, std::memory_order_relaxed);
+        stats.last_lr.store(c->x[30], std::memory_order_relaxed);
+    }
+    void begin_handler() { handler_started = startup_now_ns(); }
+    void end_handler() {
+        handler_elapsed += startup_now_ns() - handler_started;
+        handler_started = 0;
+    }
+    ~StartupSvcScope() {
+        const auto now = startup_now_ns();
+        const auto elapsed = now - started;
+        if (handler_started) handler_elapsed += now - handler_started;
+        stats.total_ns.fetch_add(elapsed, std::memory_order_relaxed);
+        stats.handler_ns.fetch_add(handler_elapsed, std::memory_order_relaxed);
+        auto maximum = stats.max_ns.load(std::memory_order_relaxed);
+        while (maximum < elapsed && !stats.max_ns.compare_exchange_weak(maximum, elapsed, std::memory_order_relaxed)) {}
+        stats.completed.fetch_add(1, std::memory_order_relaxed);
+        stats.active.fetch_sub(1, std::memory_order_relaxed);
+    }
+};
+void report_startup_profile(bool detailed) {
+    uint64_t completed = 0, active = 0, elapsed = 0, handler = 0;
+    for (size_t n = 0; n < startup_svc_stats.size(); ++n) {
+        auto& s = startup_svc_stats[n];
+        const auto count = s.completed.load(std::memory_order_relaxed);
+        const auto running = s.active.load(std::memory_order_relaxed);
+        const auto total = s.total_ns.load(std::memory_order_relaxed);
+        const auto service = s.handler_ns.load(std::memory_order_relaxed);
+        completed += count; active += running; elapsed += total; handler += service;
+        if (detailed && s.entered.load(std::memory_order_relaxed))
+            std::printf("GAME_SVC_PROFILE svc=%02zx completed=%llu active=%llu handler_ms=%llu observer_ms=%llu max_ms=%llu last_fn=%llx last_lr=%llx\n",
+                n, static_cast<unsigned long long>(count), static_cast<unsigned long long>(running),
+                static_cast<unsigned long long>(service / 1000000),
+                static_cast<unsigned long long>((total > service ? total - service : 0) / 1000000),
+                static_cast<unsigned long long>(s.max_ns.load(std::memory_order_relaxed) / 1000000),
+                static_cast<unsigned long long>(s.last_fn.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(s.last_lr.load(std::memory_order_relaxed)));
+    }
+    const auto began = startup_started_ns.load(std::memory_order_relaxed);
+    std::printf("GAME_STARTUP_PROGRESS elapsed_ms=%llu calls=%u completed=%llu active=%llu handler_ms=%llu observer_ms=%llu\n",
+        static_cast<unsigned long long>(began ? (startup_now_ns() - began) / 1000000 : 0), rtld_calls.load(),
+        static_cast<unsigned long long>(completed), static_cast<unsigned long long>(active),
+        static_cast<unsigned long long>(handler / 1000000),
+        static_cast<unsigned long long>((elapsed > handler ? elapsed - handler : 0) / 1000000));
+}
+#endif
 uint64_t rtld_handoff_handle = 0;
 bool sdk_map_boundary = false, sdk_thread_boundary = false;
 uint64_t sdk_stack_address = 0;
@@ -320,6 +391,12 @@ void trace_sdk_start(::Ctx* c) {
 #endif
 template<size_t Number> void rtld_svc(::Ctx* c) {
     const unsigned call_number = ++rtld_calls;
+#ifdef NXRT_GAME_RENDER_NATIVE
+    StartupSvcScope profile(Number, c);
+    const bool trace_call = profile.first;
+#else
+    const bool trace_call = startup_trace || call_number <= 100;
+#endif
     if (call_number > (game_startup_trace ? 10000u : startup_trace ? 1000u : 10000u)) { std::puts("RTLD_STOP system-call limit"); stop_probe(); }
     const uint64_t a = c->x[0], b = c->x[1], d = c->x[2];
 #ifdef NXRT_GAME_STARTUP_NATIVE
@@ -346,7 +423,7 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
         }
     }
 #endif
-    if constexpr (startup_trace) {
+    if (startup_trace && trace_call) {
         std::printf("SDK_TRACE_ENTER n=%u svc=%02zx thread=%x fn=%llx lr=%llx a=%llx b=%llx d=%llx\n",
             call_number, Number, nxrt::kernel::current_thread() ? nxrt::kernel::current_thread()->handle : 0,
             static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]),
@@ -466,7 +543,13 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
 #ifdef NXRT_GAME_STARTUP_NATIVE
     if constexpr (Number == 0x01) {
         const auto started = std::chrono::steady_clock::now();
+#ifdef NXRT_GAME_RENDER_NATIVE
+        profile.begin_handler();
+#endif
         rtld_handlers[Number](c);
+#ifdef NXRT_GAME_RENDER_NATIVE
+        profile.end_handler();
+#endif
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started).count();
         std::printf("GAME_HEAP_RESULT requested=%llu rc=%llx base=%llx committed=%llu elapsed_ms=%lld\n",
@@ -479,7 +562,15 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
         }
     } else
 #endif
-    { rtld_handlers[Number](c); }
+    {
+#ifdef NXRT_GAME_RENDER_NATIVE
+        profile.begin_handler();
+#endif
+        rtld_handlers[Number](c);
+#ifdef NXRT_GAME_RENDER_NATIVE
+        profile.end_handler();
+#endif
+    }
     if constexpr (game_startup_trace) {
         if (nxrt::svc_unknown_total()) {
             std::printf("GAME_STOP unsupported system call=%02zx fn=%llx\n", Number, static_cast<unsigned long long>(c->fn));
@@ -545,7 +636,12 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
         }
     }
 #endif
-    if (startup_trace || call_number <= 100 || c->x[0]) std::printf("RTLD_SVC n=%u svc=%02zx a=%llx b=%llx d=%llx rc=%llx out=%llx\n",
+#ifdef NXRT_GAME_RENDER_NATIVE
+    const bool trace_result = trace_call || (Number != 0x1e && c->x[0]);
+#else
+    const bool trace_result = trace_call || c->x[0];
+#endif
+    if (trace_result) std::printf("RTLD_SVC n=%u svc=%02zx a=%llx b=%llx d=%llx rc=%llx out=%llx\n",
         call_number, Number, static_cast<unsigned long long>(a), static_cast<unsigned long long>(b),
         static_cast<unsigned long long>(d), static_cast<unsigned long long>(c->x[0]), static_cast<unsigned long long>(c->x[1]));
 }
@@ -582,14 +678,26 @@ struct RtldDeadline {
         std::unique_lock lock(mutex);
 #ifdef NXRT_GAME_RENDER_NATIVE
         constexpr int seconds = 180;
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+        for (;;) {
+            const auto next = std::min(end, std::chrono::steady_clock::now() + std::chrono::seconds(10));
+            if (changed.wait_until(lock, next, [this] { return done; })) return;
+            lock.unlock();
+            if (std::chrono::steady_clock::now() >= end) {
+                std::puts("RTLD_STOP watchdog expired");
+                stop_probe();
+            }
+            report_startup_profile(false);
+            lock.lock();
+        }
 #else
         constexpr int seconds = startup_trace ? 60 : 20;
-#endif
         if (!changed.wait_for(lock, std::chrono::seconds(seconds), [this] { return done; })) {
             std::puts("RTLD_STOP watchdog expired"); std::fflush(stdout);
             if constexpr (startup_trace) stop_probe();
             std::abort();
         }
+#endif
     }};
     ~RtldDeadline() { { std::lock_guard lock(mutex); done = true; } changed.notify_all(); worker.join(); }
 };
@@ -636,6 +744,9 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     std::printf("GAME_LOCATION root=%s exefs=%s romfs=%s assets_copied=false\n", location.game.root.c_str(),
         exefs.c_str(), location.game.romfs_layers.front().c_str());
     {
+#ifdef NXRT_GAME_RENDER_NATIVE
+        REQUIRE(nxrt::ps5_graphics::startup_status("Reading game asset metadata from the selected drive."));
+#endif
         nxrt::services::fs::RomfsImage assets;
         std::string error;
         const bool built = assets.build(location.game.romfs_layers.front(), &error);
@@ -675,6 +786,9 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     nxrt::Module* rtld = nullptr;
     for (const auto& expected : game_image_inputs) {
         const auto path = exefs + "/" + expected.name;
+#ifdef NXRT_GAME_RENDER_NATIVE
+        REQUIRE(nxrt::ps5_graphics::startup_status(std::string("Checking and loading game module: ") + expected.name));
+#endif
         REQUIRE(check_file(path, expected));
         nxrt::LoadOptions options; options.name = expected.name; options.base = expected.base;
         std::string error; auto* module = nxrt::module_load_nso_file(path.c_str(), options, &error);
@@ -684,6 +798,9 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     }
 #ifdef NXRT_TEST_SDK
 #ifdef NXRT_GAME_STARTUP_TRACE
+#ifdef NXRT_GAME_RENDER_NATIVE
+    REQUIRE(nxrt::ps5_graphics::startup_status("Connecting game modules and native graphics."));
+#endif
     REQUIRE(register_game_modules());
 #else
     auto registered = nxrt::nxmodule_register(nxrt::module_by_name("sdk"), &nxmod_sdk, nxmod_sdk_abi);
@@ -745,6 +862,10 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     context->x[0] = 0; context->x[1] = main_handle; context->x[30] = 0;
     bool handoff = false;
     {
+#ifdef NXRT_GAME_RENDER_NATIVE
+        REQUIRE(nxrt::ps5_graphics::startup_status("Starting game services. Waiting for the first game frame."));
+        startup_started_ns = startup_now_ns();
+#endif
         RtldDeadline deadline;
         try { nxrt::dispatch_call(context, rtld->base()); }
         catch (const Handoff&) { handoff = true; }

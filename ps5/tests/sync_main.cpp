@@ -88,13 +88,25 @@ int main() {
     // Open both streams explicitly and append so their offsets cannot overwrite
     // each other's output. The timestamp/PID names retain earlier runs.
     if (!std::freopen(report, "a", stdout)) return 5;
+#ifdef NXRT_GAME_RENDER_NATIVE
+    // Preserve complete lines for live collection without making every piece
+    // of a formatted trace a separate filesystem write. Static buffers outlive
+    // all guest workers and the native application's final exit message.
+    static char output_buffer[16384], error_buffer[16384];
+    if (std::setvbuf(stdout, output_buffer, _IOLBF, sizeof output_buffer)) return 5;
+#else
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+#endif
     std::puts("Report stream opened");
     if (!std::freopen(report, "a", stderr)) {
         std::printf("Cannot open stderr report: errno=%d\n", errno);
         return 6;
     }
+#ifdef NXRT_GAME_RENDER_NATIVE
+    if (std::setvbuf(stderr, error_buffer, _IOLBF, sizeof error_buffer)) return 6;
+#else
     std::setvbuf(stderr, nullptr, _IONBF, 0);
+#endif
     if (setenv("NXRT_TEST_TEMP", "/data/pokopia-recomp/tests", 1) != 0) {
         std::printf("Cannot set test directory: errno=%d\n", errno);
         return 7;
@@ -107,7 +119,9 @@ int main() {
     }
 #endif
 #endif
+#ifndef NXRT_GAME_RENDER_NATIVE
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+#endif
 #ifdef NXRT_TEST_NATIVE_APP
     std::puts("context=native-app title=PPSA98731");
 #endif

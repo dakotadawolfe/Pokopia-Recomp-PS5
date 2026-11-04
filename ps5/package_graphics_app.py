@@ -40,6 +40,10 @@ def main():
             "host_nonlocal_selftest_cases": 1,
             "host_nonlocal_aliases_verified": True,
             "native_cpp_exception_runtime_verified": True,
+            "startup_status_view": True,
+            "startup_trace_mode": "first-svc-and-ipc-requests",
+            "startup_profile_interval_seconds": 10,
+            "report_buffering": "line",
         }
     app = args.build / "package" / TITLE
     copies = {

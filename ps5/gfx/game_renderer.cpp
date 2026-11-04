@@ -36,6 +36,7 @@ uint64_t flag_address = 0, pointer_address = 0, driver = 0, display = 0, layer =
 std::atomic<bool> initialized{false};
 bool vi_initialized = false;
 std::atomic<uint64_t> presents{0};
+std::string selected_folder;
 [[noreturn]] void fail(const char* why) {
     std::printf("GAME_GRAPHICS_STOP reason=%s\n", why); nxrt_game_startup_stop();
 }
@@ -148,7 +149,24 @@ bool open_picker() {
         if (!renderer->begin_frame(&fi)) return false;
         app::draw_folder_picker(fi, picker.view()); renderer->end_frame();
     }
-    return picker.view().done && log_count(LogLevel::Error) == errors_before;
+    if (!picker.view().done || log_count(LogLevel::Error) != errors_before) return false;
+    selected_folder = picker.path();
+    return startup_status("Checking the selected game files.");
+}
+bool startup_status(std::string_view message) {
+    if (!renderer || initialized.load()) return false;
+    app::PickerView view;
+    view.title = "STARTING POKOPIA";
+    view.location = selected_folder;
+    view.status = std::string(message);
+    view.controls = "GAME FILES REMAIN ON YOUR SELECTED DRIVE";
+    view.controller_connected = true;
+    gfx::FrameInfo fi;
+    if (!renderer->begin_frame(&fi)) return false;
+    app::draw_folder_picker(fi, view);
+    renderer->end_frame();
+    std::printf("GAME_LOADING stage=%.*s\n", static_cast<int>(message.size()), message.data());
+    return true;
 }
 bool install_game_bridge() {
     const auto* sdk = module_by_name("sdk");
