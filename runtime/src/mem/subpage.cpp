@@ -43,6 +43,10 @@ std::unique_ptr<SubpageMap> SubpageMap::create(uint64_t base, uint64_t size, App
     result->registered_ = true;
     return result;
 }
+std::unique_ptr<SubpageMap> SubpageMap::create_private(uint64_t base, uint64_t size, Apply apply) {
+    if (!size || base % host_page || size % host_page || size > UINT64_MAX - base || !apply) return {};
+    return std::unique_ptr<SubpageMap>(new SubpageMap(base, size, std::move(apply)));
+}
 SubpageMap::~SubpageMap() {
     if (!registered_) return;
     std::lock_guard lock(registry_mutex);
@@ -79,7 +83,8 @@ bool SubpageMap::protect(uint64_t address, uint64_t size, unsigned access) {
     }
     // Force affected guest accesses through the locked slow path while the
     // host permissions and guest metadata change. No unrelated block changes.
-    for (uint64_t b = block_first; b < block_end; ++b) flag(base_ + b * host_page, true);
+    if (registered_)
+        for (uint64_t b = block_first; b < block_end; ++b) flag(base_ + b * host_page, true);
     size_t applied = 0;
     for (; applied < runs.size(); ++applied) {
         const auto& r = runs[applied];
@@ -99,11 +104,13 @@ bool SubpageMap::protect(uint64_t address, uint64_t size, unsigned access) {
                 std::abort();
             }
         }
-        for (uint64_t b = block_first; b < block_end; ++b) flag(base_ + b * host_page, blocks[b - block_first].mixed_before);
+        if (registered_)
+            for (uint64_t b = block_first; b < block_end; ++b) flag(base_ + b * host_page, blocks[b - block_first].mixed_before);
         return false;
     }
     std::fill(permissions_.begin() + first, permissions_.begin() + end, static_cast<uint8_t>(access));
-    for (uint64_t b = block_first; b < block_end; ++b) flag(base_ + b * host_page, blocks[b - block_first].mixed_after);
+    if (registered_)
+        for (uint64_t b = block_first; b < block_end; ++b) flag(base_ + b * host_page, blocks[b - block_first].mixed_after);
     return true;
 }
 bool SubpageMap::allows(uint64_t address, uint64_t size, unsigned access) {

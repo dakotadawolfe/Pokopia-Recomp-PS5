@@ -212,8 +212,22 @@ tests verified these behaviors, including a 4 GiB reservation with only 4 MiB
 of backing for two distant pages. This owner deliberately does not implement
 heap aliases, whose decommit semantics must retain shared contents.
 
-The policy, helpers and fixed-region owner are now hardware-tested, but are not
-yet connected to the complete guest heap/loader backend. Runtime/HLE buffer accesses also need
+`nxrt/shared_heap.h` adds sparse section backing with independent primary,
+guest-alias and private import views. New backing is cleared before exposure;
+primary decommit retains the section contents and existing aliases. Views can
+precede backing allocation, share later commits and change permissions
+independently. Mapping/protection failures roll back earlier changes. Private
+views use the same 4 KiB policy without entering the guest-address registry.
+
+The separate `ps5_shared_heap_tests` payload passed all 13 cases on the console
+on 2026-11-03, including injected native mapping/protection failures, alias
+lifetimes, sparse commits, preserved contents and clean recreation. ELF SHA-256:
+`d3f5fcbda4581acfe58c89cc8894965c77f916cf8b2722cd72b4169edaa564a0`.
+The 57 host platform cases also passed. These are payload-process results;
+native-app heap validation remains pending.
+
+The policy, helpers, fixed-region and heap owners are now hardware-tested, but
+are not yet connected to the complete guest memory/loader backend. Runtime/HLE buffer accesses also need
 their permission checks during that integration. Guard overhead has not been
 measured in Pokopia. The loader now propagates a failed protection operation
 instead of marking that module linked; that error path still needs its native
@@ -237,7 +251,7 @@ destruction and C++ exception cleanup, bringing the app suite to 68 cases.
 Use the pinned public native app toolchain, prepared locally:
 
 ```sh
-git clone https://github.com/blackbearreloaded/ps5-native-app-boilerplate.git /path/to/native-tools
+git clone https://github.com/drakmor/ps5-native-app-boilerplate.git /path/to/native-tools
 git -C /path/to/native-tools checkout dd44bbdc75437332ed22e3ba95126733419ef25a
 bash /path/to/native-tools/tools/setup-native-dependencies.sh
 make -C /path/to/native-tools libc
@@ -262,17 +276,21 @@ its [scan API](https://github.com/drakmor/ShadowMountPlus/blob/1.7/docs/api.md).
 
 Launch **Pokopia Runtime Tests** from the PS5 home screen. This headless suite
 normally displays a blank screen while running and exits when finished. It writes
-`/data/pokopia-recomp/tests/app-platform-<time>-<pid>.log`, starting with
+`/data/pokopia-recomp/tests/app-platform-<time>-<pid>.log`, containing
 `context=native-app title=PPSA98731`. Only a complete report with 68 cases and
 zero failures, together with process exit, establishes success. Registration,
 FSELF inspection and payload-suite results do not establish application runtime
 behavior. Native game boot and gameplay remain separate checks.
 
-On 2026-11-03 the app built locally, its FSELF integrity/alignment checks passed,
-and all nine packaged files were uploaded and readback-verified. ShadowMountPlus
-1.7beta11 reports the title installed, managed and available. The first app launch
-report is still pending. Executable SHA-256:
-`232bce4c68d1db585c5005fc1d4c401b3cecaa2009bede75bb3cb97d1e88cb32`.
+On 2026-11-03 the first app launch reached `main` and created its report, but
+returned status 6 when redirecting stderr with `dup2`; no test case ran. The
+kernel reported SIGSYS during `exit(6)`. The replacement explicitly opens both
+stdio streams in append mode, so it does not depend on stderr already having
+an open descriptor and the streams cannot overwrite each other's output.
+It also records setup failures before returning. Local build and FSELF checks
+passed, the replacement was uploaded/readback-verified, and the native retry is
+pending. Executable SHA-256:
+`1e225de6a2874dee1c4858e27fd892360aadbd7a014a50f26810dec6ab86fbe0`.
 
 ## Repository ownership
 

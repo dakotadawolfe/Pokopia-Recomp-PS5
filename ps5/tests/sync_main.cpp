@@ -36,14 +36,28 @@ int main() {
     char report[160];
 #ifdef NXRT_TEST_NATIVE_APP
     constexpr const char* prefix = "app-platform";
+#elif defined(NXRT_TEST_SHARED_HEAP)
+    constexpr const char* prefix = "heap-platform";
 #else
     constexpr const char* prefix = "platform";
 #endif
     std::snprintf(report, sizeof report, "/data/pokopia-recomp/tests/%s-%lld-%d.log", prefix,
                   static_cast<long long>(std::time(nullptr)), static_cast<int>(getpid()));
-    if (!std::freopen(report, "w", stdout)) return 5;
-    if (dup2(fileno(stdout), fileno(stderr)) < 0) return 6;
-    if (setenv("NXRT_TEST_TEMP", "/data/pokopia-recomp/tests", 1) != 0) return 7;
+    // A native application need not start with an open stderr descriptor.
+    // Open both streams explicitly and append so their offsets cannot overwrite
+    // each other's output. The timestamp/PID names retain earlier runs.
+    if (!std::freopen(report, "a", stdout)) return 5;
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::puts("Report stream opened");
+    if (!std::freopen(report, "a", stderr)) {
+        std::printf("Cannot open stderr report: errno=%d\n", errno);
+        return 6;
+    }
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    if (setenv("NXRT_TEST_TEMP", "/data/pokopia-recomp/tests", 1) != 0) {
+        std::printf("Cannot set test directory: errno=%d\n", errno);
+        return 7;
+    }
 #endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 #ifdef NXRT_TEST_NATIVE_APP

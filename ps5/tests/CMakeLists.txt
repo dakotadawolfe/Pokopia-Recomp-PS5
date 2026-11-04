@@ -28,6 +28,13 @@ if(PS5)
     target_sources(ps5_sync_tests PRIVATE test_guest_region.cpp)
     target_compile_definitions(ps5_sync_tests PRIVATE NXRT_TEST_PS5=1)
     target_compile_definitions(ps5_memory_capabilities PRIVATE NXRT_TEST_PS5=1)
+    add_executable(ps5_shared_heap_tests sync_main.cpp test_shared_heap.cpp)
+    target_include_directories(ps5_shared_heap_tests PRIVATE "${root}/runtime/tests")
+    target_compile_definitions(ps5_shared_heap_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_SHARED_HEAP=1)
+    target_compile_options(ps5_shared_heap_tests PRIVATE -Wall -Wextra -Werror -mcx16)
+    target_link_libraries(ps5_shared_heap_tests PRIVATE nxrt_ps5_platform)
+    target_link_options(ps5_shared_heap_tests PRIVATE
+        "LINKER:--wrap,sceKernelMapDirectMemory" "LINKER:--wrap,mprotect")
 endif()
 
 option(PKP_BUILD_NATIVE_APP "Build the runtime suite as a native application" OFF)

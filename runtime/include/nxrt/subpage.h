@@ -16,6 +16,10 @@ public:
     // accesses are quiescent; the caller releases the backing afterward.
     using Apply = std::function<bool(uint64_t, uint64_t, host_vm::Access)>;
     static std::unique_ptr<SubpageMap> create(uint64_t base, uint64_t size, Apply apply);
+    // Internal CPU/GPU import views may live outside the guest address range.
+    // They use the same host protection policy without publishing guest flags.
+    // The caller must validate buffers before raw host accesses to these views.
+    static std::unique_ptr<SubpageMap> create_private(uint64_t base, uint64_t size, Apply apply);
     ~SubpageMap();
     SubpageMap(const SubpageMap&) = delete;
     SubpageMap& operator=(const SubpageMap&) = delete;
