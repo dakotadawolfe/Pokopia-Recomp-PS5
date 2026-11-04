@@ -898,12 +898,14 @@ NXTEST(romfs_concurrent_reads_identical) {
     REQUIRE(build_from(t.root, img));
     const uint64_t n = img.size();
     const std::vector<uint8_t> ref = read_all(img);
-    // 40 files against 16 cached handles: the cache has to evict while four readers run
+    // Exercise eviction and explicit invalidation while four readers retain
+    // independent handles. Clearing the cache must not close an active reader.
     std::atomic<int> bad{0};
     auto worker = [&](uint32_t seed) {
         uint32_t x = seed * 2654435761u + 1;
         std::vector<uint8_t> buf;
         for (int r = 0; r < 300; r++) {
+            if (r % 7 == 0) img.invalidate_cache();
             x = x * 1103515245u + 12345u;
             const uint64_t off = static_cast<uint64_t>(x >> 3) % n;
             x = x * 1103515245u + 12345u;

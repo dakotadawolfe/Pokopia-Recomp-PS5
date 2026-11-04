@@ -25,10 +25,33 @@ asset reads by the game or gameplay.
 runtime process. Commands 200 and 205 (index zero only) return read-only
 `IStorage` objects backed by that RomFS. Reads check argument length, signed
 ranges, descriptor capacity and guest write permissions; `GetSize` returns the
-image size. Writes and resize fail read-only. Other operations, including the
+image size. Flush succeeds because this backing has no pending writes. Range
+queries report unencrypted storage without speed emulation; invalidation drops
+cached host handles while active readers retain their own references. Writes,
+resize, fill-zero and signature destruction fail read-only. Other operations, including the
 separate `IFileSystem` interface and all save operations, fail unsupported even
 when the generic IPC stub-result setting is zero. Reset creates fresh service
 state without invalidating existing storage objects.
+
+The filesystem startup policy reports access logging disabled (command 1005).
+Command 1004 accepts disabling logging, rejects unsupported log destinations,
+and rejects invalid mode bits. Command 1003 acknowledges the existing fixed
+policy that never creates saves automatically. Command 1011 reports program
+index zero and a count of one, matching the mounted-program restriction. These
+queries require a process-bound session and reject unexpected resources.
+
+The command 1011 layout follows the
+[Atmosphere filesystem proxy interface](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libstratosphere/include/stratosphere/fssrv/sf/fssrv_sf_i_file_system_proxy.hpp)
+and the inherited core. The current libnx helper sends 1007 for that named
+query, whereas the Atmosphere interface assigns 1007 to update-partition
+registration; the PS5 port does not alias the two commands. Storage command 5
+uses the 24-byte input and 64-byte output from the documented IPC interface.
+[Operation IDs](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libstratosphere/include/stratosphere/fs/fs_operate_range.hpp)
+2 and 3 select invalidation and query respectively;
+[range information](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libstratosphere/include/stratosphere/fs/fs_query_range.hpp)
+contains AES/speed flags and reserved bytes. Queries validate the image range.
+Invalidation accepts the full-cache `(0, INT64_MAX)` request, releases the
+entire handle cache, and leaves the indexed metadata immutable.
 
 The source path is `[fs] romfs` / `NXRT_FS_ROMFS`, defaulting to
 `/data/pokopia-recomp/game/romfs`. Configure it before opening the service and
@@ -66,7 +89,7 @@ cmake --build "$build_root/fs-ps5"
 ```
 
 The outputs are `ps5_romfs_tests` and `ps5_fs_tests` ELF diagnostics. The FS suite
-requires the PS5 guest-memory backend. The same eight service cases also run
+requires the PS5 guest-memory backend. The same twelve service cases also run
 through the combined SVC/native test targets. Tests use private temporary trees;
 console reports remain under `/data/pokopia-recomp/tests/`.
 

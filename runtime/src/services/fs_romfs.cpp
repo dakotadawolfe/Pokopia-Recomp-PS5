@@ -594,6 +594,10 @@ bool RomfsImage::build(const std::string& host_dir, std::string* err) {
 bool RomfsImage::built() const { return p_->l.built; }
 uint64_t RomfsImage::size() const { return p_->l.size; }
 RomfsImage::Stats RomfsImage::stats() const { return p_->l.stats; }
+void RomfsImage::invalidate_cache() const {
+    std::lock_guard<std::mutex> lock(p_->mu);
+    p_->cache.clear();
+}
 
 bool RomfsImage::read(uint64_t offset, void* dst, uint64_t len) const {
     const Layout& L = p_->l;

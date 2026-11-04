@@ -380,7 +380,44 @@ readback hashes. Provenance, startup shaders and selected game files are
 unchanged. The helper (PID 128) and both service-test processes (PIDs 135/154)
 are gone; their three owned payload slots were removed and port 2121 is closed.
 Cleanup is recorded in `game-renderer-applet-result-console.json`.
-These service results do not establish game execution beyond command 66.
+Report `game-native-1793832208-89.log` now confirms that command 66 succeeds:
+`GAME_APPLET_STATE loading_mode=2`. The game counts add-on content, connects
+to `fsp-srv`, binds its process and asks for the global filesystem access-log
+mode (command 1005). That unported query stops the run with `0x177202`; its
+captured domain request has zero input bytes. Dispatch reaches this stop in
+783 ms and exits normally with status 2. Native graphics are initialized, but
+draws and presentations remain zero.
+
+## Filesystem startup and read-only storage batch
+
+The next batch implements the disabled access-log policy, automatic-save
+creation disable request, and the single mounted program's index/count. It also
+adds read-only storage flush, range information and real handle-cache
+invalidation. It does not acknowledge writes or unknown range operations. See
+[the RomFS service contract](ROMFS_PORT.md) for the wire layouts and limits.
+
+The existing concurrent-reader case now clears the shared cache repeatedly
+while four readers compare bytes against an independent snapshot. All **17
+host reader cases pass**. The PS5 service suite adds a real file-replacement
+test proving that cached reads retain their original handle until invalidation,
+then reopen the new backing file. Other cases cover range bounds, invalid
+operations, logging destinations, process binding and the game's actual CMIF
+domain query format.
+
+Console report `svc-runtime-1793832494-100.log` records **139 cases, zero
+failures**. Payload SHA-256:
+`a5f5a419ee919b142171ead9c217bafced636bd198917bd04e41c0d6ac3087d2`.
+The native build and packaging/linkage checks pass. FSELF: 278,357,713 bytes,
+SHA-256 `ba23692b37a80e741d55925c84a269ab278201424d5068e6d61d757e1d3b8bb4`.
+Native ELF: 284,145,932 bytes, SHA-256
+`8fcd346ce5488ed93b94715a2d2e486bf3f48fde225b405465a5ec8faf03cfb9`.
+`game-renderer-fsp-install.json` records installation with the title stopped
+and unmounted, a verified backup of the prior executable, and matching staged
+and installed readback hashes. The owned FTP helper (PID 91) and completed
+service-test process (PID 100) are gone; both owned payload slots were removed
+and port 2121 is closed. Cleanup is recorded in
+`game-renderer-wire-result-console.json`.
+Game execution beyond the access-log query remains unverified.
 
 ## Interpreting a run
 

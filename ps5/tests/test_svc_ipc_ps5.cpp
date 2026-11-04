@@ -19,6 +19,7 @@ namespace nxrt::services { void register_logfault(); void logfault_reset(); uint
 namespace nxrt::services { void register_am(); void am_reset(); }
 namespace nxrt::services { void register_aoc(); void aoc_reset(); }
 namespace nxrt::services { void register_pctl(); }
+namespace nxrt::services { void register_fs(); void fs_reset(); }
 
 NXTEST_GROUP(svc_ipc_ps5)
 namespace {
@@ -398,6 +399,27 @@ NXTEST(applet_proxy_requires_current_process_and_supports_cmif_and_tipc) {
     CHECK_EQ(f.send(f.am, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kInvalidHandle);
     m.copy = {k::kPseudoCurrentProcess}; m.has_pid = false;
     CHECK_EQ(f.send(f.am, m), k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kInvalidHandle);
+}
+NXTEST(filesystem_bootstrap_queries_match_the_game_domain_protocol) {
+    Fixture f;
+    struct Reset { ~Reset() { nxrt::services::fs_reset(); } } reset;
+    nxrt::services::fs_reset(); nxrt::services::register_fs();
+    const auto fs = f.connect("fsp-srv"); REQUIRE(fs);
+    auto bind = request(1); bind.has_pid = true; push(bind.raw, uint64_t{0});
+    REQUIRE(f.send(fs, bind) == k::kOk); REQUIRE(word(f.reply().raw, 8) == 0);
+    auto convert = request(0); convert.type = hipc::kInvoke2ManagerMethodOld;
+    REQUIRE(f.send(fs, convert) == k::kOk); REQUIRE(word(f.reply().raw, 8) == 0);
+    for (uint32_t command : {1005u, 1011u}) {
+        const auto inner = request(command); auto m = request(0); m.raw.clear();
+        push(m.raw, uint8_t{1}); push(m.raw, uint8_t{0}); push(m.raw, uint16_t{16});
+        push(m.raw, uint32_t{1}); push(m.raw, uint64_t{0});
+        m.raw.insert(m.raw.end(), inner.raw.begin(), inner.raw.end());
+        REQUIRE(f.send(fs, m) == k::kOk); const auto reply = f.reply();
+        CHECK_EQ(word(reply.raw, 16), 0x4f434653u); CHECK_EQ(word(reply.raw, 24), 0u);
+        CHECK_EQ(word(reply.raw, 32), 0u);
+        if (command == 1011) CHECK_EQ(word(reply.raw, 36), 1u);
+        CHECK(reply.copy.empty() && reply.move.empty());
+    }
 }
 NXTEST(trace_allows_real_empty_queue_results_without_weakening_failure_checks) {
     AmFixture f; const auto common = f.child(f.open(), 0); REQUIRE(common);

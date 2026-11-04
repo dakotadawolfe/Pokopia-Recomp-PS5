@@ -33,6 +33,9 @@ public:
         uint64_t data_offset = 0;                           // header.file_partition_ofs
     };
     Stats stats() const;
+    // Drop cached host handles. Existing readers retain their own references;
+    // subsequent reads reopen the paths. The indexed layout remains immutable.
+    void invalidate_cache() const;
     // Image offset and size of a file by its path inside the image ("/a/b.bin", case sensitive), for tests and logs. False when absent.
     bool file_extent(const std::string& path, uint64_t* offset, uint64_t* size) const;
 

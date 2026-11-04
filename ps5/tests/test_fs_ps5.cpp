@@ -7,6 +7,7 @@
 #include "nxrt/memory.h"
 #include "nxrt/services.h"
 #include "../../runtime/src/services/fs_volume.h"
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstdlib>
@@ -167,7 +168,7 @@ NXTEST(fsp_writes_and_unported_commands_never_report_success) {
     for (auto command : {1u, 3u}) {
         req.cmd = command; CHECK_EQ(storage->handle(req, rsp), fs::rc::kReadOnlyFileSystem);
     }
-    for (auto command : {2u, 5u, 999u}) {
+    for (auto command : {6u, 999u}) {
         req.cmd = command; CHECK_EQ(storage->handle(req, rsp), fs::rc::kNotImplemented);
     }
     for (auto command : {2u, 22u, 23u, 51u, 201u, 202u, 203u, 999u}) {
@@ -188,6 +189,89 @@ NXTEST(fsp_only_current_program_index_can_open_romfs) {
     index = 0;
     CHECK_EQ(f.fsp->handle(req, rsp), 0u); REQUIRE(rsp.out_objects.size() == 1);
     CHECK(storage_size(rsp.out_objects[0]) > 0x200);
+}
+
+NXTEST(fsp_bootstrap_reports_disabled_logging_and_the_actual_program_count) {
+    Fixture f; ipc::Request req; ipc::Response rsp;
+    for (auto command : {1003u, 1005u, 1011u}) {
+        req.cmd = command; CHECK_EQ(f.fsp->handle(req, rsp), k::kInvalidState); CHECK(rsp.out.empty());
+    }
+    REQUIRE(f.bind(f.fsp) == 0);
+    req.cmd = 1005; REQUIRE(f.fsp->handle(req, rsp) == 0); REQUIRE(rsp.out.size() == 4);
+    uint32_t mode = UINT32_MAX; std::memcpy(&mode, rsp.out.data(), 4); CHECK_EQ(mode, 0u);
+    rsp = {}; req.cmd = 1011; REQUIRE(f.fsp->handle(req, rsp) == 0); REQUIRE(rsp.out.size() == 8);
+    std::array<uint32_t, 2> programs{}; std::memcpy(programs.data(), rsp.out.data(), 8);
+    CHECK_EQ(programs[0], 0u); CHECK_EQ(programs[1], 1u);
+    rsp = {}; req.cmd = 1003; CHECK_EQ(f.fsp->handle(req, rsp), 0u);
+    CHECK(rsp.out.empty() && rsp.out_objects.empty());
+    // Disabling automatic creation must not make save operations writable.
+    for (auto command : {22u, 23u, 51u}) {
+        req.cmd = command; CHECK_EQ(f.fsp->handle(req, rsp), fs::rc::kNotImplemented);
+    }
+}
+
+NXTEST(fsp_logging_policy_rejects_unbacked_destinations_and_foreign_resources) {
+    Fixture f; REQUIRE(f.bind(f.fsp) == 0); ipc::Request req; ipc::Response rsp;
+    req.cmd = 1004; CHECK_EQ(f.fsp->handle(req, rsp), fs::rc::kInvalidArgument);
+    uint32_t mode = 0; req.in = reinterpret_cast<const uint8_t*>(&mode); req.in_size = 4;
+    CHECK_EQ(f.fsp->handle(req, rsp), 0u);
+    for (auto value : {1u, 2u, 3u, 4u, UINT32_MAX}) {
+        mode = value; CHECK_EQ(f.fsp->handle(req, rsp), value <= 3 ? fs::rc::kNotImplemented : fs::rc::kInvalidArgument);
+    }
+    for (auto command : {1003u, 1005u, 1011u}) {
+        req = {}; req.cmd = command; req.in_copy.push_back(k::kPseudoCurrentProcess);
+        CHECK_EQ(f.fsp->handle(req, rsp), k::kInvalidHandle);
+        req.in_copy.clear(); req.b.push_back({f.data, 8});
+        CHECK_EQ(f.fsp->handle(req, rsp), fs::rc::kInvalidArgument); CHECK(rsp.out.empty());
+    }
+    const auto next = ipc::make_service("fsp-srv"); REQUIRE(f.bind(next) == 0);
+    req = {}; req.cmd = 1005; REQUIRE(next->handle(req, rsp) == 0);
+    REQUIRE(rsp.out.size() == 4); std::memcpy(&mode, rsp.out.data(), 4); CHECK_EQ(mode, 0u);
+}
+
+NXTEST(fsp_storage_flush_and_range_queries_preserve_plaintext_read_only_data) {
+    Fixture f; REQUIRE(f.bind(f.fsp) == 0); const auto storage = f.open(f.fsp); REQUIRE(storage);
+    ipc::Request req; ipc::Response rsp; req.cmd = 2;
+    CHECK_EQ(storage->handle(req, rsp), 0u); CHECK(rsp.out.empty());
+    req.in_move.push_back(k::kPseudoCurrentProcess); CHECK_EQ(storage->handle(req, rsp), k::kInvalidHandle);
+    struct Arguments { uint32_t operation, padding; int64_t offset, size; } args{3, 0, 0, storage_size(storage)};
+    static_assert(sizeof args == 24);
+    req = {}; req.cmd = 5; req.in = reinterpret_cast<const uint8_t*>(&args); req.in_size = sizeof args;
+    REQUIRE(storage->handle(req, rsp) == 0); REQUIRE(rsp.out.size() == 0x40);
+    CHECK(std::all_of(rsp.out.begin(), rsp.out.end(), [](uint8_t value) { return value == 0; }));
+    rsp = {}; args.operation = 0; CHECK_EQ(storage->handle(req, rsp), fs::rc::kReadOnlyFileSystem);
+    args.operation = 1; CHECK_EQ(storage->handle(req, rsp), fs::rc::kReadOnlyFileSystem);
+    args.operation = 99; CHECK_EQ(storage->handle(req, rsp), fs::rc::kNotImplemented);
+    CHECK(rsp.out.empty());
+    REQUIRE(f.read(storage, 0x200, 20) == 0);
+    CHECK(std::memcmp(reinterpret_cast<void*>(f.data), "ROMFS-backed PS5 data", 20) == 0);
+    args.operation = 3;
+    for (const auto& range : {std::array<int64_t, 2>{-1, 0}, {0, -1}, {storage_size(storage), 1}, {1, INT64_MAX}}) {
+        args.offset = range[0]; args.size = range[1];
+        CHECK_EQ(storage->handle(req, rsp), fs::rc::kOutOfRange); CHECK(rsp.out.empty());
+    }
+    args.offset = args.size = 0; req.in_size = 23;
+    CHECK_EQ(storage->handle(req, rsp), fs::rc::kInvalidArgument);
+    req.in_size = 24; req.b.push_back({f.data, 0x40});
+    CHECK_EQ(storage->handle(req, rsp), fs::rc::kInvalidArgument);
+}
+
+NXTEST(fsp_storage_invalidation_reopens_backing_files_after_cached_reads) {
+    Fixture f; REQUIRE(f.bind(f.fsp) == 0); const auto storage = f.open(f.fsp); REQUIRE(storage);
+    REQUIRE(f.read(storage, 0x200, 20) == 0);
+    std::error_code ec; std::filesystem::rename(f.tree.root / "a.bin", f.tree.root / "old.bin", ec); REQUIRE(!ec);
+    f.tree.write("Fresh file contents!!");
+    REQUIRE(f.read(storage, 0x200, 20) == 0);
+    CHECK(std::memcmp(reinterpret_cast<void*>(f.data), "ROMFS-backed PS5 data", 20) == 0);
+    struct Arguments { uint32_t operation, padding; int64_t offset, size; } args{2, 0, -1, INT64_MAX};
+    ipc::Request req; ipc::Response rsp; req.cmd = 5;
+    req.in = reinterpret_cast<const uint8_t*>(&args); req.in_size = sizeof args;
+    CHECK_EQ(storage->handle(req, rsp), fs::rc::kOutOfRange);
+    REQUIRE(f.read(storage, 0x200, 20) == 0);
+    CHECK(std::memcmp(reinterpret_cast<void*>(f.data), "ROMFS-backed PS5 data", 20) == 0);
+    args.offset = 0; REQUIRE(storage->handle(req, rsp) == 0); CHECK_EQ(rsp.out.size(), size_t{0x40});
+    REQUIRE(f.read(storage, 0x200, 20) == 0);
+    CHECK(std::memcmp(reinterpret_cast<void*>(f.data), "Fresh file contents!!", 20) == 0);
 }
 
 NXTEST(fsp_missing_assets_and_truncated_files_fail_without_placeholder_objects) {
