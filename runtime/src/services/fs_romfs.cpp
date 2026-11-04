@@ -204,6 +204,7 @@ bool scan(Node& dir, std::string& msg) {
             return false;
         }
         k.host = native_path(e.path());
+#ifdef _WIN32
         std::error_code sec;
         const std::filesystem::file_status st = e.symlink_status(sec);
         if (sec) {
@@ -227,6 +228,33 @@ bool scan(Node& dir, std::string& msg) {
             msg = "not a file or folder: " + k.path;
             return false;
         }
+#else
+        // Native PS5 apps refuse lstat. Inspect a no-follow descriptor instead;
+        // O_NONBLOCK prevents a special-file entry from blocking the scan.
+        int fd;
+        do { fd = open(k.host.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK); }
+        while (fd < 0 && errno == EINTR);
+        if (fd < 0) {
+            msg = "cannot open entry without following links: " + k.path;
+            return false;
+        }
+        struct stat metadata{};
+        const int inspected = fstat(fd, &metadata);
+        const int closed = close(fd);
+        if (inspected != 0 || closed != 0) {
+            msg = "cannot inspect entry: " + k.path;
+            return false;
+        }
+        if (S_ISDIR(metadata.st_mode)) {
+            k.is_dir = true;
+            if (!scan(k, msg)) return false;
+        } else if (S_ISREG(metadata.st_mode) && metadata.st_size >= 0) {
+            k.size = static_cast<uint64_t>(metadata.st_size);
+        } else {
+            msg = "not a file or folder: " + k.path;
+            return false;
+        }
+#endif
         dir.kids.push_back(std::move(k));
         it.increment(ec);
     }

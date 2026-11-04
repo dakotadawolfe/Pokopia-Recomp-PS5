@@ -21,6 +21,8 @@ set(startup_expectations "${CMAKE_CURRENT_BINARY_DIR}/private-startup")
 set(startup_header "${startup_expectations}/private_startup_inputs.h")
 option(PKP_BUILD_NATIVE_GAME_STARTUP "Build the full startup trace in native application context" OFF)
 set(PKP_NATIVE_STARTUP_HEAP_LIMIT_MIB "512" CACHE STRING "Diagnostic stop threshold before guest heap allocation")
+set(PKP_NATIVE_PLATFORM_ARCHIVE "" CACHE FILEPATH "Reviewed PS5 platform archive supplying native directory streams")
+set(PKP_NATIVE_PLATFORM_SHA "2d1e0e5eed29ad9a8557e2f33439e7c7a3c930f39b6795d393d3bc79f2df9c30" CACHE STRING "Expected PS5 platform archive SHA-256")
 if(PKP_BUILD_NATIVE_GAME_STARTUP)
     if(NOT PKP_NATIVE_STARTUP_HEAP_LIMIT_MIB MATCHES "^[1-9][0-9]*$" OR PKP_NATIVE_STARTUP_HEAP_LIMIT_MIB GREATER 12288)
         message(FATAL_ERROR "Native startup diagnostic heap threshold must be 1..12288 MiB")
@@ -30,6 +32,13 @@ if(PKP_BUILD_NATIVE_GAME_STARTUP)
     endif()
     set(native "${PKP_NATIVE_APP_ROOT}/tooling/native")
     set(sdk "$ENV{PS5_PAYLOAD_SDK}")
+    if(NOT EXISTS "${PKP_NATIVE_PLATFORM_ARCHIVE}")
+        message(FATAL_ERROR "Native startup requires the reviewed platform archive used by the graphics app")
+    endif()
+    file(SHA256 "${PKP_NATIVE_PLATFORM_ARCHIVE}" native_platform_sha)
+    if(NOT native_platform_sha STREQUAL PKP_NATIVE_PLATFORM_SHA)
+        message(FATAL_ERROR "Native directory platform archive differs from its expected SHA-256")
+    endif()
     add_executable(ps5_game_startup_app EXCLUDE_FROM_ALL
         sync_main.cpp test_game_images.cpp game_trace_guards.cpp "${startup_header}"
         "${root}/ps5/app/folder_picker_paths.cpp" "${root}/ps5/app/heap.cpp"
@@ -51,13 +60,19 @@ if(PKP_BUILD_NATIVE_GAME_STARTUP)
                    malloc calloc realloc free posix_memalign aligned_alloc memalign malloc_usable_size)
         target_link_options(ps5_game_startup_app PRIVATE "LINKER:--wrap,${symbol}")
     endforeach()
+    # Directory streams must share one implementation and DIR representation.
+    # The system exports are refused to native titles; the platform uses getdents.
+    foreach(symbol opendir fdopendir readdir rewinddir dirfd closedir)
+        target_link_options(ps5_game_startup_app PRIVATE "LINKER:--defsym,${symbol}=ps5_${symbol}")
+    endforeach()
     target_link_libraries(ps5_game_startup_app PRIVATE nxrt_ps5_svc startup_main test_sdk startup_subsdk0 startup_rtld
         "-Wl,--start-group" "${sdk}/target/lib/libc++.a" "${sdk}/target/lib/libc++abi.a"
-        "${sdk}/target/lib/libunwind.a" "-Wl,--end-group" "-Wl,--as-needed"
+        "${sdk}/target/lib/libunwind.a" "${PKP_NATIVE_PLATFORM_ARCHIVE}" "-Wl,--end-group" "-Wl,--as-needed"
         "${sdk}/target/lib/libSceLibcInternal.so" "${sdk}/target/lib/libkernel.so"
         "${sdk}/target/lib/libc.a" "${sdk}/target/lib/libSceNet.so" "${sdk}/target/lib/libSceSystemService.so")
     set_property(TARGET ps5_game_startup_app APPEND PROPERTY LINK_DEPENDS
-        "${native}/ps5-pie.ld" "${root}/ps5/app/unwind.ld" "${root}/ps5/app/exports.map")
+        "${native}/ps5-pie.ld" "${root}/ps5/app/unwind.ld" "${root}/ps5/app/exports.map"
+        "${PKP_NATIVE_PLATFORM_ARCHIVE}")
 endif()
 add_custom_command(OUTPUT "${startup_header}" "${startup_expectations}/startup-inputs.json"
     COMMAND "${NX_PYTHON}" "${root}/ps5/prepare_startup_trace.py"

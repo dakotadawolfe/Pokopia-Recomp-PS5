@@ -10,6 +10,7 @@
 #endif
 #ifdef NXRT_GAME_STARTUP_NATIVE
 #include "../app/folder_picker.h"
+#include "fs_romfs.h"
 #include <unistd.h>
 extern "C" [[noreturn]] void catchReturnFromMain(int);
 extern "C" int64_t sceKernelGetDirectMemorySize();
@@ -545,6 +546,17 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     REQUIRE(nxrt::config_get_str("fs", "romfs") == location.game.romfs_layers.front());
     std::printf("GAME_LOCATION root=%s exefs=%s romfs=%s assets_copied=false\n", location.game.root.c_str(),
         exefs.c_str(), location.game.romfs_layers.front().c_str());
+    {
+        nxrt::services::fs::RomfsImage assets;
+        std::string error;
+        const bool built = assets.build(location.game.romfs_layers.front(), &error);
+        if (!built) std::printf("GAME_ROMFS_FAIL reason=%s\n", error.c_str());
+        REQUIRE(built);
+        const auto stats = assets.stats();
+        REQUIRE(stats.files > 0);
+        std::printf("GAME_ROMFS files=%u directories=%u data_bytes=%llu metadata_ready=true assets_copied=false\n",
+            stats.files, stats.dirs, static_cast<unsigned long long>(stats.data_bytes));
+    }
     REQUIRE(fsync(fileno(stdout)) == 0);
 #endif
     nxrt::game::Info game{.platform = nxrt::game::Platform::Switch2};

@@ -36,6 +36,15 @@
 
 NXTEST_GROUP(svc_fs_romfs)
 
+#ifdef NXRT_ROMFS_NO_LSTAT
+static bool deny_romfs_lstat = false;
+extern "C" int __real_lstat(const char*, struct stat*);
+extern "C" int __wrap_lstat(const char* path, struct stat* metadata) {
+    if (deny_romfs_lstat) { errno = EPERM; return -1; }
+    return __real_lstat(path, metadata);
+}
+#endif
+
 namespace {
 
 using nxrt::services::fs::RomfsImage;
@@ -758,6 +767,23 @@ NXTEST(romfs_unicode_paths_preserve_bytes) {
 }
 
 #ifndef _WIN32
+#ifdef NXRT_ROMFS_NO_LSTAT
+NXTEST(romfs_builds_and_reads_when_native_lstat_is_denied) {
+    TempTree t;
+    const std::vector<Item> items{{"/nested/data.bin", false, pattern(257, 11)}};
+    write_host(t.root, items);
+    struct Denied {
+        Denied() { deny_romfs_lstat = true; }
+        ~Denied() { deny_romfs_lstat = false; }
+    } denied;
+    struct stat metadata{};
+    CHECK_EQ(lstat(t.root.c_str(), &metadata), -1);
+    CHECK_EQ(errno, EPERM);
+    RomfsImage image;
+    REQUIRE(build_from(t.root, image));
+    check_tree(image, items);
+}
+#endif
 NXTEST(romfs_host_file_errors_use_posix_errno) {
     TempTree t;
     const auto missing = t.root / "missing";

@@ -1200,9 +1200,12 @@ collected. The native diagnostic now defaults to stopping before large heap
 allocations; see the startup document for its limits and recovery state.
 The next native startup candidate compiles identical generated sources with
 `-Oz`, reducing the executable from 804 MB to 258 MB while retaining all 200,586
-functions. Module, host fixture and packaging checks pass; native launch and
-game performance are still unverified. It also records entry checkpoints before
-`main` to distinguish early initialization from later guest execution.
+functions. The compact native app now reaches `main` and exits normally, but its
+first run failed the saved-folder asset check before mapping game modules. The
+next build applies the working graphics app's PS5 directory bindings and uses
+descriptor metadata checks for RomFS. All 17 host RomFS cases pass; this corrected
+build's native result and game performance remain unverified. Early entry
+checkpoints distinguish native initialization from later guest execution.
 
 `console_probe.py` automates bounded diagnostic runs and report collection using
 an explicitly hashed FTP helper. It records ownership of helpers, temporary

@@ -73,7 +73,8 @@ direct-memory host allocator and shell exit path. It produces `startup.bin`,
 ```sh
 NX_PYTHON=/path/to/python-with-recomp-requirements \
   bash ps5/build_startup_app.sh /path/to/pinned-native-tools \
-  /path/to/native-startup-build /path/to/decrypted-game /path/to/verified-modules
+  /path/to/native-startup-build /path/to/decrypted-game /path/to/verified-modules \
+  /path/to/reviewed-platform-sdk/target/lib/libps5platform.a
 ```
 
 This temporary headless diagnostic uses the existing **PPSA98732** identity so
@@ -152,7 +153,8 @@ export PS5_PAYLOAD_SDK=/path/to/pinned-native-tools/.deps/native/ps5-payload-sdk
 export NX_PYTHON=/path/to/python-with-recomp-requirements
 bash ps5/build_modules.sh /path/to/decrypted-game /path/to/modules-compact -Oz
 bash ps5/build_startup_app.sh /path/to/pinned-native-tools \
-  /path/to/native-compact /path/to/decrypted-game /path/to/modules-compact
+  /path/to/native-compact /path/to/decrypted-game /path/to/modules-compact \
+  /path/to/reviewed-platform-sdk/target/lib/libps5platform.a
 ```
 
 On 2026-11-04, all four compact archives passed verification with ABI 4 and all
@@ -172,8 +174,9 @@ constructors. These append PID-tagged, flushed records to
 report remains separate. Neither checkpoint is proof of completed game startup.
 
 This is a code-size/loading experiment, not a measured performance improvement
-or a confirmed fix for the earlier restarts. Console launch remains unverified;
-no menu, renderer or gameplay is included in this diagnostic. Private evidence
+or a proven explanation for the earlier restarts. The first compact console
+launch reached `main`, as detailed below; no menu, renderer or gameplay is
+included in this diagnostic. Private evidence
 is retained in `work/ps5/compact-module-verification.json`,
 `compact-source-comparison.json`, `compact-host-test.log`, and
 `game-native-compact-manifest.json`.
@@ -182,6 +185,47 @@ The compact executable is installed in PPSA98732 and verified by complete
 SHA-256 readback (`work/ps5/game-native-compact-install.json`). The prior working
 picker executable is retained for restoration. The transfer helper and its
 temporary payload slot were closed and removed before the manual launch test.
+
+### Native directory integration
+
+The user reported a return to Home. Report `game-native-1793818811-92.log`
+confirms that the compact executable entered `main`, queried a 12 GiB
+direct-memory budget and read the saved folder. The separate bootstrap log
+contains both `_init_env` checkpoints for PID 92. The app then failed asset
+validation with "no readable extracted romfs assets" and requested a normal
+shell exit with status 1. No game modules were mapped in this run. This is
+successful native executable initialization, not successful game startup.
+
+Read-only FTP inspection confirmed that the selected USB update folder still
+contains its RomFS files. The startup executable imported ordinary directory
+functions, whereas the working graphics app binds the entire directory API to
+the reviewed platform implementation that uses `getdents`. Startup now uses
+those same six bindings (`opendir`, `fdopendir`, `readdir`, `rewinddir`, `dirfd`,
+`closedir`), keeping their `DIR` representation consistent. It links the platform
+archive without linking RADV or replacing the host allocator.
+
+The fifth `build_startup_app.sh` argument supplies that archive. Its default
+SHA-256 is `2d1e0e5eed29ad9a8557e2f33439e7c7a3c930f39b6795d393d3bc79f2df9c30`;
+the optional sixth argument supplies an explicitly reviewed rebuild's SHA-256.
+Configuration and packaging both verify it, and the manifest records it. The
+public pinned-source rebuild instructions are in [GRAPHICS_PORT.md](GRAPHICS_PORT.md#rebuild-the-dependencies-from-public-source).
+
+The POSIX RomFS builder also uses no-follow `open`/`fstat` metadata checks,
+because native applications refuse `lstat`. Links and special files remain
+rejected. All 17 host RomFS cases pass, including the new denied-`lstat` case,
+large-file offsets, concurrent reads, truncation and link/special-file rejection.
+Startup now builds the selected RomFS metadata before mapping game modules and
+logs the actual file count and data size. It does not copy assets.
+
+The corrected native executable builds and passes packaging checks:
+**257,726,275 bytes**, SHA-256
+`acf7624d4e7de35dd686c9735e0d14560f21d51b765dfec052176bb421fc7846`.
+It is installed and fully readback-verified, recorded in
+`work/ps5/game-native-directory-install.json`; the owned transfer helper and
+temporary payload slot are removed. Its console result is pending. It retains
+the 512 MiB diagnostic heap stop;
+the game will still stop before its large heap request until native allocation
+behavior is investigated separately.
 
 ## Evidence as of 2026-11-04
 

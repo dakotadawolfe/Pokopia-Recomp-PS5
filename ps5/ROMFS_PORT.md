@@ -6,6 +6,14 @@ handle and write-watch code remains selected by `_WIN32`. Names retain their
 UTF-8 bytes; invalid names and non-file/directory entries fail indexing. Missing
 or truncated backing files return errors, not replacement zero data.
 
+POSIX metadata scanning uses `open(O_NOFOLLOW | O_NONBLOCK)` and `fstat` because
+native PS5 apps refuse `lstat`. This retains link and special-file rejection.
+The host suite passes 17 cases, including building and reading a nested image
+while `lstat` returns `EPERM`. Native applications also need the directory stream
+bindings used by the graphics app; ordinary system `opendir` imports do not cover
+that environment. See [native startup integration](GAME_STARTUP_TRACE.md#native-directory-integration)
+for the current build and console evidence.
+
 `fs_ps5.cpp` registers `fsp-srv`. `SetCurrentProcess` binds a session to the real
 runtime process. Commands 200 and 205 (index zero only) return read-only
 `IStorage` objects backed by that RomFS. Reads check argument length, signed

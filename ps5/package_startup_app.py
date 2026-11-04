@@ -36,6 +36,12 @@ def main():
                     if line.startswith("NX_POSIX_OPT:STRING=")]
     if len(optimization) != 1 or optimization[0] not in ("-O0", "-O1", "-O2", "-O3", "-Os", "-Oz"):
         raise ValueError("Missing or invalid generated-code optimization setting")
+    platform = [line.split("=", 1)[1] for line in cache.splitlines()
+                if line.startswith("PKP_NATIVE_PLATFORM_ARCHIVE:FILEPATH=")]
+    platform_sha = [line.split("=", 1)[1] for line in cache.splitlines()
+                    if line.startswith("PKP_NATIVE_PLATFORM_SHA:STRING=")]
+    if len(platform) != 1 or len(platform_sha) != 1 or digest(Path(platform[0])) != platform_sha[0]:
+        raise ValueError("Native directory platform archive differs from the configured input")
     check_fself(executable)
     with (args.build / "startup-fself-inspection.txt").open("w") as output:
         subprocess.run([str(args.tool), "self", "--inspect", "--file", str(executable)], stdout=output, check=True)
@@ -43,6 +49,7 @@ def main():
                 "console_qualified": False,
                 "uses_saved_selection": True, "renderer": False, "gameplay_verified": False,
                 "generated_code_optimization": optimization[0],
+                "directory_platform_sha256": platform_sha[0],
                 "bootstrap_report": "/data/pokopia-recomp/tests/native-bootstrap.log",
                 "guest_heap_stop_threshold_bytes": int(threshold[0]) << 20,
                 "input_stamp": json.loads((args.build / "private-startup/startup-inputs.json").read_text()),
