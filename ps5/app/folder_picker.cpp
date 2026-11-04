@@ -4,6 +4,7 @@
 #include "folder_picker_paths.h"
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 
 namespace nxrt::app {
@@ -28,6 +29,7 @@ void FolderPicker::browse(const std::string& path) {
     if (directory_.empty()) {
         for (const auto& root : options_.roots) {
             const auto actual = picker_directory(root.path, options_.roots);
+            std::printf("PICKER_STORAGE root=%s available=%d\n", root.path.c_str(), !actual.empty());
             if (!actual.empty()) items_.push_back({root.label, actual, Kind::Directory});
         }
         status_ = items_.empty() ? "No accessible storage. Connect a USB drive and press Square." : "Choose internal storage or a connected USB drive.";

@@ -1176,9 +1176,13 @@ The installed integration uses the real runtime `Device`, `Renderer` and texture
 `TestScene`, with a native controller-driven folder picker before the scene.
 The picker selects existing inputs and persists only the chosen path. Its
 console interaction and the runtime renderer still need a manual native launch.
-All 18 package files were readback-verified at `/data/homebrew/PPSA98732`;
-`eboot.bin` is 19,640,625 bytes with SHA-256
-`32d91526c20f21a5d9ec9bcc7c5d5a0d3a6b25a23969eb0c8e69e8c5c3c7d590`.
+All 18 package files were readback-verified at `/data/homebrew/PPSA98732`.
+The first picker launch exposed a native libc `realpath` stub. The corrected
+picker uses kernel directory metadata and passed eight cases on the host and
+PS5 payload. The updated executable was installed and readback-verified:
+19,642,913 bytes, SHA-256
+`c9d6b3d2984dc2a88113a6e455e2620d950e7fef0c1eec71ad259d67fe184450`.
+See [folder picker validation and native storage fix](FOLDER_PICKER.md).
 See [full game startup diagnostic](GAME_STARTUP_TRACE.md) for the independent
 four-module trace and its explicit stop conditions.
 That full trace now reaches the real main module's `nninitStartup`; its first

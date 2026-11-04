@@ -85,7 +85,7 @@ cmake -S ps5/tests/picker_suite -B /path/to/picker-ps5 -G Ninja \
 cmake --build /path/to/picker-ps5
 ```
 
-As of 2026-11-04, all **7 host cases pass**, covering supported layouts, update
+As of 2026-11-04, all **8 host cases pass**, covering supported layouts, update
 ordering, invalid files/builds, atomic bounded configuration, remembered/missing
 storage messages, unplug-before-confirmation, package status, cancellation,
 scroll/repeat and confirmation debounce. Synthetic test directories are removed
@@ -94,6 +94,30 @@ operations `open`, `write`, `fsync`, `close`, `rename`, `unlink`, `mkdir`, `stat
 and `lstat` are native `libkernel` imports, not unchecked raw syscall stubs.
 
 The integrated native picker/renderer package is built separately by the graphics
-target. Controller input, USB browsing, visible text and saved-path persistence
-still require the next physical PS5 launch. Selecting a folder currently leads
-to the renderer test scene; it does not start Pokopia.
+target. Selecting a folder currently leads to the renderer test scene; it does
+not start Pokopia.
+
+## Native storage-path correction
+
+The first native launch displayed the picker, initialized the signed-in user's
+pad and cancelled cleanly, but reported no accessible storage. Report
+`graphics-runtime-1793792739-419.log` records that run. The application imported
+`realpath` from the native libc shim. The pinned boilerplate's
+`libc_builder.cpp` maps ordinary function exports to its zero-return fallback;
+`std::filesystem::canonical` therefore could not resolve any root. The same
+operation worked in the payload context, which uses a different libc path.
+
+The picker now normalizes absolute path text and walks each component with the
+kernel's `lstat`, requiring real directories and rejecting symlinks before
+checking storage boundaries. No privilege or mount changes are involved.
+Host tests wrap `realpath` to return null, so this native dependency cannot
+silently reappear behind passing host checks. The new case also checks missing
+paths, relative paths, parent traversal and symlink rejection.
+
+The updated eight-case suite passed on console in payload context, report
+`platform-1793793311-429.log`; its temporary fixtures were removed. The rebuilt
+native app has no `realpath` import, passes FSELF integrity validation and was
+readback-verified after installation. Its `eboot.bin` is 19,642,913 bytes,
+SHA-256 `c9d6b3d2984dc2a88113a6e455e2620d950e7fef0c1eec71ad259d67fe184450`.
+Native storage browsing, confirmation and persistence still need the next
+on-screen test. Per-root availability is now included in its diagnostic log.

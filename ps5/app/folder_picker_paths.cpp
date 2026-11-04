@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace nxrt::app {
@@ -26,6 +27,22 @@ bool beneath(const fs::path& path, const fs::path& root) {
     return true;
 }
 bool directory(const fs::path& path) { std::error_code ec; return fs::is_directory(path, ec) && !ec; }
+fs::path checked_directory(const std::string& text) {
+    if (!path_text(text)) return {};
+    auto normalized = fs::path(text).lexically_normal();
+    if (normalized != normalized.root_path() && normalized.filename().empty()) normalized = normalized.parent_path();
+    fs::path current;
+    // The native loader's libc shim exports realpath as a null-returning stub.
+    // Walk actual kernel metadata instead. Symlinks are not storage shortcuts:
+    // rejecting them also keeps navigation inside the selected storage root.
+    for (const auto& component : normalized) {
+        if (component.empty()) continue;
+        current /= component;
+        struct stat metadata{};
+        if (lstat(current.c_str(), &metadata) != 0 || !S_ISDIR(metadata.st_mode)) return {};
+    }
+    return normalized;
+}
 uint32_t word(const uint8_t* bytes) {
     return uint32_t(bytes[0]) | uint32_t(bytes[1]) << 8 | uint32_t(bytes[2]) << 16 | uint32_t(bytes[3]) << 24;
 }
@@ -110,14 +127,11 @@ std::vector<StorageRoot> picker_storage_roots() {
     return roots;
 }
 std::string picker_directory(const std::string& path, const std::vector<StorageRoot>& roots) {
-    if (!path_text(path)) return {};
-    std::error_code ec;
-    const auto actual = fs::canonical(path, ec);
-    if (ec || !directory(actual)) return {};
+    const auto actual = checked_directory(path);
+    if (actual.empty()) return {};
     for (const auto& root : roots) {
-        const auto boundary = fs::canonical(root.path, ec);
-        if (!ec && beneath(actual, boundary)) return actual.string();
-        ec.clear();
+        const auto boundary = checked_directory(root.path);
+        if (!boundary.empty() && beneath(actual, boundary)) return actual.string();
     }
     return {};
 }

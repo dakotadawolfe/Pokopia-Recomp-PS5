@@ -11,6 +11,8 @@ target_link_libraries(ps5_picker_tests PRIVATE nxrt_ps5_picker nxrt_ps5_platform
 if(PS5)
     target_compile_definitions(ps5_picker_tests PRIVATE NXRT_TEST_PS5=1)
 else()
+    target_compile_definitions(ps5_picker_tests PRIVATE NXRT_PICKER_NO_REALPATH=1)
+    target_link_options(ps5_picker_tests PRIVATE "LINKER:--wrap,realpath")
     enable_testing()
     add_test(NAME folder_picker COMMAND ps5_picker_tests)
 endif()

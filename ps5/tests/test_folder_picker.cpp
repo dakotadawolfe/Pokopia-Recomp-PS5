@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "test_framework.h"
 #include "folder_picker.h"
+#include "folder_picker_paths.h"
 #include <array>
+#include <cerrno>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
 #include <unistd.h>
 NXTEST_GROUP(folder_picker)
+#ifdef NXRT_PICKER_NO_REALPATH
+// Model the native libc shim so host checks cannot hide an accidental return
+// to canonical()/realpath() in production folder navigation.
+extern "C" char* __wrap_realpath(const char*, char*) { errno = ENOSYS; return nullptr; }
+#endif
 namespace {
 namespace fs = std::filesystem;
 using namespace nxrt::app;
@@ -17,7 +24,7 @@ struct Fixture {
         const auto base = std::getenv("NXRT_TEST_TEMP");
         auto pattern = ((base ? fs::path(base) : fs::temp_directory_path()) / "nxrt-picker-XXXXXX").string();
         if (!mkdtemp(pattern.data())) throw std::runtime_error("cannot create picker fixture");
-        path = fs::canonical(pattern);
+        path = fs::path(pattern).lexically_normal();
     }
     ~Fixture() {
         if (path.filename().string().starts_with("nxrt-picker-")) { std::error_code ec; fs::remove_all(path, ec); }
@@ -58,6 +65,18 @@ NXTEST(picker_checks_flat_and_direct_exefs_romfs_without_changing_assets) {
         REQUIRE(result.game.romfs_layers.size() == 1); CHECK_EQ(result.game.romfs_layers[0], (root / "romfs").string());
     }
     CHECK_EQ(fs::file_size(root / "romfs/test.bin"), 17u);
+}
+NXTEST(picker_directory_checks_kernel_metadata_and_rejects_symlink_escape) {
+    Fixture f;
+    fs::create_directories(f.path / "inside/nested");
+    fs::create_directory_symlink(f.path / "inside", f.path / "inside-link");
+    fs::create_directory_symlink(f.path.parent_path(), f.path / "outside-link");
+    CHECK_EQ(picker_directory((f.path / "inside/./nested/..").string(), f.roots()), (f.path / "inside").string());
+    CHECK(picker_directory((f.path / "inside-link").string(), f.roots()).empty());
+    CHECK(picker_directory((f.path / "outside-link").string(), f.roots()).empty());
+    CHECK(picker_directory(f.path.parent_path().string(), f.roots()).empty());
+    CHECK(picker_directory("relative/folder", f.roots()).empty());
+    CHECK(picker_directory((f.path / "missing").string(), f.roots()).empty());
 }
 NXTEST(picker_selects_latest_matching_update_and_preserves_base_layer_order) {
     Fixture f; const auto root = f.path / "Pokopia";
