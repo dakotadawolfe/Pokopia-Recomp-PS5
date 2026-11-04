@@ -41,9 +41,11 @@ these renderer compiler paths do not use it.
 The native allocator uses the pinned platform heap at `0x2000000000` with a
 16 GiB virtual reservation. RADV remains confined to `[0x4000000000,0x6000000000)`;
 guest aliases, heap, stacks and kernel memory retain their separate reservations.
-These are virtual address ranges, not extra physical memory. The game keeps its
-11 GiB heap-request threshold and pre-allocation check for 1 GiB remaining host
-headroom. Combined game/GPU working-set capacity still needs console evidence.
+These are virtual address ranges, not extra physical memory. The combined app
+now reports a fixed 9 GiB guest application budget, including mapped images and
+process overhead. The independent 11 GiB heap-request threshold and
+pre-allocation check for 1 GiB remaining host headroom remain enabled. Combined
+game/GPU working-set capacity still needs console evidence.
 
 ## Build
 
@@ -215,10 +217,62 @@ was stopped and unmounted. `game-renderer-progress-install.json` records the
 previous executable backup and complete SHA-256 readback of staged and installed
 files. The startup shader cache and app provenance are unchanged. The transfer
 helper (PID 91) was closed, its slot removed, and port 2121 verified closed;
-`game-renderer-progress-console.json` records cleanup. This candidate has not
-yet been launched on the console.
+`game-renderer-progress-console.json` records cleanup. The following run records
+this candidate's console result.
 The report-collection helper (PID 97) was closed and its slot removed;
 `game-renderer-picker-console.json` records cleanup.
+
+## Native graphics memory budget
+
+`game-native-1793829587-92.log` confirms the startup trace correction on console:
+guest dispatch reached the main module's `nninitStartup` and its heap request
+in 158 ms, at system call 142. Completed service handlers accounted for 15 ms
+and diagnostic work for 57 ms (summed across workers). The earlier three-minute
+trace had stopped before this point. No game frame was produced in either run.
+
+The new stop is explicit capacity accounting. The inherited 10.5 GiB Switch 2
+resource pool caused a heap request of 11,123,294,208 bytes. The largest native
+free block was 11,991,515,136 bytes, leaving only 868,220,928 bytes after that
+request, below the unchanged 1 GiB reserve. No allocation was attempted; the
+application returned status 2 normally. The report helper (PID 94) was closed
+and removed; `game-renderer-fast-result-console.json` records cleanup.
+
+Inspection of the private compiled initializer at `0x71000a44e0` confirms that
+it subtracts reported used memory from available memory and rounds the result
+down to 2 MiB. The combined native graphics target now sets its fixed resource
+pool to 9 GiB through the existing `memory.app_memory_mb` accounting path before
+guest startup. GetInfo, GetSystemInfo and SetHeapSize therefore agree. The port
+does not truncate allocations, patch the private game module, weaken the free
+memory guard, or add a user-facing graphics setting. Other targets retain their
+existing resource limits.
+
+With the same initial accounting, the projected heap is 9,512,681,472 bytes and
+the projected remaining block is 2,478,833,664 bytes. Those are projections from
+the captured run, not measured game working-set requirements. The logs now
+include `GAME_MEMORY_PROFILE` and `GAME_HEAP_BUDGET` so the next native run can
+confirm the actual request and remaining capacity.
+
+The rebuilt service payload ran on PS5 as
+`svc-runtime-1793829854-98.log`: **126 cases, zero failures**, including budget
+query agreement, changing used-memory accounting and rejection of oversized
+requests before backing allocation. Payload SHA-256:
+`d1a0c6074000248bd4777f855651db9cdfd62f6d459dec73d177fa9148c60df4`.
+This validates the service path, not the game's full native working set.
+
+The native build, exception/jump linkage gates and FSELF inspection pass.
+FSELF: 278,327,745 bytes, SHA-256
+`fd5504fb927dee336d9b94b7a78da0f15d9c5e4e407b44f68667632c6fe22ee9`.
+Native ELF: 284,125,588 bytes, SHA-256
+`8c024a79a67252dec54ea5c206d6008a063d0f8ff328545cfd4d6a87aa4e0e10`.
+The candidate is installed with the owned title stopped and unmounted.
+`game-renderer-memory-install.json` records the previous executable backup and
+complete SHA-256 readback of staged and installed files. The updated provenance
+was separately backed up and readback-verified in
+`game-renderer-memory-metadata.json`; startup shaders and the selected game
+folder are unchanged. The transfer helper (PID 97) and completed service-test
+payload (PID 98) are gone, both owned slots were removed and port 2121 is closed.
+`game-renderer-memory-console.json` records that cleanup. Native game validation
+of the revised budget is pending.
 
 ## Interpreting a run
 

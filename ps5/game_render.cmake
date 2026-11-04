@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Included only by the graphics app's explicit private-game integration mode.
+# Leave room in the native direct-memory pool for the renderer, translated
+# textures, shader compilation and host allocations after the guest heap grows.
+set(PKP_GRAPHICS_GUEST_MEMORY_MIB 9216)
 set(PKP_GAME_IMAGE_INPUT "" CACHE PATH "Existing decrypted game dump")
 set(PKP_SDK_MODULE_BUILD "" CACHE PATH "Verified compiled game modules")
 set(NX_PYTHON "python3" CACHE FILEPATH "Host Python with recomp requirements")
@@ -46,7 +49,8 @@ target_sources(${target} PRIVATE "${startup_expectations}/private_startup_inputs
 target_include_directories(${target} PRIVATE "${root}/runtime/tests" "${game_expectations}" "${startup_expectations}")
 target_compile_definitions(${target} PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_GAME_IMAGES=1 NXRT_TEST_RTLD=1
     NXRT_TEST_SDK=1 NXRT_SDK_STARTUP_TRACE=1 NXRT_GAME_STARTUP_TRACE=1 NXRT_GAME_STARTUP_NATIVE=1
-    NXRT_GAME_RENDER_NATIVE=1 NXRT_GAME_EH=1 PKP_NATIVE_STARTUP_HEAP_LIMIT_MIB=11264)
+    NXRT_GAME_RENDER_NATIVE=1 NXRT_GAME_EH=1 PKP_NATIVE_STARTUP_HEAP_LIMIT_MIB=11264
+    PKP_NATIVE_GAME_MEMORY_MIB=${PKP_GRAPHICS_GUEST_MEMORY_MIB})
 target_link_libraries(${target} PRIVATE nxrt_ps5_svc nxrt_ps5_eh ${archives})
 foreach(symbol _init_env guest_mrs guest_msr guest_trap guest_unimpl call_indirect host_import)
     target_link_options(${target} PRIVATE "LINKER:--wrap,${symbol}")

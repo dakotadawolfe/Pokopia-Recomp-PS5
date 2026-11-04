@@ -417,6 +417,10 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
         const uint64_t committed = mem::heap_committed();
         const uint64_t growth = b > committed ? b - committed : 0;
         constexpr uint64_t host_headroom = uint64_t{1} << 30;
+        std::printf("GAME_HEAP_BUDGET guest_total=%llu committed=%llu growth=%llu projected_free=%llu minimum_free=%llu\n",
+            static_cast<unsigned long long>(nxrt::svc_total_memory()), static_cast<unsigned long long>(committed),
+            static_cast<unsigned long long>(growth), static_cast<unsigned long long>(bytes > growth ? bytes - growth : 0),
+            static_cast<unsigned long long>(host_headroom));
         if (growth && (limit <= 0 || rc || bytes < host_headroom || growth > bytes - host_headroom)) {
             std::puts("GAME_STOP native free-memory check cannot retain 1 GiB host headroom; no allocation attempted");
             stop_probe();
@@ -772,6 +776,16 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     nxrt::kernel::kernel_reset(); nxrt::ipc::registry_reset(); nxrt::modules_unload_all(); nxrt::nxmodules_clear(); nxrt::hle_clear();
     nxrt::svc_memory_reset_for_tests(); nxrt::svc_info_reset_for_tests(); mem::shutdown();
     nxrt::game::set_current(&game);
+#ifdef NXRT_GAME_RENDER_NATIVE
+    // nninitStartup sizes its heap from the resource-limit queries. Advertise
+    // the native port's budget through the existing shared accounting path;
+    // do not truncate SetHeapSize or report successful backing we cannot supply.
+    const auto native_budget = std::to_string(PKP_NATIVE_GAME_MEMORY_MIB);
+    nxrt::config_set("memory", "app_memory_mb", native_budget.c_str());
+    REQUIRE(nxrt::svc_total_memory() == (uint64_t{PKP_NATIVE_GAME_MEMORY_MIB} << 20));
+    std::printf("GAME_MEMORY_PROFILE guest_application_mib=%u minimum_host_free_mib=1024\n",
+        unsigned(PKP_NATIVE_GAME_MEMORY_MIB));
+#endif
 #ifdef NXRT_GAME_STARTUP_TRACE
     REQUIRE(nxrt::services::program_id_now() == startup_program_id);
 #endif

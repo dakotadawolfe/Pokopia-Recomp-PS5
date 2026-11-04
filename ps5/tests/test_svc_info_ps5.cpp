@@ -75,6 +75,30 @@ NXTEST(info_svc_uses_one_budget_and_tracks_guest_heap_usage) {
     CHECK_EQ(call(0x6f, 0, 0, 0).value, 128 * mib);
     REQUIRE(call(1, 0).rc == k::kOk); CHECK_EQ(info(7).value, 64 * mib);
 }
+NXTEST(info_svc_native_graphics_budget_is_consistent_and_enforced_before_backing) {
+    Fixture f;
+    constexpr uint64_t native_budget = 9ull << 30;
+    nxrt::config_set("memory", "app_memory_mb", "9216");
+    for (unsigned type : {6, 21}) {
+        CHECK_EQ(info(type).rc, k::kOk);
+        CHECK_EQ(info(type).value, native_budget);
+    }
+    CHECK_EQ(call(0x6f, 0, 0, 0).value, native_budget);
+    CHECK_EQ(info(7).value, 64 * mib);
+    REQUIRE(!mem::heap_exists());
+    // The previous Switch 2-sized request and an entire-pool request both
+    // exceed this profile after accounting for images and process overhead.
+    for (uint64_t requested : std::array<uint64_t, 2>{0x297000000ull, native_budget}) {
+        CHECK_EQ(call(1, requested).rc, k::kOutOfMemory);
+        CHECK(!mem::heap_exists());
+        CHECK_EQ(mem::heap_committed(), 0u);
+    }
+    REQUIRE(call(1, 2 * mib).rc == k::kOk);
+    CHECK_EQ(info(6).value, native_budget);
+    CHECK_EQ(info(7).value, 66 * mib);
+    CHECK_EQ(info(22).value, info(7).value);
+    CHECK_EQ(call(0x6f, 1, 0, 0).value, info(7).value);
+}
 NXTEST(info_svc_title_identity_respects_default_title_and_process_precedence) {
     Fixture f; CHECK_EQ(info(18).value, 0x0100000000001234ull); CHECK_EQ(info(16).value, 2 * mib);
     nxrt::config_set("title", "program_id", "0x2222"); nxrt::config_set("title", "system_resource_size", "4194304");
