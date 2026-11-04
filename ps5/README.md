@@ -33,6 +33,23 @@ until boot, rendering, controller input, audio, saves and sustained gameplay hav
 been verified on console. Cross-model support also requires representative
 hardware testing; a base-console run does not establish PS5 Pro behavior.
 
+
+## Intended installation layout
+
+Local preparation consumes the user's decrypted dump. The final native
+application will contain the recompiled x86-64 game code and platform runtime,
+packaged as `eboot.bin` and any required modules for ShadowMountPlus. Game assets
+remain separate under `/data/pokopia-recomp/game/`; they are not embedded in the
+ELF. The current loader requires the decrypted ExeFS images for their original
+mapped contents and layout as well as the separately compiled code. RomFS asset
+staging and loading are still to be implemented.
+
+The intended default is internal PS5 storage, with USB or FTP used for transfer.
+After installation, playing should not require the PC, keys or firmware. Loading
+the full game directly from USB is a separate, unverified option. Save data and
+controller/audio preferences will live in writable application-data directories,
+separate from game inputs and the app package.
+
 ## Input validation
 
 From the repository root, with Python 3.10 or newer:
@@ -120,10 +137,10 @@ before the core can run the game.
 The optional Windows frame recorder and stack sampler are disabled in the PS5
 core build; ordinary HLE call logging remains available.
 
-The platform check runs 57 cases on the host: 17 upstream cases for mutexes,
+The platform check runs 67 cases on the host: 17 upstream cases for mutexes,
 condition variables, events and semaphores, 23 upstream cases for logging and
-configuration, eight memory cases and nine subpage cases. The PS5 build runs
-66 cases, including two additional direct-memory ownership/release tests and
+configuration, eight memory cases, nine subpage cases and ten host-worker cases. The PS5 build runs
+76 cases, including two additional direct-memory ownership/release tests and
 seven sparse guest-region cases. It writes a report
 to `/data/pokopia-recomp/tests/platform-<time>-<pid>.log`; individual temporary
 test files are removed by the tests. Windows retains its native synchronization
@@ -302,8 +319,8 @@ its [scan API](https://github.com/drakmor/ShadowMountPlus/blob/1.7/docs/api.md).
 Launch **Pokopia Runtime Tests** from the PS5 home screen. This headless suite
 normally displays a blank screen while running and exits when finished. It writes
 `/data/pokopia-recomp/tests/app-platform-<time>-<pid>.log`, containing
-`context=native-app title=PPSA98731`. The current baseline has 125 cases; enabling
-the game-image check makes 126. Only the expected complete report with zero
+`context=native-app title=PPSA98731`. The current baseline has 135 cases; enabling
+the game-image check makes 136. Only the expected complete report with zero
 failures, together with a clean application exit, establishes success. Registration,
 FSELF inspection and payload-suite results do not establish application runtime
 behavior. Native game boot and gameplay remain separate checks.
@@ -366,7 +383,7 @@ a clean return home. Executable SHA-256:
 The optional next check maps the real `main`, `sdk`, `subsdk0` and `rtld` NSOs at
 their compiled addresses. It does not register or execute the lifted game code,
 call game constructors, apply host relocations, access RomFS or touch saves.
-The normal 125-case suite still needs no game files. To build the additional
+The normal 135-case suite still needs no game files. To build the additional
 case, supply the dump as the third argument:
 
 ```sh
@@ -387,7 +404,7 @@ Stage only the four named files from that manifest under
 and retain a `source-manifest.json` in the parent directory. Preserve any existing
 unidentified input folder. Original PC files remain unchanged. The app package
 does not bundle these files; its manifest records `requires_game_images: true`
-and `expected_cases: 126`. Omitting the third build argument restores the normal
+and `expected_cases: 136`. Omitting the third build argument restores the normal
 suite. The standalone diagnostic target is `ps5_game_image_tests`.
 
 On 2026-11-04 the standalone diagnostic passed and exited: all four modules were
@@ -451,12 +468,56 @@ or alignment did not remove that limit. Payloads run in the system budget rather
 than a native title budget, as documented by the
 [PS5LM console probes](https://github.com/abhi245y/PS5LM-Plus/blob/main/docs/CONSOLE.md).
 These results do not establish the new heap's behavior in a native application.
-The full 126-case native build is installed and readback-verified; its native retry
-is pending. Executable SHA-256:
+The native application passed **126 cases, zero failures** on 2026-11-04.
+Report `app-platform-1793775032-153.log` includes all seven heap checks and all four
+game images, then main status zero. ShadowMountPlus recorded a clean exit, and
+the user confirmed returning home. Executable SHA-256:
 `ac69369e251a9bd72f89d14cd4780fe0c9b668ea31e8c42f9194017340641f9b`.
-The unchanged real-image check remains included. Local host regression checks
-passed after updating the exception-reporting harness; those checks do not
-exercise the PS5 allocator.
+
+The native process reported a 12 GiB direct-memory budget and an initial largest
+free block of 12,849,250,304 bytes. Its application heap grew to 337,641,472 bytes
+across seven spaces; about 8 MiB remained live after the suite. The final recorded
+allocation error is the deliberately injected rollback-test failure, not a failed
+test. This resolves the observed game-image allocation failure; no guest game
+code or gameplay ran. The payload's zero direct-memory budget is not the native
+application's budget.
+
+
+## Host worker lifecycle
+
+`nxrt/host_thread.h` and `src/os/host_thread_posix.cpp` provide the host-thread
+owner needed by the guest kernel port. Creation starts a POSIX worker behind a
+gate; entry execution begins only after `start()`, allowing register and handle
+initialization before dispatch. A join on an unstarted worker cancels that gate.
+The owner joins during destruction, including when ownership moves to another
+thread. Self-joins are rejected; repeated/concurrent host joins are serialized.
+Uncaught entry exceptions are retained for the owner rather than escaping through
+pthread startup. Explicit thread exit runs the cleanup handler and the native
+CRT's C++ TLS cleanup.
+
+`wait_for()` observes entry completion, not completion of TLS destruction.
+`join()` establishes full termination. This distinction must be preserved by the
+future guest join implementation. Stack size is an explicit creation parameter;
+zero uses the platform default. No default game stack size, affinity mapping or
+priority policy is selected by these tests.
+
+Ten cases exercise startup gating, cancelled gates, join ownership, timeout
+behavior, exception transfer, explicit exit/TLS cleanup, self-join rejection,
+invalid inputs and stack sizing, repeated worker creation, and four workers
+executing the original lifted LDAR/STLR fixture with independent register state.
+The current host suite passes 67 cases plus the six existing TLS-runtime cases.
+The console payload check also passed all 76 platform cases and exited.
+Report: `platform-1793775610-157.log`; ELF SHA-256:
+`8f3b992c027f92e0ca4ccef53b3003379ba3df95dfa0bedd640dbce08a379432`.
+
+The combined 136-case native application is installed and readback-verified;
+its native launch check is pending. Executable SHA-256:
+`d8cf633da4d013309dec34fe14c14acdc66047df1450bfdb865daf4a0ad30a0f`.
+The prior 126-case result remains the verified native baseline.
+
+This is the host worker foundation. Horizon thread handles, guest TLS setup,
+SVC dispatch, synchronization queues and PS5 scheduling still need integration.
+It does not start a Pokopia thread or execute game code.
 
 ## Repository ownership
 

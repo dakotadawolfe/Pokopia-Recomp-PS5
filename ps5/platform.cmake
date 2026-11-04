@@ -4,6 +4,7 @@ add_library(nxrt_ps5_platform STATIC
     "${platform_root}/src/mem/host_vm_posix.cpp"
     "${platform_root}/src/mem/subpage.cpp"
     "${platform_root}/src/os/sync.cpp"
+    "${platform_root}/src/os/host_thread_posix.cpp"
     "${platform_root}/src/diag/config.cpp"
     "${platform_root}/src/diag/log.cpp"
     "${platform_root}/src/diag/gauge_registry.cpp")
