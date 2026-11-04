@@ -210,7 +210,13 @@ FSELF packaging/inspection and the existing host folder-picker suite. FSELF:
 `869494c5e6a9c43264e49f47bf042bd6c341abb8e27071266858db8addec977a`.
 Native ELF: 284,125,588 bytes, SHA-256
 `a76bc02ac695779e432a9e8ce55e7e030679479297fc6d39b97ef9cbeb194ba0`.
-Installation is pending ShadowMountPlus availability after the console restart.
+The candidate is installed after ShadowMountPlus confirmed the owned title
+was stopped and unmounted. `game-renderer-progress-install.json` records the
+previous executable backup and complete SHA-256 readback of staged and installed
+files. The startup shader cache and app provenance are unchanged. The transfer
+helper (PID 91) was closed, its slot removed, and port 2121 verified closed;
+`game-renderer-progress-console.json` records cleanup. This candidate has not
+yet been launched on the console.
 The report-collection helper (PID 97) was closed and its slot removed;
 `game-renderer-picker-console.json` records cleanup.
 
