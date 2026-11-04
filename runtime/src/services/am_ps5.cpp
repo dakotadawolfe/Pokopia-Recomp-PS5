@@ -127,6 +127,11 @@ Ptr self(const std::shared_ptr<State>& state) {
         s.add_cmd(91, "GetAccumulatedSuspendedTickChangedEvent", [state](Request&, Response& rsp) {
             return event_handle(state->suspended_event, rsp);
         });
+        s.add_cmd(2400, "SetRtcScreenSharingAudioEnabled", [](Request& req, Response&) -> uint32_t {
+            if (req.in_size < 1) return kernel::kInvalidCombination;
+            // Disabling an absent sharing path is supported; enabling it is not.
+            return req.arg<uint8_t>(0) ? kernel::kNotImplemented : 0;
+        });
     });
 }
 Ptr window(const std::shared_ptr<State>& state) {
@@ -150,6 +155,16 @@ Ptr application(const std::shared_ptr<State>& state) {
         });
         s.add_cmd(130, "GetGpuErrorDetectedSystemEvent", [state](Request&, Response& rsp) {
             return event_handle(state->gpu_error_event, rsp);
+        });
+        // SDK InitializeApplet passes these bytes to its initial screenshot /
+        // recording policy and RTC screen-sharing policy respectively. The PS5
+        // port exposes neither guest capture nor guest RTC sharing. Names below
+        // describe the observed consumers; Nintendo's command names are unknown.
+        s.add_cmd(320, "GetInitialCapturePolicy", [](Request&, Response& rsp) -> uint32_t {
+            rsp.push<uint8_t>(0); rsp.push<uint8_t>(0); return 0;
+        });
+        s.add_cmd(321, "GetInitialRtcSharingPolicy", [](Request&, Response& rsp) -> uint32_t {
+            rsp.push<uint8_t>(0); return 0;
         });
     });
 }

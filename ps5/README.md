@@ -1026,7 +1026,7 @@ cmake --build /path/to/private/build/app-tests --target ps5_sdk_startup_trace
 ```
 
 It logs `/data/pokopia-recomp/tests/sdk-startup-<time>-<pid>.log`, limits execution
-to 1,000 SVCs or 20 seconds, and exits its own process and workers on an unknown
+to 1,000 SVCs or 60 seconds, and exits its own process and workers on an unknown
 service/call, checked CMIF error, external import or limit. It deliberately does
 not report a passing test. Its IPC diagnostic wrappers serialize requests while
 inspecting domain objects; timings are not performance measurements.
@@ -1036,7 +1036,8 @@ the worker entering `WaitSynchronization`, and the main thread processing focus
 and foreground setup. It stops at call 95: `IApplicationFunctions` command 320,
 result `0x000bcbd5`. The original Windows backend returns two zero bytes for 320
 and one for 321 but labels their meanings unknown; these compatibility replies
-have not been silently promoted into the PS5 runtime. ELF SHA-256:
+were not enabled at this checkpoint. Their consumers were subsequently identified
+as described below. ELF SHA-256:
 `4b3fe97d6fbe5a16e6156ca5cc4ad383e16fb99444044a56378129c20e8ce90d`.
 Earlier exploratory SDK runs stopped on overly strict stack-top validation and
 the first worker mutex request; those runs are not passes.
@@ -1053,6 +1054,66 @@ PS5 RADV/VideoOut. The existing renderer and filesystem contain Windows host
 backends; they are not linked into this PS5 diagnostic. Audio, controller and
 save integration follow alongside that work. No date or 60 FPS result is implied
 by these startup checks.
+
+## Startup, read-only storage and native graphics diagnostic
+
+The next startup batch identifies the previously unnamed application commands
+from the supplied SDK, build ID `cc7da00d672399efe7958790d17fae396b1fde9f`.
+`nn::oe::InitializeApplet` at `0x7500515ba0` consumes command 320's two
+bytes at `0x7500515d20`, then calls the exported
+`SetScreenShotAndContinuousRecordingInitiallyEnabled(bool,bool)` at
+`0x7500518430` through PLT entry `0x75007adb10`. Command 321's single byte
+is consumed at `0x7500515d4c`: it sets buffer permission bit 4 and is passed
+to `SetRtcScreenSharingAudioEnabled(bool)` at `0x75001c67a0`.
+These are observations from the locally generated SDK translation and original
+dynamic symbols, not recovered Nintendo command names. No SDK bytes or
+translated game source are committed.
+
+The PS5 replies now report guest screenshot, recording and RTC sharing disabled.
+`ISelfController` 2400 accepts disabling RTC audio sharing and rejects enabling
+it. The add-on service exposes an empty inventory and real shared notification
+events; mounting/purchasing content is unsupported. Parental-control sessions
+are bound to the current guest process and use an unrestricted local guest
+profile; they do not modify PS5 shell/account settings. Error-context endpoints
+can be opened, but persistence explicitly fails rather than inventing a context
+descriptor. The endpoint layout follows
+[Switchbrew's glue services](https://switchbrew.org/wiki/Glue_services#ectx:aw).
+
+The read-only file backend and `fsp-srv` now serve real host files through a
+RomFS image, with signed-range, buffer-capacity and guest-permission validation.
+The combined PS5 SVC suite passed **99 cases, zero failures** in
+`svc-runtime-1793788869-371.log`; ELF SHA-256:
+`82fe0d0b811851ed6fea8dbbfc1c9601ce6a2a89a9877b1a43dae3af08c594d9`.
+The separate reader passed **14 cases, zero failures** in
+`romfs-runtime-1793788861-368.log`. Both processes exited. These use test files;
+the complete game's 7.25 GB asset tree has not been staged or read on PS5.
+See [RomFS build instructions and validation boundaries](ROMFS_PORT.md).
+
+The SDK tracer now accepts the SDK's domain-object close messages and avoids
+printing the complete IPC summary after every request. This fixes diagnostic
+overhead and a false stop during teardown; it is not a gameplay optimization.
+The earlier 20-second trace at call 107 expired and the next trace stopped on
+the diagnostic's domain-close guard at call 110. Neither is a passing startup
+test. The native runtime title `PPSA98731` remains the previously proven
+239-case installation; these additional runtime cases have not replaced it.
+
+The final automated trace `sdk-startup-1793789090-385.log` completes parental
+service creation/initialization and domain/session teardown. It stops at SVC
+call 131 on the next unported dependency, `time:u`; the process then exits.
+ELF SHA-256:
+`e1960b68b330c75b50b83c53d162b3d6a4f942ade85e383b9e2cc6c0c23e8812`.
+This is dependency discovery, not successful completion of SDK startup.
+
+`PPSA98732`, **Pokopia Graphics Test**, is a separate native application for
+colored-quadrant clears, presentation, pacing and GPU pixel readback. It includes
+no guest mappings, game code or assets. Every package file was readback-verified
+at `/data/homebrew/PPSA98732`; its executable is 19,047,859 bytes, SHA-256
+`be8b0cdc9aeefb04dd82c0b7324149939aff3c1f1d413ea1aa56f080bcdf9462`.
+ShadowMountPlus reports the separate title installed and available.
+Native display behavior still requires a manual console launch. Its independent
+process avoids combining the driver's current VA allocation window with guest
+addresses; that overlap remains a required game-renderer integration task.
+See [graphics build instructions and remaining renderer work](GRAPHICS_PORT.md).
 
 ## Repository ownership
 

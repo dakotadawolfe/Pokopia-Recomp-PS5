@@ -9,12 +9,15 @@
 #include "nxrt/services_api.h"
 #include "nxrt/am_ps5.h"
 #include <array>
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 
 namespace nxrt::services { void register_logfault(); void logfault_reset(); uint32_t logfault_destination(); }
 namespace nxrt::services { void register_am(); void am_reset(); }
+namespace nxrt::services { void register_aoc(); void aoc_reset(); }
+namespace nxrt::services { void register_pctl(); }
 
 NXTEST_GROUP(svc_ipc_ps5)
 namespace {
@@ -200,6 +203,18 @@ NXTEST(ipc_log_rejects_unreadable_buffers_and_drops_short_packets) {
     REQUIRE(capture.lines.size() == 1); CHECK(capture.lines[0].find("shorter") != std::string::npos);
     REQUIRE(mem::protect(f.base + 0x1000, 0x1000, mem::Prot::None));
     CHECK_EQ(f.send(logger, m), k::kInvalidMemoryState); CHECK_EQ(capture.lines.size(), size_t{1});
+}
+NXTEST(error_context_endpoint_cannot_claim_to_persist_an_unbacked_report) {
+    Fixture f; nxrt::services::register_logfault();
+    auto writer = ipc::make_service("ectx:aw"); REQUIRE(writer); CHECK(!writer->is_stub());
+    ipc::Request req; ipc::Response rsp; req.cmd = 0;
+    CHECK_EQ(writer->handle(req, rsp), 0u); REQUIRE(rsp.out_objects.size() == 1);
+    auto registrar = rsp.out_objects[0]; writer.reset();
+    ipc::Response completion; CHECK_EQ(registrar->handle(req, completion), k::kNotImplemented);
+    CHECK(completion.out.empty() && completion.out_copy.empty() && completion.out_move.empty());
+    writer = ipc::make_service("ectx:aw"); req.cmd = 1; ipc::Response commit;
+    CHECK_EQ(writer->handle(req, commit), k::kNotImplemented);
+    CHECK(commit.out.empty());
 }
 
 NXTEST(ipc_copies_resolve_process_identity_and_preserve_sender_ownership) {
@@ -481,4 +496,57 @@ NXTEST(applet_gpu_error_event_copies_remain_shared_and_reset_isolates_old_reader
     const auto next = f.child(f.open(), 20); REQUIRE(next);
     CHECK_EQ(f.send(next, request(130)), k::kOk); reply = f.reply(); REQUIRE(reply.copy.size() == 1);
     CHECK(k::handle_as<k::KEvent>(reply.copy[0])->signaled());
+}
+NXTEST(applet_capture_policy_disables_guest_capture_and_does_not_enable_unbacked_sharing) {
+    AmFixture f; const auto p = f.open(), application = f.child(p, 20), self = f.child(p, 1);
+    REQUIRE(application && self);
+    auto service = k::handle_as<ipc::KSession>(application)->svc;
+    for (const auto command : {320u, 321u}) {
+        ipc::Request req; ipc::Response rsp; req.cmd = command;
+        CHECK_EQ(service->handle(req, rsp), 0u);
+        CHECK_EQ(rsp.out.size(), command == 320 ? 2u : 1u);
+        CHECK(std::all_of(rsp.out.begin(), rsp.out.end(), [](uint8_t value) { return value == 0; }));
+        CHECK(rsp.out_copy.empty() && rsp.out_move.empty() && rsp.out_objects.empty());
+    }
+    for (const auto enabled : {uint8_t{0}, uint8_t{1}}) {
+        auto m = request(2400); push(m.raw, enabled);
+        CHECK_EQ(f.send(self, m), k::kOk);
+        CHECK_EQ(word(f.reply().raw, 8), enabled ? k::kNotImplemented : 0u);
+    }
+}
+NXTEST(addon_inventory_is_empty_and_copied_events_survive_session_close) {
+    Fixture f; nxrt::services::aoc_reset(); nxrt::services::register_aoc();
+    auto service = ipc::make_service("aoc:u"); REQUIRE(service);
+    ipc::Request req; ipc::Response first; req.cmd = 8;
+    CHECK_EQ(service->handle(req, first), 0u); REQUIRE(first.out_copy.size() == 1);
+    auto event = k::handle_as<k::KEvent>(first.out_copy[0]); REQUIRE(event); CHECK(!event->signaled());
+    ipc::Response second; req.cmd = 10; CHECK_EQ(service->handle(req, second), 0u); REQUIRE(second.out_copy.size() == 1);
+    CHECK(event->state == k::handle_as<k::KEvent>(second.out_copy[0])->state);
+    service.reset(); k::handle_close(first.out_copy[0]); CHECK(!k::handle_as<k::KEvent>(second.out_copy[0])->signaled());
+    nxrt::services::aoc_reset(); service = ipc::make_service("aoc:u"); REQUIRE(service);
+    ipc::Response fresh; req.cmd = 8; CHECK_EQ(service->handle(req, fresh), 0u); REQUIRE(fresh.out_copy.size() == 1);
+    CHECK(event->state != k::handle_as<k::KEvent>(fresh.out_copy[0])->state);
+    for (const auto command : {0u, 2u}) {
+        ipc::Response rsp; req.cmd = command; CHECK_EQ(service->handle(req, rsp), 0u);
+        CHECK_EQ(word(rsp.out, 0), 0u);
+    }
+    for (const auto command : {6u, 7u, 11u, 50u}) {
+        ipc::Response rsp; req.cmd = command; CHECK_EQ(service->handle(req, rsp), k::kNotImplemented);
+        CHECK(rsp.out_move.empty() && rsp.out_objects.empty());
+    }
+    nxrt::services::aoc_reset();
+}
+NXTEST(parental_profile_is_process_bound_and_initialization_is_session_local) {
+    Fixture f; nxrt::services::register_pctl(); auto factory = ipc::make_service("pctl"); REQUIRE(factory);
+    ipc::Request req; ipc::Response refused; req.cmd = 1;
+    CHECK_EQ(factory->handle(req, refused), k::kInvalidHandle); CHECK(refused.out_objects.empty());
+    req.pid = k::current_process()->id;
+    ipc::Response created; CHECK_EQ(factory->handle(req, created), 0u); REQUIRE(created.out_objects.size() == 1);
+    auto service = created.out_objects[0]; ipc::Response rsp; req.cmd = 1031;
+    CHECK_EQ(service->handle(req, rsp), k::kInvalidState); CHECK(rsp.out.empty());
+    req.cmd = 1; CHECK_EQ(service->handle(req, rsp), 0u);
+    req.cmd = 1031; CHECK_EQ(service->handle(req, rsp), 0u); REQUIRE(rsp.out.size() == 1); CHECK_EQ(rsp.out[0], 0u);
+    req.cmd = 1203; ipc::Response pin; CHECK_EQ(service->handle(req, pin), k::kStubService);
+    req.cmd = 1; ipc::Response fresh; CHECK_EQ(factory->handle(req, fresh), 0u); REQUIRE(fresh.out_objects.size() == 1);
+    req.cmd = 1031; ipc::Response query; CHECK_EQ(fresh.out_objects[0]->handle(req, query), k::kInvalidState);
 }

@@ -5,8 +5,17 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifdef _WIN32
 #include <windows.h>
 #include <winioctl.h>
+#else
+#include <cerrno>
+#include <cstdlib>
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -71,16 +80,22 @@ std::string utf8(const std::filesystem::path& p) {
 
 // Host paths of 240 characters or more get the extended-length prefix.
 std::filesystem::path long_path(const std::filesystem::path& p) {
+#ifdef _WIN32
     const std::wstring w = p.wstring();
     if (w.size() < 240 || w.compare(0, 4, L"\\\\?\\") == 0) return p;
     if (w.compare(0, 2, L"\\\\") == 0) return std::filesystem::path(L"\\\\?\\UNC\\" + w.substr(2));
     return std::filesystem::path(L"\\\\?\\" + w);
+#else
+    return p;
+#endif
 }
 
-// The temp folder for one test, always in extended-length form so that 255-character names fit.
+// A private temp folder for one test; Windows uses extended-length paths so that
+// 255-character names fit. POSIX uses mkdtemp to avoid reusing any existing tree.
 struct TempTree {
     std::filesystem::path root;
     TempTree() {
+#ifdef _WIN32
         static std::atomic<unsigned> seq{0};
         std::error_code ec;
         std::wstring base = std::filesystem::temp_directory_path(ec).wstring();
@@ -88,6 +103,13 @@ struct TempTree {
         root = std::filesystem::path(L"\\\\?\\" + base + L"\\nxrt_romfs_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
                                      std::to_wstring(seq++));
         std::filesystem::create_directories(root, ec);
+#else
+        const char* configured = std::getenv("NXRT_TEST_TEMP");
+        const auto base = configured ? std::filesystem::path(configured) : std::filesystem::temp_directory_path();
+        std::string name = (base / "nxrt_romfs_XXXXXX").string();
+        if (!mkdtemp(name.data())) throw std::system_error(errno, std::generic_category(), "create RomFS test directory");
+        root = name;
+#endif
     }
     ~TempTree() {
         std::error_code ec;
@@ -562,6 +584,8 @@ NXTEST(romfs_read_past_end_fails) {
     CHECK(!img.read(n - 1, b, 2));
     CHECK(!img.read(n + 5, b, 1));
     CHECK(!img.read(~uint64_t{0} - 2, b, 8));   // offset + len wraps
+    CHECK(img.read(n, nullptr, 0));
+    CHECK(!img.read(0, nullptr, 1));
     RomfsImage never;
     CHECK(!never.read(0, b, 1));
 }
@@ -606,10 +630,15 @@ NXTEST(romfs_read_spanning_areas) {
     expect_span(0, img.size());
 }
 
+// The host test creates a sparse file. Console storage has not been verified to
+// preserve holes, so do not create a multi-GiB fixture on the PS5 volume.
+#ifndef NXRT_TARGET_PS5
 NXTEST(romfs_file_over_4gib) {
     TempTree t;
     const uint64_t kBig = 5ull << 30;
     const auto big = t.root / "a_big.bin";
+    const std::vector<uint8_t> marker = pattern(64, 99);
+#ifdef _WIN32
     HANDLE h = CreateFileW(big.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         nxtest::skip("cannot create the 5 GiB test file");
@@ -627,12 +656,19 @@ NXTEST(romfs_file_over_4gib) {
         return;
     }
     // markers around the 4 GiB point of the file: image offset 0x100000000 is file offset 0xFFFFFE00
-    const std::vector<uint8_t> marker = pattern(64, 99);
     LARGE_INTEGER at{};
     at.QuadPart = 0xFFFFFF00ll;
     DWORD wrote = 0;
     bool ok = SetFilePointerEx(h, at, nullptr, FILE_BEGIN) && WriteFile(h, marker.data(), 64, &wrote, nullptr) && wrote == 64;
     CloseHandle(h);
+#else
+    const int fd = open(big.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    REQUIRE(fd >= 0);
+    const bool sized = ftruncate(fd, static_cast<off_t>(kBig)) == 0;
+    const bool ok = sized && pwrite(fd, marker.data(), marker.size(), static_cast<off_t>(0xFFFFFF00ull)) ==
+                              static_cast<ssize_t>(marker.size());
+    close(fd);
+#endif
     CHECK(ok);
     const std::vector<uint8_t> after = pattern(4100, 5);
     {
@@ -672,6 +708,156 @@ NXTEST(romfs_file_over_4gib) {
     CHECK(std::memcmp(seam.data() + 8, after.data(), after.size()) == 0);
     for (int i = 0; i < 8; i++) CHECK_EQ(seam[i], 0);
 }
+#endif
+
+NXTEST(romfs_changed_host_file_is_error) {
+    TempTree t;
+    const auto bytes = pattern(4096, 7);
+    write_host(t.root, {{"/changing.bin", false, bytes}});
+    RomfsImage img;
+    REQUIRE(build_from(t.root, img));
+    uint64_t at = 0;
+    REQUIRE(img.file_extent("/changing.bin", &at, nullptr));
+    std::vector<uint8_t> got(bytes.size());
+    REQUIRE(img.read(at, got.data(), got.size()));
+    CHECK(got == bytes);
+    // An already cached descriptor must report the truncated extent as an error.
+    std::error_code ec;
+    std::filesystem::resize_file(t.root / "changing.bin", 1, ec);
+    REQUIRE(!ec);
+    CHECK(!img.read(at, got.data(), got.size()));
+    REQUIRE(build_from(t.root, img));
+    // A file removed between indexing and first read must not become zero-filled.
+    REQUIRE(std::filesystem::remove(t.root / "changing.bin", ec));
+    REQUIRE(!ec);
+    CHECK(!img.read(at, got.data(), 1));
+}
+
+NXTEST(romfs_failed_rebuild_clears_old_image) {
+    TempTree t;
+    write_host(t.root, {{"/old.bin", false, pattern(8, 1)}});
+    RomfsImage img;
+    REQUIRE(build_from(t.root, img));
+    std::string error;
+    CHECK(!img.build(utf8(t.root / "missing"), &error));
+    CHECK(!error.empty());
+    CHECK(!img.built());
+    CHECK_EQ(img.size(), 0ull);
+    CHECK(!img.file_extent("/old.bin", nullptr, nullptr));
+}
+
+NXTEST(romfs_unicode_paths_preserve_bytes) {
+    TempTree t;
+    const auto tree = t.root / u8path("\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E");
+    const std::vector<Item> items{{"/\xE2\x98\x83/\xF0\x9F\x8C\x8D.bin", false, pattern(45, 3)},
+                                  {"/\xEF\xBF\xBF.bin", false, pattern(17, 5)}};
+    write_host(tree, items);
+    RomfsImage img;
+    REQUIRE(build_from(tree, img));
+    check_tree(img, items);
+}
+
+#ifndef _WIN32
+NXTEST(romfs_host_file_errors_use_posix_errno) {
+    TempTree t;
+    const auto missing = t.root / "missing";
+    errno = 0;
+    CHECK_EQ(open(missing.c_str(), O_RDONLY | O_CLOEXEC), -1);
+    CHECK_EQ(errno, ENOENT);
+    uint8_t byte = 0xa5;
+    errno = 0;
+    CHECK_EQ(pread(-1, &byte, 1, 0), -1);
+    CHECK_EQ(errno, EBADF);
+    CHECK_EQ(byte, 0xa5);
+    struct stat status{};
+    errno = 0;
+    CHECK_EQ(fstat(-1, &status), -1);
+    CHECK_EQ(errno, EBADF);
+    errno = 0;
+    CHECK_EQ(close(-1), -1);
+    CHECK_EQ(errno, EBADF);
+    errno = 0;
+    CHECK_EQ(stat(missing.c_str(), &status), -1);
+    CHECK_EQ(errno, ENOENT);
+    errno = 0;
+    CHECK_EQ(lstat(missing.c_str(), &status), -1);
+    CHECK_EQ(errno, ENOENT);
+    errno = 0;
+    CHECK(opendir(missing.c_str()) == nullptr);
+    CHECK_EQ(errno, ENOENT);
+}
+
+NXTEST(romfs_rejects_non_utf8_names) {
+    // POSIX permits byte names that cannot be represented by the guest FS.
+    for (const std::string& bad : {std::string("\x80"), std::string("\xC0\xAF"), std::string("\xE2\x82"),
+                                 std::string("\xED\xA0\x80"), std::string("\xF4\x90\x80\x80")}) {
+        TempTree t;
+        const auto file = t.root / bad;
+        std::ofstream stream(file, std::ios::binary);
+        stream.put('x');
+        stream.close();
+        REQUIRE(stream.good());
+        RomfsImage img;
+        std::string error;
+        CHECK(!img.build(utf8(t.root), &error));
+        CHECK(!img.built());
+        CHECK(!error.empty());
+    }
+}
+
+// The PS5 kernel returns EOPNOTSUPP for the link fixture, and the SDK's raw
+// syscall stub does not translate that to -1/errno. Exercise these entry kinds
+// on hosts that can create them; the production scan still rejects both kinds.
+#ifndef NXRT_TARGET_PS5
+NXTEST(romfs_rejects_links_and_special_files) {
+    TempTree t;
+    std::error_code ec;
+    const auto source = t.root / "source";
+    const auto tree = t.root / "tree";
+    REQUIRE(std::filesystem::create_directory(tree, ec));
+    REQUIRE(!ec);
+    { std::ofstream stream(source); stream.put('x'); REQUIRE(stream.good()); }
+    const auto link = tree / "link";
+    errno = 0;
+    const int link_result = symlink(source.c_str(), link.c_str());
+    const int link_errno = errno;
+    struct stat link_status{};
+    errno = 0;
+    const int link_stat_result = lstat(link.c_str(), &link_status);
+    const int link_stat_errno = errno;
+    if (link_result != 0 || link_stat_result != 0 || !S_ISLNK(link_status.st_mode))
+        std::printf("ROMFS_FIXTURE symlink=%d errno=%d lstat=%d errno=%d mode=%o\n", link_result, link_errno,
+                    link_stat_result, link_stat_errno, static_cast<unsigned>(link_status.st_mode));
+    REQUIRE(link_result == 0 && link_stat_result == 0 && S_ISLNK(link_status.st_mode));
+    RomfsImage img;
+    std::string error;
+    CHECK(!img.build(utf8(tree), &error));
+    CHECK(!img.built());
+    REQUIRE(std::filesystem::remove(tree / "link", ec));
+    REQUIRE(!ec);
+    const auto pipe = tree / "pipe";
+    errno = 0;
+    const int pipe_result = mkfifo(pipe.c_str(), 0600);
+    const int pipe_errno = errno;
+    struct stat pipe_status{};
+    const int pipe_stat_result = lstat(pipe.c_str(), &pipe_status);
+    if (pipe_result != 0 || pipe_stat_result != 0 || !S_ISFIFO(pipe_status.st_mode))
+        std::printf("ROMFS_FIXTURE mkfifo=%d errno=%d lstat=%d mode=%o\n", pipe_result, pipe_errno,
+                    pipe_stat_result, static_cast<unsigned>(pipe_status.st_mode));
+    REQUIRE(pipe_result == 0 && pipe_stat_result == 0 && S_ISFIFO(pipe_status.st_mode));
+    CHECK(!img.build(utf8(tree), &error));
+    CHECK(!img.built());
+}
+#endif
+
+NXTEST(romfs_rejects_invalid_root_path) {
+    RomfsImage img;
+    std::string error;
+    CHECK(!img.build("", &error));
+    CHECK(!img.build(std::string("/tmp\0ignored", 12), &error));
+    CHECK(!img.build("/tmp/\xED\xA0\x80", &error));
+}
+#endif
 
 NXTEST(romfs_concurrent_reads_identical) {
     TempTree t;

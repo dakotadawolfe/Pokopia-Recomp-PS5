@@ -30,6 +30,9 @@
 #include <utility>
 namespace nxrt { void svc_memory_reset_for_tests(); void svc_info_reset_for_tests(); }
 namespace nxrt::services { void register_logfault(); void logfault_reset(); void register_am(); void am_reset(); }
+namespace nxrt::services { void register_aoc(); void aoc_reset(); }
+namespace nxrt::services { void register_pctl(); }
+namespace nxrt::services { void register_fs(); void fs_reset(); }
 #endif
 
 NXTEST_GROUP(game_images)
@@ -264,10 +267,24 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
                 else if (message.type == nxrt::hipc::kInvoke2MethodOld || message.type == nxrt::hipc::kInvoke2Method) {
                     if (session->domain) {
                         // IPC wrappers serialize domain inspection with guest requests.
-                        if (!session->dom || message.raw.size() < 32 || message.raw[0] != 1) stop_probe();
-                        const auto object = session->dom->objects.find(read_word(4));
-                        if (object == session->dom->objects.end()) stop_probe();
-                        target = object->second; header = 16;
+                        if (!session->dom || message.raw.size() < 16) {
+                            std::puts("SDK_STOP malformed domain header"); stop_probe();
+                        }
+                        if (message.raw[0] == 2) {
+                            // Domain object close has no SFCI body. Let production
+                            // IPC release it; the trace must not reject SDK teardown.
+                            std::printf("SDK_DOMAIN_CLOSE object=%u\n", read_word(4));
+                        } else {
+                            if (message.raw[0] != 1 || message.raw.size() < 32) {
+                                std::puts("SDK_STOP unsupported domain message"); stop_probe();
+                            }
+                            const auto object = session->dom->objects.find(read_word(4));
+                            if (object == session->dom->objects.end()) {
+                                std::puts("SDK_STOP unknown domain object"); stop_probe();
+                            }
+                            target = object->second;
+                        }
+                        header = 16;
                     }
                     magic = read_word(header);
                     if (magic == 0x49434653) command = read_word(header + 8);
@@ -326,7 +343,7 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
             static_cast<unsigned long long>(c->x[0]), static_cast<unsigned long long>(c->x[1]));
     }
     if constexpr (Number == 0x21 || Number == 0x22) {
-        std::printf("SDK_IPC %s\n", nxrt::ipc::ipc_summary().c_str());
+        if constexpr (!startup_trace) std::printf("SDK_IPC %s\n", nxrt::ipc::ipc_summary().c_str());
         for (const auto& stats : nxrt::ipc::service_stats()) {
             if (stats.requests && (stats.name == "IDisplayController" || stats.name == "IDebugFunctions")) {
                 std::printf("SDK_STOP unbacked endpoint used: %s\n", stats.name.c_str()); stop_probe();
@@ -358,6 +375,8 @@ struct RtldCleanup {
     ~RtldCleanup() {
         if (installed) for (unsigned n = 0; n < rtld_handlers.size(); ++n) nxrt::svc_register(n, rtld_handlers[n]);
         nxrt::kernel::main_thread_release(); nxrt::kernel::kernel_reset(); nxrt::ipc::registry_reset(); nxrt::services::am_reset();
+        nxrt::services::aoc_reset();
+        nxrt::services::fs_reset();
         nxrt::svc_memory_reset_for_tests();
         nxrt::modules_unload_all(); nxrt::nxmodules_clear(); nxrt::hle_clear(); nxrt::hle_restore_current(nullptr);
         nxrt::svc_info_reset_for_tests(); nxrt::svc_memory_reset_for_tests(); mem::shutdown();
@@ -368,7 +387,7 @@ struct RtldDeadline {
     std::mutex mutex; std::condition_variable changed; bool done = false;
     std::thread worker{[this] {
         std::unique_lock lock(mutex);
-        if (!changed.wait_for(lock, std::chrono::seconds(20), [this] { return done; })) {
+        if (!changed.wait_for(lock, std::chrono::seconds(startup_trace ? 60 : 20), [this] { return done; })) {
             std::puts("RTLD_STOP watchdog expired"); std::fflush(stdout);
             if constexpr (startup_trace) stop_probe();
             std::abort();
@@ -395,6 +414,9 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     nxrt::game::set_current(&game);
 #ifdef NXRT_TEST_SDK
     nxrt::services::logfault_reset(); nxrt::services::register_logfault(); nxrt::services::am_reset(); nxrt::services::register_am();
+    nxrt::services::aoc_reset(); nxrt::services::register_aoc();
+    nxrt::services::register_pctl();
+    nxrt::services::fs_reset(); nxrt::services::register_fs();
 #endif
     REQUIRE(mem::init({.heap_reserve = 12ull << 30}));
     nxrt::Module* rtld = nullptr;

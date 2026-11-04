@@ -469,6 +469,25 @@ uint32_t logfault_destination() {
 
 void register_logfault() {
     add("lm", [] { return make_lm(); });
+#ifndef _WIN32
+    // SDK startup opens this writer eagerly. Context persistence is separate
+    // from opening it: do not report a fabricated descriptor or drop a report.
+    // https://switchbrew.org/wiki/Glue_services#ectx:aw
+    add("ectx:aw", [] {
+        return make_iface("nn::err::context::IWriterForApplication", [](ipc::Service& writer) {
+            writer.add_cmd(0, "CreateContextRegistrar", [](ipc::Request&, ipc::Response& rsp) -> uint32_t {
+                rsp.push_object(make_iface("nn::err::context::IContextRegistrar", [](ipc::Service& registrar) {
+                    registrar.add_cmd(0, "Complete", [](ipc::Request&, ipc::Response&) -> uint32_t {
+                        return kernel::kNotImplemented;
+                    });
+                })); return 0;
+            });
+            writer.add_cmd(1, "CommitContext", [](ipc::Request&, ipc::Response&) -> uint32_t {
+                return kernel::kNotImplemented;
+            });
+        });
+    });
+#endif
 #ifdef _WIN32
     add("fatal:u", [] { return make_fatal_u(); });
     add("fatal:p", [] { return make_fatal_p(); });
