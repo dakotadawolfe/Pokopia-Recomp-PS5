@@ -354,9 +354,52 @@ For a payload run, copy the three `fixture_*.elf` files to
 `/data/pokopia-recomp/tests/loader-data`; the native app packages them under
 `tests/data` and reads them from `/app0`. Neither test uses game files.
 
-The combined 118-case native app has been built locally and installed with every
-packaged file readback-verified. Its native retry is pending. Executable SHA-256:
+The combined native app passed **118 cases, zero failures** on 2026-11-04.
+Report `app-platform-1793773230-134.log` records main status zero; ShadowMountPlus
+recorded process 134 closing without a game-error event, and the user confirmed
+a clean return home. Executable SHA-256:
 `812ca41be16544a750f31211c3995ffe3a411f5c7bb18259604f5aa598edbba3`.
+
+## Decrypted game-image check
+
+The optional next check maps the real `main`, `sdk`, `subsdk0` and `rtld` NSOs at
+their compiled addresses. It does not register or execute the lifted game code,
+call game constructors, apply host relocations, access RomFS or touch saves.
+The normal 118-case suite still needs no game files. To build the additional
+case, supply the dump as the third argument:
+
+```sh
+bash ps5/build_runtime_app.sh /path/to/native-tools /path/to/private/app-build /path/to/decrypted/Pokopia
+```
+
+`prepare_game_image_test.py` first validates the supported file hashes, then
+independently decompresses all 12 NSO segments with Python LZ4 and verifies their
+NSO SHA-256 hashes. It writes expectations and `game-image-inputs.json` under
+`private-game-images` in the build directory. Keep these generated files private.
+The executable checks the input header, length and CRC32; mapped segment CRC32s
+are compared with the independent Python/zlib results, and all BSS bytes must be
+zero. This tests the runtime's decompressor and mapping, not a second use of the
+same implementation as an oracle.
+
+Stage only the four named files from that manifest under
+`/data/pokopia-recomp/game/exefs`, verify each copy against its recorded SHA-256,
+and retain a `source-manifest.json` in the parent directory. Preserve any existing
+unidentified input folder. Original PC files remain unchanged. The app package
+does not bundle these files; its manifest records `requires_game_images: true`
+and `expected_cases: 119`. Omitting the third build argument restores the normal
+suite. The standalone diagnostic target is `ps5_game_image_tests`.
+
+On 2026-11-04 the standalone diagnostic passed and exited: all four modules were
+mapped together, their 82,247,680-byte combined image span was checked, segment
+permissions were applied, and unloading released the mappings. It also reserved
+the stack, kernel and 12 GiB heap address ranges; that heap remained physically
+uncommitted. Report: `game-images-1793773633-137.log`; payload SHA-256:
+`f9e96ab8fab1828e7696199b7f43d9bf36295d24f421f524160eced563a30221`.
+
+The combined 119-case native build is installed and readback-verified; its native
+retry is pending. Executable SHA-256:
+`77b1829775910efbd86412f78dbae9d8add60fe1d28b0c8a70d4321193ed48c2`.
+Game execution, native guest threads/services, graphics and gameplay remain ahead.
 
 ## Repository ownership
 

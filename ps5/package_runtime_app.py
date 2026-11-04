@@ -74,7 +74,8 @@ def main():
         raise ValueError("Unexpected test app identity")
     with (args.build / "fself-inspection.txt").open("w") as output:
         subprocess.run([str(args.tool), "self", "--inspect", "--file", str(app / "eboot.bin")], stdout=output, check=True)
-    manifest = {"title_id": TITLE, "expected_cases": 118, "context": "native-app",
+    suite = json.loads((args.build / "runtime-suite.json").read_text())
+    manifest = {"title_id": TITLE, **suite, "context": "native-app",
                 "gameplay_verified": False,
                 "toolchain_revision": subprocess.check_output(["git", "-C", str(args.template), "rev-parse", "HEAD"], text=True).strip(),
                 "files": {name: {"bytes": (app / name).stat().st_size, "sha256": sha(app / name)} for name in sorted(expected)}}

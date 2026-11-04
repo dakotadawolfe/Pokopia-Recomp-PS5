@@ -44,6 +44,8 @@ int main() {
     constexpr const char* prefix = "thread-runtime";
 #elif defined(NXRT_TEST_LOADER)
     constexpr const char* prefix = "loader-runtime";
+#elif defined(NXRT_TEST_GAME_IMAGES)
+    constexpr const char* prefix = "game-images";
 #else
     constexpr const char* prefix = "platform";
 #endif

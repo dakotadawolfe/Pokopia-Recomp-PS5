@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-template=$(realpath "${1:?Usage: build_runtime_app.sh BOILERPLATE_CHECKOUT BUILD_DIRECTORY}")
+template=$(realpath "${1:?Usage: build_runtime_app.sh BOILERPLATE_CHECKOUT BUILD_DIRECTORY [DECRYPTED_INPUT]}")
 output=$(realpath -m "${2:?Build directory required}")
+game_input=${3:-}
 : "${NX_PYTHON:?Set NX_PYTHON to the host interpreter with recomp requirements}"
 revision=dd44bbdc75437332ed22e3ba95126733419ef25a
 [[ $(git -C "$template" rev-parse HEAD) == "$revision" ]] || {
@@ -25,7 +26,8 @@ tool="$template/build/host/ps5-native-tool"
 bash "$template/tools/build-host-tools.sh"
 cmake -S "$root/ps5/tests" -B "$output" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/toolchain/prospero.cmake" \
-    -DNX_PYTHON="$NX_PYTHON" -DPKP_BUILD_NATIVE_APP=ON -DPKP_NATIVE_APP_ROOT="$template"
+    -DNX_PYTHON="$NX_PYTHON" -DPKP_BUILD_NATIVE_APP=ON -DPKP_NATIVE_APP_ROOT="$template" \
+    -DPKP_GAME_IMAGE_INPUT="$game_input"
 cmake --build "$output" --target ps5_runtime_app --parallel "$jobs"
 "$tool" link --in "$output/ps5_runtime_app" --out "$output/eboot.elf" \
     --stub-dir "$PS5_PAYLOAD_SDK/target/lib" --module-sdk 0x02000009 \
