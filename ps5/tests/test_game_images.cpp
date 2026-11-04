@@ -294,6 +294,13 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
             std::puts("GAME_STOP heap request exceeds diagnostic threshold; no allocation attempted");
             stop_probe();
         }
+        const uint64_t committed = mem::heap_committed();
+        const uint64_t growth = b > committed ? b - committed : 0;
+        constexpr uint64_t host_headroom = uint64_t{1} << 30;
+        if (growth && (limit <= 0 || rc || bytes < host_headroom || growth > bytes - host_headroom)) {
+            std::puts("GAME_STOP native free-memory check cannot retain 1 GiB host headroom; no allocation attempted");
+            stop_probe();
+        }
     }
 #endif
     if constexpr (startup_trace) {
@@ -406,7 +413,23 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
         }
     }
 #endif
-    rtld_handlers[Number](c);
+#ifdef NXRT_GAME_STARTUP_NATIVE
+    if constexpr (Number == 0x01) {
+        const auto started = std::chrono::steady_clock::now();
+        rtld_handlers[Number](c);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        std::printf("GAME_HEAP_RESULT requested=%llu rc=%llx base=%llx committed=%llu elapsed_ms=%lld\n",
+            static_cast<unsigned long long>(b), static_cast<unsigned long long>(c->x[0]),
+            static_cast<unsigned long long>(c->x[1]), static_cast<unsigned long long>(mem::heap_committed()),
+            static_cast<long long>(elapsed));
+        if (fsync(fileno(stdout)) || c->x[0]) {
+            std::puts("GAME_STOP heap allocation failed or result checkpoint could not be persisted");
+            stop_probe();
+        }
+    } else
+#endif
+    { rtld_handlers[Number](c); }
     if constexpr (game_startup_trace) {
         if (nxrt::svc_unknown_total()) {
             std::printf("GAME_STOP unsupported system call=%02zx fn=%llx\n", Number, static_cast<unsigned long long>(c->fn));

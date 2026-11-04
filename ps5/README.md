@@ -1203,9 +1203,13 @@ The next native startup candidate compiles identical generated sources with
 functions. The compact native app now reaches `main` and exits normally, but its
 first run failed the saved-folder asset check before mapping game modules. The
 next build applies the working graphics app's PS5 directory bindings and uses
-descriptor metadata checks for RomFS. All 17 host RomFS cases pass; this corrected
-build's native result and game performance remain unverified. Early entry
-checkpoints distinguish native initialization from later guest execution.
+descriptor metadata checks for RomFS. All 17 host RomFS cases pass. The native
+run now indexes the selected USB assets, registers all four modules and reaches
+the real main-module startup. It exits at the deliberate 512 MiB heap guard;
+the game's 10.36 GiB request has not yet been allocated. The next diagnostic
+admits that request only after checking native free memory with 1 GiB of host
+headroom, and records the actual allocation result. Game performance and
+rendering remain unverified.
 
 `console_probe.py` automates bounded diagnostic runs and report collection using
 an explicitly hashed FTP helper. It records ownership of helpers, temporary

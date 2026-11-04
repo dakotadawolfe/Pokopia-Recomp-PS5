@@ -52,6 +52,7 @@ def main():
                 "directory_platform_sha256": platform_sha[0],
                 "bootstrap_report": "/data/pokopia-recomp/tests/native-bootstrap.log",
                 "guest_heap_stop_threshold_bytes": int(threshold[0]) << 20,
+                "native_heap_minimum_headroom_bytes": 1 << 30,
                 "input_stamp": json.loads((args.build / "private-startup/startup-inputs.json").read_text()),
                 "libc_sha256": digest(args.template / "runtime/libc.prx"),
                 "native_elf_sha256": digest(args.build / "startup.elf"),

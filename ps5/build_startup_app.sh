@@ -9,6 +9,10 @@ modules=$(realpath "${4:?Verified production module build required}")
 platform=$(realpath "${5:?Reviewed native directory platform archive required}")
 platform_sha=${6:-2d1e0e5eed29ad9a8557e2f33439e7c7a3c930f39b6795d393d3bc79f2df9c30}
 [[ $platform_sha =~ ^[0-9a-f]{64}$ ]] || exit 2
+heap_limit_mib=${STARTUP_HEAP_LIMIT_MIB:-512}
+[[ $heap_limit_mib =~ ^[1-9][0-9]{0,4}$ && $heap_limit_mib -le 12288 ]] || {
+    echo 'STARTUP_HEAP_LIMIT_MIB must be 1..12288' >&2; exit 2;
+}
 optimization=$(sed -n 's/^NX_POSIX_OPT:STRING=//p' "$modules/CMakeCache.txt")
 optimization=${optimization:--O1}
 [[ $optimization =~ ^-O[0123sz]$ ]] || exit 2
@@ -33,7 +37,7 @@ cmake -S "$root/ps5/tests" -B "$output" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DNX_PYTHON="$NX_PYTHON" -DNX_POSIX_OPT="$optimization" -DPKP_NATIVE_APP_ROOT="$template" -DPKP_BUILD_NATIVE_APP=OFF \
     -DPKP_GAME_IMAGE_INPUT="$input" -DPKP_TEST_RTLD=ON -DPKP_TEST_SDK=ON \
     -DPKP_SDK_MODULE_BUILD="$modules" -DPKP_TEST_GAME_STARTUP=ON -DPKP_BUILD_NATIVE_GAME_STARTUP=ON \
-    -DPKP_NATIVE_STARTUP_HEAP_LIMIT_MIB=512 \
+    -DPKP_NATIVE_STARTUP_HEAP_LIMIT_MIB="$heap_limit_mib" \
     -DPKP_NATIVE_PLATFORM_ARCHIVE="$platform" -DPKP_NATIVE_PLATFORM_SHA="$platform_sha"
 cmake --build "$output" --target ps5_game_startup_app --parallel "$jobs"
 "$tool" link --in "$output/ps5_game_startup_app" --out "$output/startup.elf" \

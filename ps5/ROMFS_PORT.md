@@ -14,6 +14,13 @@ bindings used by the graphics app; ordinary system `opendir` imports do not cove
 that environment. See [native startup integration](GAME_STARTUP_TRACE.md#native-directory-integration)
 for the current build and console evidence.
 
+Native report `game-native-1793820127-95.log` now confirms successful metadata
+construction from the user's selected USB folder: 44 files, eight directories,
+7,246,055,230 bytes of file extents. The files include `.listing` sidecars.
+The trace then reaches the game's main-module startup and stops at
+its diagnostic heap limit. This validates native discovery/indexing, not full
+asset reads by the game or gameplay.
+
 `fs_ps5.cpp` registers `fsp-srv`. `SetCurrentProcess` binds a session to the real
 runtime process. Commands 200 and 205 (index zero only) return read-only
 `IStorage` objects backed by that RomFS. Reads check argument length, signed

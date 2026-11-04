@@ -119,7 +119,9 @@ over 512 MiB, logging the requested size, native direct-memory limit and largest
 free extent. The game still sees its original resource limit; the diagnostic
 stops instead of shrinking its request or returning false success. The build
 script explicitly sets this threshold, and the manifest records it. This
-guard is not evidence that a smaller heap fixes the restart.
+guard is not evidence that a smaller heap fixes the restart. The build script
+accepts `STARTUP_HEAP_LIMIT_MIB` (1..12288), defaulting to 512; larger values are
+for an explicit native allocation diagnostic after collecting the memory query.
 
 The guarded, checkpoint-flushing candidate (803,998,515 bytes, SHA-256
 `e33af8cdc76fddf6021d5953b0f761fde5dbb563d5e855c855fd7c307c420b79`)
@@ -220,12 +222,61 @@ logs the actual file count and data size. It does not copy assets.
 The corrected native executable builds and passes packaging checks:
 **257,726,275 bytes**, SHA-256
 `acf7624d4e7de35dd686c9735e0d14560f21d51b765dfec052176bb421fc7846`.
-It is installed and fully readback-verified, recorded in
+It was installed and fully readback-verified, recorded in
 `work/ps5/game-native-directory-install.json`; the owned transfer helper and
-temporary payload slot are removed. Its console result is pending. It retains
-the 512 MiB diagnostic heap stop;
-the game will still stop before its large heap request until native allocation
-behavior is investigated separately.
+temporary payload slot were removed.
+
+Report `game-native-1793820127-95.log` confirms the directory correction in the
+native app. The saved USB selection produces RomFS metadata for 44 files in
+eight directories, totaling 7,246,055,230 bytes of file extents. This includes
+the USB tree's `.listing` sidecars; indexing does not read every asset byte.
+All four NSOs pass content checks, register all 200,586 functions and bind the
+real imports. The loader and SDK proceed into the main module's
+`nninitStartup`. No unsupported system call is reached before the heap guard.
+
+The game requests **11,123,294,208 bytes** (10.36 GiB). The native direct-memory
+query reports a 12 GiB limit and a **12,672,614,400-byte** largest free extent at
+that point. The 512 MiB guard stops before allocation, writes `GAME_TRACE_END`
+and requests shell exit with status 2. The user observes Home. This is a
+deliberate diagnostic stop, not an allocation failure or a passing game launch.
+
+### Full heap allocation diagnostic
+
+The next build uses `STARTUP_HEAP_LIMIT_MIB=11264` to admit the observed request.
+Before growth, it also requires a successful native query and a largest free
+extent large enough for the additional committed bytes plus 1 GiB of host
+headroom. This is a conservative snapshot check, not an allocation guarantee
+or a measured GPU budget. The guest's reported resource limit is unchanged.
+
+`GAME_HEAP_RESULT` records the actual system-call result, committed bytes and
+elapsed time, and flushes the checkpoint. Allocation failure stops the trace
+instead of continuing into the game's fatal path. Success continues through
+the existing 60-second/10,000-system-call bounds and unsupported-dependency
+guards. The current heap still eagerly allocates and zeros its backing; no
+demand-paging or working-set improvement is claimed.
+
+Build with the same five arguments documented above, adding the environment
+setting:
+
+```sh
+STARTUP_HEAP_LIMIT_MIB=11264 NX_PYTHON=/path/to/python-with-recomp-requirements \
+  bash ps5/build_startup_app.sh /path/to/pinned-native-tools \
+  /path/to/native-compact /path/to/decrypted-game /path/to/modules-compact \
+  /path/to/reviewed-platform-sdk/target/lib/libps5platform.a
+```
+
+The allocation candidate builds and passes native packaging checks:
+**257,726,771 bytes**, SHA-256
+`d125e44440af29a2974c4ed5ea21f381f15a1bf62d7ecc97cf2e32251e4d35be`.
+Its manifest records the heap threshold and host headroom. Console allocation
+and subsequent game startup remain unverified. No renderer or game menu is
+included in this diagnostic.
+
+Installation and full SHA-256 readback are recorded in
+`work/ps5/game-native-heap-install.json`. The first transfer attempt found its
+helper gone after console services restarted, before any executable upload;
+the replacement completed after reconnecting and verifying the prior hash.
+Both owned helper sessions are closed and their temporary payload slots removed.
 
 ## Evidence as of 2026-11-04
 
