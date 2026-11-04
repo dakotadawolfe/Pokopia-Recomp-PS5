@@ -62,6 +62,8 @@ int main() {
     constexpr const char* prefix = "fs-runtime";
 #elif defined(NXRT_TEST_EH)
     constexpr const char* prefix = "eh-runtime";
+#elif defined(NXRT_TEST_IPC)
+    constexpr const char* prefix = "ipc-runtime";
 #elif defined(NXRT_TEST_TIME)
     constexpr const char* prefix = "time-runtime";
 #elif defined(NXRT_TEST_LOADER)

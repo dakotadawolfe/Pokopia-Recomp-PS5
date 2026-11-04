@@ -8,6 +8,7 @@
 #include "nxrt/log.h"
 #include "nxrt/services_api.h"
 #include "nxrt/am_ps5.h"
+#include "trace_ipc_reply.h"
 #include <array>
 #include <algorithm>
 #include <cstring>
@@ -273,6 +274,120 @@ struct AmFixture : Fixture {
         auto r = reply(); return word(r.raw, 8) == 0 && r.move.size() == 1 ? r.move[0] : 0;
     }
 };
+hipc::Message remote_boot(uint64_t aruid) {
+    auto m = request(4, true); m.copy = {k::kPseudoCurrentProcess};
+    for (uint64_t value : {aruid, uint64_t{0x8000000000000005ull}, uint64_t{0}, uint64_t{0}, uint64_t{0}, uint64_t{0}})
+        push(m.raw, value);
+    return m;
+}
+uint32_t tipc_result(AmFixture& f, uint32_t handle, const hipc::Message& request) {
+    if (f.send(handle, request)) return UINT32_MAX;
+    const auto reply = nxrt::diagnostic::decode_reply(reinterpret_cast<const uint32_t*>(f.base), 64, true);
+    return reply.valid ? reply.result : UINT32_MAX;
+}
+}
+NXTEST(graphics_supervisor_returns_an_independent_tipc_session_from_a_domain) {
+    AmFixture f; const auto self = f.child(f.open(), 1); REQUIRE(self);
+    auto convert = request(0); convert.type = hipc::kInvoke2ManagerMethodOld;
+    REQUIRE(f.send(self, convert) == k::kOk);
+    auto inner = request(2000); auto m = request(0); m.raw.clear();
+    push(m.raw, uint8_t{1}); push(m.raw, uint8_t{0}); push(m.raw, uint16_t{16});
+    push(m.raw, uint32_t{1}); push(m.raw, uint64_t{0});
+    m.raw.insert(m.raw.end(), inner.raw.begin(), inner.raw.end());
+    REQUIRE(f.send(self, m) == k::kOk);
+    const auto reply = f.reply(); CHECK_EQ(word(reply.raw, 0), 0u); CHECK_EQ(word(reply.raw, 24), 0u);
+    REQUIRE(reply.move.size() == 1); CHECK(reply.copy.empty());
+    const auto gsv = k::handle_as<ipc::KSession>(reply.move[0]); REQUIRE(gsv);
+    CHECK(!gsv->domain); CHECK_EQ(gsv->svc->name(), std::string("GraphicsSupervisor"));
+    k::handle_close(self);
+    CHECK_EQ(tipc_result(f, reply.move[0], remote_boot(k::current_process()->id)), k::kOk);
+}
+NXTEST(graphics_remote_boot_retains_process_ownership_and_context_state) {
+    AmFixture f; const auto self = f.child(f.open(), 1); const auto gsv = f.child(self, 2000); REQUIRE(gsv);
+    const auto count = k::handle_count(); const auto boot = remote_boot(k::current_process()->id);
+    CHECK_EQ(tipc_result(f, gsv, boot), k::kOk); CHECK_EQ(k::handle_count(), count);
+    auto bind = request(11, true); bind.copy = {k::kPseudoCurrentProcess};
+    CHECK_EQ(tipc_result(f, gsv, bind), k::kOk); CHECK_EQ(k::handle_count(), count);
+    CHECK_EQ(tipc_result(f, gsv, request(101, true)), k::kOk);
+    CHECK_EQ(tipc_result(f, gsv, boot), k::kInvalidState);
+    CHECK_EQ(tipc_result(f, gsv, bind), k::kInvalidState);
+    CHECK_EQ(tipc_result(f, gsv, request(101, true)), k::kInvalidState);
+}
+NXTEST(graphics_boot_rejects_unsupported_versions_usage_and_reserved_fields) {
+    AmFixture f; const auto gsv = f.child(f.child(f.open(), 1), 2000); REQUIRE(gsv);
+    const auto boot = remote_boot(k::current_process()->id);
+    for (const auto offset : {8u, 16u, 24u, 32u, 40u}) {
+        auto m = boot; const uint64_t bad = 9; std::memcpy(m.raw.data() + offset, &bad, 8);
+        CHECK_EQ(tipc_result(f, gsv, m), offset == 8 || offset == 40 ? k::kNotImplemented : k::kInvalidCombination);
+        const auto reply = f.reply(true); CHECK(reply.copy.empty() && reply.move.empty()); CHECK_EQ(reply.raw.size(), size_t{4});
+    }
+    auto wrong_id = remote_boot(k::current_process()->id + 1);
+    CHECK_EQ(tipc_result(f, gsv, wrong_id), k::kInvalidCombination);
+    CHECK_EQ(tipc_result(f, gsv, boot), k::kOk); // Rejections did not partially initialize the session.
+}
+NXTEST(graphics_boot_requires_one_copy_of_the_owning_process_and_exact_layout) {
+    AmFixture f; const auto gsv = f.child(f.child(f.open(), 1), 2000); REQUIRE(gsv);
+    const auto boot = remote_boot(k::current_process()->id);
+    for (size_t size : {0u, 40u, 44u, 52u}) {
+        auto m = boot; m.raw.resize(size); CHECK_EQ(tipc_result(f, gsv, m), k::kInvalidSize);
+    }
+    auto m = boot; m.copy.clear(); CHECK_EQ(tipc_result(f, gsv, m), k::kInvalidHandle);
+    m = boot; m.copy.push_back(k::kPseudoCurrentProcess); CHECK_EQ(tipc_result(f, gsv, m), k::kInvalidHandle);
+    const auto other = k::handle_add(std::make_shared<k::KProcess>());
+    m = boot; m.copy = {other}; CHECK_EQ(tipc_result(f, gsv, m), k::kInvalidHandle); k::handle_close(other);
+    m = boot; m.send.push_back({f.base + 0x1000, 8, 0}); CHECK_EQ(tipc_result(f, gsv, m), k::kInvalidCombination);
+    CHECK_EQ(tipc_result(f, gsv, boot), k::kOk);
+}
+NXTEST(graphics_context_requires_boot_and_binding_and_refuses_cmif) {
+    AmFixture f; const auto gsv = f.child(f.child(f.open(), 1), 2000); REQUIRE(gsv);
+    auto bind = request(11, true); bind.copy = {k::kPseudoCurrentProcess};
+    CHECK_EQ(tipc_result(f, gsv, bind), k::kInvalidState);
+    CHECK_EQ(tipc_result(f, gsv, request(101, true)), k::kInvalidState);
+    REQUIRE(f.send(gsv, request(101)) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), k::kInvalidCombination);
+    CHECK_EQ(tipc_result(f, gsv, remote_boot(k::current_process()->id)), k::kOk);
+    CHECK_EQ(tipc_result(f, gsv, request(101, true)), k::kInvalidState);
+    auto malformed = bind; push(malformed.raw, 1u); CHECK_EQ(tipc_result(f, gsv, malformed), k::kInvalidSize);
+    CHECK_EQ(tipc_result(f, gsv, bind), k::kOk);
+    malformed = request(101, true); malformed.copy = {k::kPseudoCurrentProcess};
+    CHECK_EQ(tipc_result(f, gsv, malformed), k::kInvalidHandle);
+    CHECK_EQ(tipc_result(f, gsv, request(101, true)), k::kOk);
+}
+NXTEST(graphics_sessions_share_application_state_and_reset_keeps_old_handles_valid) {
+    AmFixture f; const auto self = f.child(f.open(), 1);
+    const auto first = f.child(self, 2000), second = f.child(self, 2000); REQUIRE(first && second);
+    CHECK_EQ(tipc_result(f, first, remote_boot(k::current_process()->id)), k::kOk);
+    k::handle_close(first); auto bind = request(11, true); bind.copy = {k::kPseudoCurrentProcess};
+    CHECK_EQ(tipc_result(f, second, bind), k::kOk);
+    nxrt::services::am_reset();
+    const auto fresh = f.child(f.child(f.open(), 1), 2000); REQUIRE(fresh);
+    CHECK_EQ(tipc_result(f, second, request(101, true)), k::kOk);
+    CHECK_EQ(tipc_result(f, fresh, request(101, true)), k::kInvalidState);
+    CHECK_EQ(tipc_result(f, fresh, remote_boot(k::current_process()->id)), k::kOk);
+}
+NXTEST(graphics_rendering_and_transfer_memory_requests_never_return_fake_success) {
+    AmFixture f; const auto gsv = f.child(f.child(f.open(), 1), 2000); REQUIRE(gsv);
+    for (const auto cmd : {1u, 115u, 201u, 202u, 301u, 497u, 1402u}) {
+        CHECK_EQ(tipc_result(f, gsv, request(cmd, true)), k::kNotImplemented);
+        const auto reply = f.reply(true); CHECK(reply.copy.empty() && reply.move.empty()); CHECK_EQ(reply.raw.size(), size_t{4});
+    }
+}
+NXTEST(trace_reply_decoder_checks_tipc_cmif_and_domain_results_without_mutating_them) {
+    AmFixture f; const auto h = f.connect("test");
+    for (bool tipc : {false, true}) {
+        REQUIRE(f.send(h, request(8, tipc)) == k::kOk);
+        std::array<uint32_t, 64> before; std::memcpy(before.data(), reinterpret_cast<void*>(f.base), sizeof before);
+        const auto decoded = nxrt::diagnostic::decode_reply(before.data(), before.size(), tipc);
+        CHECK(decoded.valid); CHECK_EQ(decoded.result, k::kInvalidState);
+        CHECK(!std::memcmp(before.data(), reinterpret_cast<void*>(f.base), sizeof before));
+        before[1] = 0; CHECK(!nxrt::diagnostic::decode_reply(before.data(), before.size(), tipc).valid);
+    }
+    auto convert = request(0); convert.type = hipc::kInvoke2ManagerMethodOld; REQUIRE(f.send(h, convert) == k::kOk);
+    auto inner = request(8); auto m = request(0); m.raw.clear();
+    push(m.raw, uint8_t{1}); push(m.raw, uint8_t{0}); push(m.raw, uint16_t{16});
+    push(m.raw, uint32_t{1}); push(m.raw, uint64_t{0}); m.raw.insert(m.raw.end(), inner.raw.begin(), inner.raw.end());
+    REQUIRE(f.send(h, m) == k::kOk);
+    const auto decoded = nxrt::diagnostic::decode_reply(reinterpret_cast<const uint32_t*>(f.base), 64, false, 16);
+    CHECK(decoded.valid); CHECK_EQ(decoded.result, k::kInvalidState);
 }
 NXTEST(applet_proxy_requires_current_process_and_supports_cmif_and_tipc) {
     AmFixture f; REQUIRE(f.am);

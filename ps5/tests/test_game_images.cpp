@@ -5,6 +5,7 @@
 #include "nxrt/memory.h"
 #include "nxrt/module.h"
 #include "nxrt/dispatch.h"
+#include "trace_ipc_reply.h"
 #ifdef NXRT_GAME_EH
 #include "nxrt/eh.h"
 #include "nxrt/hooks.h"
@@ -396,15 +397,18 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
             std::printf("RTLD_DEBUG %.*s\n", static_cast<int>(n), reinterpret_cast<const char*>(a));
     }
 #ifdef NXRT_TEST_SDK
-    bool check_cmif_result = false;
+    bool check_ipc_result = false, tipc_request = false;
     size_t cmif_header = 0;
     std::string ipc_target;
     uint32_t ipc_command = UINT32_MAX;
-    if constexpr (Number == 0x21) {
-        const auto session = nxrt::kernel::handle_as<nxrt::ipc::KSession>(a);
-        if (session && mem::SubpageMap::allows(c->tpidrro, 0x100, 3)) {
+    const uint64_t message_address = Number == 0x22 ? a : c->tpidrro;
+    const uint64_t message_bytes = Number == 0x22 ? b : 0x100;
+    if constexpr (Number == 0x21 || Number == 0x22) {
+        const auto session = nxrt::kernel::handle_as<nxrt::ipc::KSession>(Number == 0x22 ? d : a);
+        if (session && message_bytes >= 8 && message_bytes <= 0x1000 &&
+            mem::SubpageMap::allows(message_address, message_bytes, 3)) {
             nxrt::hipc::Message message;
-            if (nxrt::hipc::parse(reinterpret_cast<const uint32_t*>(c->tpidrro), 64, message)) {
+            if (nxrt::hipc::parse(reinterpret_cast<const uint32_t*>(message_address), message_bytes / 4, message)) {
                 auto target = session->svc;
                 size_t header = 0;
                 uint32_t command = UINT32_MAX, magic = 0;
@@ -413,7 +417,8 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
                     if (off + 4 <= message.raw.size()) std::memcpy(&value, message.raw.data() + off, 4);
                     return value;
                 };
-                if (nxrt::hipc::is_tipc(message.type)) command = message.type - nxrt::hipc::kTipcBase;
+                tipc_request = nxrt::hipc::is_tipc(message.type);
+                if (tipc_request) command = message.type - nxrt::hipc::kTipcBase;
                 else if (message.type == nxrt::hipc::kInvoke2MethodOld || message.type == nxrt::hipc::kInvoke2Method) {
                     if (session->domain) {
                         // IPC wrappers serialize domain inspection with guest requests.
@@ -439,10 +444,13 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
                     magic = read_word(header);
                     if (magic == 0x49434653) command = read_word(header + 8);
                 }
-                if (target && command != UINT32_MAX)
-                    std::printf("SDK_REQUEST service=%s command=%u\n", target->name().c_str(), command);
-                if (target && magic == 0x49434653) {
-                    check_cmif_result = true; cmif_header = header;
+                if (target && command != UINT32_MAX) {
+                    std::printf("SDK_REQUEST service=%s command=%u protocol=%s raw_bytes=%zu copies=%zu moves=%zu\n",
+                        target->name().c_str(), command, tipc_request ? "TIPC" : "CMIF",
+                        message.raw.size(), message.copy.size(), message.move.size());
+                }
+                if (target && (tipc_request || magic == 0x49434653)) {
+                    check_ipc_result = true; cmif_header = header;
                     ipc_target = target->name(); ipc_command = command;
                 }
             }
@@ -498,16 +506,13 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
         std::printf("SDK_MAP completed dst=%llx src=%llx size=%llx\n", static_cast<unsigned long long>(a),
             static_cast<unsigned long long>(b), static_cast<unsigned long long>(d));
     }
-    if (check_cmif_result && c->x[0] == 0) {
-        nxrt::hipc::Message reply;
-        if (!nxrt::hipc::parse(reinterpret_cast<const uint32_t*>(c->tpidrro), 64, reply) ||
-            reply.raw.size() < cmif_header + 12) stop_probe();
-        uint32_t magic = 0, result = 0;
-        std::memcpy(&magic, reply.raw.data() + cmif_header, 4);
-        std::memcpy(&result, reply.raw.data() + cmif_header + 8, 4);
-        if (magic != 0x4f434653 || result) {
-            std::printf("SDK_STOP service=%s command=%u result=%08x reply_magic=%08x\n",
-                ipc_target.c_str(), ipc_command, result, magic); stop_probe();
+    if (check_ipc_result && c->x[0] == 0) {
+        const auto reply = nxrt::diagnostic::decode_reply(reinterpret_cast<const uint32_t*>(message_address),
+            message_bytes / 4, tipc_request, cmif_header);
+        if (!reply.valid || reply.result) {
+            std::printf("SDK_STOP service=%s command=%u protocol=%s result=%08x reply_magic=%08x malformed=%u\n",
+                ipc_target.c_str(), ipc_command, tipc_request ? "TIPC" : "CMIF", reply.result, reply.magic,
+                !reply.valid); stop_probe();
         }
     }
     if constexpr (Number == 0x1f) {

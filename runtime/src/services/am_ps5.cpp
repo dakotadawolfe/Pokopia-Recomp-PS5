@@ -2,6 +2,7 @@
 // PS5 application bootstrap. Command layouts follow am.cpp and libnx applet.c.
 // Services are added as their state and backing are ported; unknown calls fail.
 #include "services_internal.h"
+#include "gsv_ps5.h"
 #include "nxrt/am_ps5.h"
 #include "nxrt/kernel.h"
 #include "nxrt/subpage.h"
@@ -22,6 +23,7 @@ constexpr uint32_t focus_changed = 15, operation_changed = 30, performance_chang
 struct State {
     std::mutex mu;
     std::shared_ptr<kernel::KProcess> process = kernel::current_process();
+    Ptr graphics;
     std::shared_ptr<kernel::EventState> message_event = std::make_shared<kernel::EventState>();
     std::shared_ptr<kernel::EventState> suspended_event = std::make_shared<kernel::EventState>();
     std::shared_ptr<kernel::EventState> gpu_error_event = std::make_shared<kernel::EventState>();
@@ -83,6 +85,15 @@ Ptr common(const std::shared_ptr<State>& state) {
 }
 Ptr self(const std::shared_ptr<State>& state) {
     return make_iface("ISelfController", [state](Service& s) {
+        s.add_cmd(2000, "GetGraphicsSupervisor", [state](Request& req, Response& rsp) -> uint32_t {
+            if (!req.in_copy.empty() || !req.in_move.empty()) return kernel::kInvalidHandle;
+            std::lock_guard lock(state->mu);
+            if (!state->graphics) state->graphics = make_graphics_supervisor(state->process);
+            const auto handle = ipc::create_session_handle(state->graphics);
+            if (!handle) return kernel::kOutOfHandles;
+            // This is a TIPC session even when ISelfController is a domain object.
+            rsp.out_move.push_back(handle); return 0;
+        });
         s.add_cmd(1, "LockExit", [state](Request&, Response&) -> uint32_t {
             std::lock_guard lock(state->mu); state->exit_locked = true; return 0;
         });

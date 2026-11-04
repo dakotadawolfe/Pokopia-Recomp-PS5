@@ -9,7 +9,7 @@ add_library(nxrt_ps5_svc STATIC
     "${svc_root}/src/kernel/svc_ipc.cpp" "${svc_root}/src/ipc/hipc.cpp"
     "${svc_root}/src/ipc/ipc.cpp" "${svc_root}/src/ipc/sm.cpp" "${svc_root}/src/ipc/stub.cpp"
     "${svc_root}/src/services/registry.cpp" "${svc_root}/src/services/logfault.cpp"
-    "${svc_root}/src/services/am_ps5.cpp" "${svc_root}/src/services/aoc_ps5.cpp"
+    "${svc_root}/src/services/am_ps5.cpp" "${svc_root}/src/services/gsv_ps5.cpp" "${svc_root}/src/services/aoc_ps5.cpp"
     "${svc_root}/src/services/pctl_ps5.cpp" "${svc_root}/src/services/fs_ps5.cpp"
     "${svc_root}/src/services/time_ps5.cpp")
 target_compile_definitions(nxrt_ps5_svc PRIVATE

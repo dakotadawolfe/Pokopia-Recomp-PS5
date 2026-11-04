@@ -1210,13 +1210,17 @@ allocation diagnostic successfully allocated the game's **10.36 GiB in 714 ms**
 and returned from `nninitStartup`. SDK initialization then reached the old
 guest catch-frame guard and exited normally to Home.
 
-The next build integrates the guest exception runtime, with five verified SDK
+The next build integrated the guest exception runtime, with five verified SDK
 entry hooks and directly linked SDK jump-context functions. Its 38 exception
-cases pass in the console payload process and run again before game startup in
-the native app. The candidate retains the 11 GiB diagnostic heap threshold and
-1 GiB pre-allocation headroom check. Native exception execution and subsequent
-startup await the next manual test; game performance and rendering remain
-unverified. See [guest exception integration](GAME_STARTUP_TRACE.md#guest-exception-runtime).
+cases pass in both the console payload process and the native app. SDK static
+initialization now completes; the game then requests the graphics supervisor.
+The current candidate adds its process/session bootstrap and TIPC error checks.
+All 43 IPC/service cases pass on the console. GPU, syncpoint, native-memory and
+display operations remain unported; a session handle is not rendering proof.
+The candidate retains the 11 GiB diagnostic heap threshold and 1 GiB
+pre-allocation headroom check. Its next native run is pending. See
+[guest exception integration](GAME_STARTUP_TRACE.md#guest-exception-runtime) and
+[graphics supervisor bootstrap](GRAPHICS_SUPERVISOR.md).
 
 `console_probe.py` automates bounded diagnostic runs and report collection using
 an explicitly hashed FTP helper. It records ownership of helpers, temporary

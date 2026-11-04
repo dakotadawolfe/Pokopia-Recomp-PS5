@@ -29,6 +29,12 @@ target_include_directories(ps5_sync_tests PRIVATE "${root}/runtime/include" "${r
 target_compile_options(ps5_sync_tests PRIVATE -Wall -Wextra -Werror -mcx16)
 target_link_libraries(ps5_sync_tests PRIVATE nxrt_ps5_core subpage_fixture)
 if(PS5)
+    add_executable(ps5_ipc_tests sync_main.cpp test_svc_ipc_ps5.cpp "${root}/ps5/app/thread_exit.cpp")
+    target_include_directories(ps5_ipc_tests PRIVATE "${root}/runtime/tests")
+    target_compile_definitions(ps5_ipc_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_IPC=1)
+    target_compile_options(ps5_ipc_tests PRIVATE -Wall -Wextra -Werror -mcx16)
+    target_link_libraries(ps5_ipc_tests PRIVATE nxrt_ps5_svc)
+    target_link_options(ps5_ipc_tests PRIVATE "LINKER:--wrap,pthread_create")
     add_executable(ps5_eh_tests sync_main.cpp "${root}/runtime/tests/test_eh.cpp"
         "${root}/runtime/tests/test_eh_abi3.cpp" "${root}/runtime/tests/test_eh_typeinfo.cpp"
         "${root}/ps5/app/thread_exit.cpp")

@@ -334,11 +334,21 @@ The earlier bounded loader and SDK-only targets also still compile and link.
 The native exception candidate is **257,918,099 bytes**, SHA-256
 `deef7e362f893145d27955599c5218acbb49899478d7528c5c6e97fa709ecc2c`.
 It retains the 11 GiB diagnostic threshold and 1 GiB pre-allocation headroom
-check. Native exception execution and progress beyond the old constructor guard
-await the next manual launch. The renderer and game menu remain absent.
+check. The renderer and game menu remain absent.
 Installation and complete SHA-256 readback are recorded in
 `work/ps5/game-native-exceptions-install.json`. The previous full-heap build is
 retained as the installer backup. No game assets were transferred.
+
+Report `game-native-1793821562-97.log` subsequently confirms all 38 exception
+cases pass in the native application. The game completes SDK static
+initialization (`SDK_CALLBACK returned=1`) and reaches `ISelfController` command
+2000, the graphics-supervisor acquisition. Game exception counters remain zero.
+The missing service command causes the deliberate stop and normal shell exit.
+
+The next candidate implements the process-owned graphics-session bootstrap and
+validates TIPC response errors as well as CMIF errors. Its 43 IPC/service cases
+pass on the console. See [graphics supervisor bootstrap](GRAPHICS_SUPERVISOR.md)
+for the supported commands, source evidence and remaining graphics boundaries.
 
 ## Evidence as of 2026-11-04
 
