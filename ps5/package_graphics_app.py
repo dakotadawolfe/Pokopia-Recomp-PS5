@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the standalone GPU display diagnostic; it contains no game assets."""
+"""Package the native graphics or opt-in private game startup build, without assets."""
 import argparse
 import hashlib
 import json
@@ -23,9 +23,23 @@ def main():
         parser.add_argument(name, type=Path)
     args = parser.parse_args()
     provenance = json.loads((args.build / "graphics-provenance.json").read_text())
+    game_mode = provenance.get("diagnostic_mode") == "game_renderer_startup"
     memory_mode = provenance.get("diagnostic_mode") == "guest_gpu_memory"
-    runtime_mode = provenance.get("diagnostic_mode") == "runtime_scene"
-    nvn_mode = provenance.get("nvn_replay_test", False)
+    runtime_mode = game_mode or provenance.get("diagnostic_mode") == "runtime_scene"
+    nvn_mode = provenance.get("nvn_backend", provenance.get("nvn_replay_test", False))
+    private_provenance = {}
+    if game_mode:
+        from package_startup_app import check_nonlocal
+        check_nonlocal(args.build / "ps5_graphics_app", host_aliases=True)
+        if not nvn_mode or not provenance.get("game_code") or not provenance.get("guest_exception_runtime"):
+            raise ValueError("Game startup requires the real NVN and exception runtimes")
+        private_provenance = {
+            "input_stamp": json.loads((args.build / "private-startup/startup-inputs.json").read_text()),
+            "nonlocal_jump_object_sha256": sha(args.build / "nxrt_ps5_nonlocal.o"),
+            "exception_selftest_cases": 38,
+            "host_nonlocal_selftest_cases": 1,
+            "host_nonlocal_aliases_verified": True,
+        }
     app = args.build / "package" / TITLE
     copies = {
         "sce_module/libc.prx": args.template / "runtime/libc.prx",
@@ -70,13 +84,19 @@ def main():
     diagnostic = "native folder picker and runtime shader/texture scene" if runtime_mode else "guest memory import, coherence and display" if memory_mode else "GPU quadrant clear/present/readback"
     if nvn_mode:
         diagnostic = "native picker, shader scene, NVN buffer/texture replay and ASTC/BC7 conversion"
+    if game_mode:
+        diagnostic = "native picker and recompiled game startup with the PS5 NVN renderer"
     manifest = {"title_id": TITLE, "context": "native-app", "diagnostic": diagnostic,
-                "console_verified": False, **provenance,
+                "console_verified": False, **provenance, **private_provenance,
+                "native_elf_sha256": sha(args.build / "eboot.elf"),
                 "files": {name: {"bytes": (app / name).stat().st_size, "sha256": sha(app / name)}
                           for name in sorted(expected)}}
     (args.build / "graphics-app-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Native graphics diagnostic package: {app}")
-    if runtime_mode:
+    if game_mode:
+        print("Runs verified private game modules against the native NVN renderer with a bounded startup deadline.")
+        print("Uses the console folder picker; no game assets are copied. Gameplay is not yet verified.")
+    elif runtime_mode:
         print("Selects and saves an existing console or USB game-folder location without copying assets.")
         print("Runs the real runtime Device/Renderer with animated textured quads and verified texture/mip samples.")
         if nvn_mode:

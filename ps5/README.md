@@ -45,8 +45,15 @@ remain separate in the existing USB or internal-storage folder chosen by the
 user; they are not embedded in the ELF or automatically moved. The current
 loader requires the decrypted ExeFS images for their original mapped contents
 and layout as well as the separately compiled code. Earlier diagnostics use
-the already-staged `/data/pokopia-recomp/game/exefs/` images. Connecting the
-selected folder to full game startup and asset loading remains separate work.
+the already-staged `/data/pokopia-recomp/game/exefs/` images. Current bounded
+startup reads the images and RomFS from the user's selected folder; complete
+in-game asset loading remains unverified.
+
+The bounded [game/renderer integration build](GAME_RENDERER_STARTUP.md) now
+connects the selected folder and compiled modules to the native NVN renderer.
+It has not yet established a working game menu or gameplay. The earlier native
+renderer batch, including all 49,981 texture-conversion checks, passed on PS5;
+see [the recorded console evidence](NVN_RUNTIME_PORT.md#recorded-validation).
 
 After installation, playing should not require the PC, keys or firmware.
 USB and internal-storage gameplay both require runtime validation. Save data and
@@ -1226,7 +1233,8 @@ initialization and received the graphics-supervisor handle, then reached its
 
 The renderer batch now links all 40 NVN backend units and bundles GPU transfer,
 render-target/presentation readback and real ASTC/BC7 checks in one native app.
-Host conversion passes 49,981 checks; the full native batch remains unverified.
+Both host and native conversion pass 49,981 checks. The complete native replay
+batch also passes; game startup with this renderer is still unverified.
 See [native NVN integration](NVN_RUNTIME_PORT.md) for exact scope and limitations.
 
 `console_probe.py` automates bounded diagnostic runs and report collection using

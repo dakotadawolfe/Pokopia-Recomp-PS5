@@ -8,6 +8,9 @@
 #include <exception>
 #include <algorithm>
 #include <cstring>
+#ifdef NXRT_GAME_RENDER_NATIVE
+#include "../gfx/game_renderer.h"
+#endif
 #if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP) || defined(NXRT_GAME_STARTUP_NATIVE)
 #include "../app/heap.h"
 extern "C" int64_t sceKernelGetDirectMemorySize();
@@ -96,16 +99,31 @@ int main() {
         std::printf("Cannot set test directory: errno=%d\n", errno);
         return 7;
     }
+#ifdef NXRT_GAME_RENDER_NATIVE
+    if ((mkdir("/data/pokopia-recomp/graphics-cache", 0777) != 0 && errno != EEXIST) ||
+        setenv("MESA_SHADER_CACHE_DIR", "/data/pokopia-recomp/graphics-cache", 1) != 0) {
+        std::printf("Cannot prepare graphics cache: errno=%d\n", errno);
+        return 7;
+    }
+#endif
 #endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 #ifdef NXRT_TEST_NATIVE_APP
     std::puts("context=native-app title=PPSA98731");
 #endif
 #ifdef NXRT_GAME_STARTUP_NATIVE
+#ifdef NXRT_GAME_RENDER_NATIVE
+    std::puts("context=native-app title=PPSA98732 diagnostic=game-renderer-startup renderer=true");
+#else
     std::puts("context=native-app title=PPSA98732 diagnostic=full-game-startup renderer=false");
+#endif
     if (fsync(fileno(stdout))) return 8;
 #endif
+#ifdef NXRT_GAME_RENDER_NATIVE
+    nxrt::log_init({.path = "", .level = nxrt::LogLevel::Info, .stderr_all = true});
+#else
     nxrt::log_init({.path = "", .level = nxrt::LogLevel::Error, .to_stderr = false});
+#endif
 #if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP) || defined(NXRT_GAME_STARTUP_NATIVE)
     const int64_t limit = sceKernelGetDirectMemorySize();
     int64_t available_at = -1;
@@ -143,11 +161,16 @@ int main() {
         nxrt::sync::reset_all();
     }
 #if defined(NXRT_TEST_NATIVE_APP) || defined(NXRT_TEST_APP_HEAP) || defined(NXRT_GAME_STARTUP_NATIVE)
+#ifndef NXRT_GAME_RENDER_NATIVE
     const auto heap = nxrt::app_heap::stats();
     std::printf("APP_HEAP spaces=%zu backing_bytes=%zu live_blocks=%zu live_bytes=%zu\n",
                 heap.spaces, heap.backing_bytes, heap.live_blocks, heap.live_bytes);
     std::printf("APP_HEAP last_failure operation=%u rc=%08x bytes=%zu\n",
                 heap.failed_operation, static_cast<unsigned>(heap.platform_error), heap.failed_bytes);
+#endif
+#endif
+#ifdef NXRT_GAME_RENDER_NATIVE
+    nxrt::ps5_graphics::shutdown();
 #endif
     std::printf("%zu cases; %d failures\n", nxtest::cases().size(), nxtest::failures);
     nxrt::log_shutdown();

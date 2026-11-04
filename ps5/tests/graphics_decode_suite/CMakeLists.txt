@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+cmake_minimum_required(VERSION 3.25)
+project(pokopia_graphics_decode LANGUAGES CXX)
+enable_testing()
+add_executable(ps5_graphics_decode_tests ../test_sdk_graphics_decode.cpp)
+target_compile_features(ps5_graphics_decode_tests PRIVATE cxx_std_20)
+if(NOT MSVC)
+    target_compile_options(ps5_graphics_decode_tests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME graphics_decode COMMAND ps5_graphics_decode_tests)

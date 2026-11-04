@@ -21,19 +21,31 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def check_nonlocal(path):
+def check_nonlocal(path, host_aliases=False):
     with path.open("rb") as stream:
         elf = ELFFile(stream)
         table = elf.get_section_by_name(".symtab")
         if table is None:
             raise ValueError("Unconverted startup executable needs symbols for verification")
-        for name in ("nxrt_ps5_setjmp", "nxrt_ps5_longjmp"):
-            entries = table.get_symbol_by_name(name) or []
-            if len(entries) != 1 or not isinstance(entries[0]["st_shndx"], int) or entries[0]["st_size"] < 16:
-                raise ValueError(f"Startup is missing the compiled {name} implementation")
+        # Keep only the required records from the large recompiled symbol table.
+        # get_symbol_by_name builds a second index of every game symbol.
+        names = ("nxrt_ps5_setjmp", "nxrt_ps5_longjmp", "__wrap_setjmp", "__wrap_longjmp")
+        records = {name: [] for name in names}
         for symbol in table.iter_symbols():
+            if symbol.name in records:
+                records[symbol.name].append(symbol)
             if symbol.name in ("setjmp", "longjmp", "_setjmp", "_longjmp") and symbol["st_shndx"] == "SHN_UNDEF":
                 raise ValueError(f"Startup imports an unqualified jump implementation: {symbol.name}")
+        for name in ("nxrt_ps5_setjmp", "nxrt_ps5_longjmp"):
+            entries = records[name]
+            if len(entries) != 1 or not isinstance(entries[0]["st_shndx"], int) or entries[0]["st_size"] < 16:
+                raise ValueError(f"Startup is missing the compiled {name} implementation")
+            if host_aliases:
+                alias = name.replace("nxrt_ps5_", "__wrap_")
+                targets = records[alias]
+                if (len(targets) != 1 or targets[0]["st_shndx"] == "SHN_UNDEF" or
+                        targets[0]["st_value"] != entries[0]["st_value"]):
+                    raise ValueError(f"Shader compiler jump {alias} does not resolve to {name}")
 
 
 def main():

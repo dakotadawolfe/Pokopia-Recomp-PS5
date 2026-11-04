@@ -6,9 +6,11 @@ memory tracking, HLE dispatch and renderer diagnostics. The link uses
 `WHOLE_ARCHIVE`, so unused API objects cannot hide unresolved dependencies.
 No successful backend substitutes or game assets are included.
 
-The bundled native run is **not console-verified yet**. It does not execute
-Pokopia code, load its shaders or show its menu. The previously verified native
-shader scene and the separate game startup diagnostic remain distinct results.
+The bundled native run **passed on PS5** in report
+`graphics-runtime-1793825809-91.log`. It does not execute Pokopia code, load its
+shaders or show its menu. Game startup remains a separate evidence boundary;
+the next [combined integration build](GAME_RENDERER_STARTUP.md) connects these
+components without claiming a game frame yet.
 
 ## One bundled launch
 
@@ -108,8 +110,8 @@ This is not a passing full memory suite.
 Standalone console conversion attempts did not complete. The second report,
 `textures-runtime-1793823293-126.log`, stops after decoder initialization.
 The explicit worker stack and finer stage logging were added afterward; the
-cause and fix remain unconfirmed. No subsequent texture test is represented
-as a console pass.
+cause remains unconfirmed. The subsequent bundled run below qualifies the
+corrected worker path; these earlier standalone attempts remain failed runs.
 
 The game startup report `game-native-1793822433-91.log` completed SDK static
 initialization and received success for `ISelfController:2000`, then reached
@@ -121,7 +123,25 @@ game shader/texture coverage before gameplay or performance can be assessed.
 The native bundle is packaged as `PPSA98732` with executable SHA-256
 `85957050c073fa5be72555134763c86035cee69c852d6f5bc42607c2e59869af`.
 The adjacent generated manifest records driver/source hashes and license files;
-`console_verified` remains false until this entire batch runs successfully.
+`console_verified` in the build manifest describes its pre-installation state.
+Report `graphics-runtime-1793825809-91.log` subsequently confirms the complete
+batch passes on the PS5 with this exact executable:
+
+- The selected existing USB update folder remains in place; no assets copied.
+- The real Device/Renderer presents 300/300 scene frames with zero errors.
+- All 544 backend entries install, all 476 PFN resolutions succeed, and the
+  ABI audit has zero mismatches.
+- Buffer transfers have zero mismatches among 12,288 words. The private GPU
+  import leaves the original guest mapping protection unchanged.
+- All three target clears/presents have zero mismatches among 33,177,600 RGBA
+  components per frame. Four submissions complete on the GPU timeline.
+- All 49,981 ASTC/BC7 checks pass on the native conversion worker.
+- `NVN_REPLAY_RESULT` and `RUNTIME_SCENE_RESULT` both report PASS; main returns
+  zero and requests normal shell exit. The user's purple screen is the final
+  color check, not evidence of a game frame.
+
+The log warns that no game shader cache is open. These synthetic fixtures use
+their own shaders; this pass does not qualify game startup or gameplay.
 
 Installation is recorded in `work/ps5/nvn-bundle-install.json`: the stopped,
 owned title's new executable and native libc were fully hash-verified, and
@@ -129,9 +149,8 @@ owned title's new executable and native libc were fully hash-verified, and
 licenses. The previous executable remains in a local rollback backup.
 No automatic app launch was performed.
 
-The standalone failed conversion process (PID 126) remained listed even after
-Payload Manager acknowledged termination. Its owned payload slot is retained
-until the process is confirmed gone. The transfer helper (PID 122) was closed,
-its port was verified closed, and the other three owned payload slots were
-removed. `renderer-batch-console.json` retains the unresolved ownership so the
-next session can finish cleanup after a console restart.
+After the user's restart, the failed standalone conversion process (PID 126)
+and transfer helper (PID 122) were confirmed absent. All remaining owned slots
+were removed and `renderer-batch-console.json` is closed. The report collection
+helper (PID 93) was also closed, its slot removed, and FTP port 2121 verified
+closed; `nvn-result-console.json` records that cleanup.

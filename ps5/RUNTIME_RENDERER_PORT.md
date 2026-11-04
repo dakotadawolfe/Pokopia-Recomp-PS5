@@ -1,6 +1,6 @@
 # Native runtime renderer integration
 
-2026-11-04. The actual runtime `gfx::Device`, `gfx::Renderer`, VMA allocator, static volk loader, Tegra tiling library, and shader/texture `TestScene` compile and link into a native PS5 app. The native shader/texture scene subsequently passed on the console. The newer full NVN link and bundled replay/conversion checks are documented in [NVN_RUNTIME_PORT.md](NVN_RUNTIME_PORT.md); their native execution remains pending, and no game frame is verified.
+2026-11-04. The actual runtime `gfx::Device`, `gfx::Renderer`, VMA allocator, static volk loader, Tegra tiling library, and shader/texture `TestScene` compile and link into a native PS5 app. The native shader/texture scene and the later full NVN replay/conversion batch both passed on console. [NVN_RUNTIME_PORT.md](NVN_RUNTIME_PORT.md) records the evidence; no game frame is verified.
 
 The dedicated `PKP_GRAPHICS_RUNTIME_TEST=ON` mode uses the partitioned driver described in [GRAPHICS_PORT.md](GRAPHICS_PORT.md). Keep `PKP_GRAPHICS_MEMORY_TEST=OFF` and use a separate build directory. The build arguments and explicit archive hashes otherwise match the combined memory probe. `gfx_runtime.cmake` fetches the same pinned Vulkan-Headers/volk SDK 1.4.363.0 and VMA 3.4.0 sources as the desktop project, verifies all three archive hashes, and packages their licenses. No SDL, desktop launcher, ImGui or temporal-upscaler DLL is linked.
 

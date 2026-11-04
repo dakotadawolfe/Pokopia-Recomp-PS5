@@ -5,6 +5,9 @@
 #include "nxrt/memory.h"
 #include "nxrt/module.h"
 #include "nxrt/dispatch.h"
+#ifdef NXRT_GAME_RENDER_NATIVE
+#include "../gfx/game_renderer.h"
+#endif
 #include "trace_ipc_reply.h"
 #ifdef NXRT_GAME_EH
 #include "nxrt/eh.h"
@@ -176,6 +179,9 @@ constexpr bool startup_trace = true;
 constexpr bool startup_trace = false;
 #endif
 [[noreturn]] void stop_probe() {
+#ifdef NXRT_GAME_RENDER_NATIVE
+    nxrt::ps5_graphics::report();
+#endif
 #ifdef NXRT_GAME_EH
     const auto eh = nxrt::eh::stats();
     std::printf("GAME_EH raised=%llu caught=%llu cleanups=%llu uncaught=%llu landings=%llu\n",
@@ -550,6 +556,11 @@ struct RtldCleanup {
     const nxrt::game::Info* previous = nxrt::game::current();
     bool installed = false;
     ~RtldCleanup() {
+#ifdef NXRT_GAME_RENDER_NATIVE
+        // This destructor runs only for failures before guest dispatch. The
+        // running diagnostic exits its process without freeing live GPU views.
+        nxrt::ps5_graphics::shutdown();
+#endif
 #ifdef NXRT_GAME_EH
         nxrt::hooks_clear(); nxrt::eh::set_typeinfo_vtables({});
         nxrt::eh::set_terminate_handler(nullptr); nxrt::eh::set_abi_autodetect();
@@ -569,7 +580,12 @@ struct RtldDeadline {
     std::mutex mutex; std::condition_variable changed; bool done = false;
     std::thread worker{[this] {
         std::unique_lock lock(mutex);
-        if (!changed.wait_for(lock, std::chrono::seconds(startup_trace ? 60 : 20), [this] { return done; })) {
+#ifdef NXRT_GAME_RENDER_NATIVE
+        constexpr int seconds = 180;
+#else
+        constexpr int seconds = startup_trace ? 60 : 20;
+#endif
+        if (!changed.wait_for(lock, std::chrono::seconds(seconds), [this] { return done; })) {
             std::puts("RTLD_STOP watchdog expired"); std::fflush(stdout);
             if constexpr (startup_trace) stop_probe();
             std::abort();
@@ -599,6 +615,9 @@ NXTEST(decrypted_sdk_maps_its_stack_and_runs_a_worker_to_its_parent_mutex) {
 NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
 #endif
     std::string exefs = "/data/pokopia-recomp/game/exefs";
+#ifdef NXRT_GAME_RENDER_NATIVE
+    REQUIRE(nxrt::ps5_graphics::open_picker());
+#endif
 #ifdef NXRT_GAME_STARTUP_NATIVE
     std::string selected, location_error;
     const bool remembered = nxrt::app::load_picker_location("/data/pokopia-recomp/game-location.txt", selected, location_error);
@@ -683,6 +702,9 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     }
 #endif
     REQUIRE(rtld); REQUIRE(nxrt::module_protect_all());
+#ifdef NXRT_GAME_RENDER_NATIVE
+    REQUIRE(nxrt::ps5_graphics::install_game_bridge());
+#endif
 #ifndef NXRT_GAME_STARTUP_TRACE
     REQUIRE(nxrt::module_register_nxmodule(rtld, &nxmod_rtld) == static_cast<size_t>(nxmod_rtld.nfns));
     unsigned imports = 0, start_imports = 0;
