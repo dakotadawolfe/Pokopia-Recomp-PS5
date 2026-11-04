@@ -22,6 +22,7 @@ public:
     // join(), not this observation, establishes full host-thread termination.
     bool wait_for(std::chrono::nanoseconds timeout);
     bool join(); // Also cancels an unstarted gate. False for a self-join.
+    bool join_for(std::chrono::milliseconds timeout); // Includes TLS cleanup; a timeout retains ownership.
     bool is_current() const;
     size_t stack_size() const;
     std::exception_ptr failure() const; // Inspect after wait_for or join.

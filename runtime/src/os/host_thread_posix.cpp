@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "nxrt/host_thread.h"
+#include <algorithm>
 #include <cerrno>
 #include <atomic>
 #include <condition_variable>
 #include <cstdlib>
 #include <mutex>
 #include <pthread.h>
+#ifdef __FreeBSD__
+#include <pthread_np.h>
+#endif
+#include <thread>
 #include <utility>
 #ifdef __GLIBC__
 #include <bits/cxxabi_forced.h>
@@ -111,6 +116,40 @@ bool Thread::join() {
 }
 bool Thread::is_current() const {
     return !state_->joined.load(std::memory_order_acquire) && pthread_equal(pthread_self(), state_->worker) != 0;
+}
+bool Thread::join_for(std::chrono::milliseconds timeout) {
+    if (state_->joined.load(std::memory_order_acquire)) return true;
+    if (is_current()) { errno = EDEADLK; return false; }
+    using Clock = std::chrono::steady_clock;
+    const auto now = Clock::now();
+    const auto maximum = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::time_point::max() - now);
+    const auto until = timeout >= maximum ? Clock::time_point::max() : now + std::max(timeout, std::chrono::milliseconds::zero());
+    std::unique_lock join_lock(state_->join_mutex, std::defer_lock);
+    while (!join_lock.try_lock()) {
+        if (Clock::now() >= until) { errno = ETIMEDOUT; return false; }
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    if (state_->joined) return true;
+    {
+        std::lock_guard lock(state_->mutex);
+        if (!state_->started) state_->cancel_gate = true;
+        state_->changed.notify_all();
+    }
+    // The FreeBSD/POSIX extension takes an absolute CLOCK_REALTIME deadline.
+    // Use short bounded slices and the monotonic deadline for retries.
+    for (;;) {
+        auto left = until - Clock::now();
+        auto span = std::min(std::max(std::chrono::duration_cast<std::chrono::nanoseconds>(left),
+            std::chrono::nanoseconds::zero()), std::chrono::nanoseconds(100000000));
+        timespec absolute{};
+        if (clock_gettime(CLOCK_REALTIME, &absolute)) return false;
+        absolute.tv_nsec += span.count();
+        absolute.tv_sec += absolute.tv_nsec / 1000000000;
+        absolute.tv_nsec %= 1000000000;
+        const int error = pthread_timedjoin_np(state_->worker, nullptr, &absolute);
+        if (!error) { state_->joined = true; return true; }
+        if (error != ETIMEDOUT || Clock::now() >= until) { errno = error; return false; }
+    }
 }
 size_t Thread::stack_size() const { return state_->stack_size; }
 std::exception_ptr Thread::failure() const {

@@ -5,7 +5,7 @@
 // Logic ported from SuperMarioWonderRecomp runtime/src/kernel.cpp (MIT, Copyright (c) 2026 BelmanteGu; see THIRD_PARTY_NOTICES.md),
 // reworked: one SRWLOCK kernel lock, a condition variable per thread, waiters woken in priority order, a pending
 // CancelSynchronization is remembered until the next wait.
-#include <windows.h>
+#include <limits>
 
 #include <algorithm>
 #include <cstdio>
@@ -23,7 +23,11 @@
 namespace nxrt::kernel {
 namespace detail {
 
+#ifdef _WIN32
 SRWLOCK g_k = SRWLOCK_INIT;
+#else
+std::mutex g_k;
+#endif
 
 namespace {
 std::vector<KThread*> g_sync_waiters;    // in WaitSynchronization: woken by any change of waitable state
@@ -31,10 +35,7 @@ std::vector<KThread*> g_mutex_waiters;   // waiting for a guest mutex word to be
 std::vector<KThread*> g_cv_waiters;      // waiting on a process-wide key
 std::vector<KThread*> g_addr_waiters;    // WaitForAddress
 
-struct Guard {
-    Guard() { AcquireSRWLockExclusive(&g_k); }
-    ~Guard() { ReleaseSRWLockExclusive(&g_k); }
-};
+using Guard = KernelGuard;
 
 void remove_from(std::vector<KThread*>& v, KThread* t) { v.erase(std::remove(v.begin(), v.end(), t), v.end()); }
 
@@ -74,26 +75,32 @@ void unlock_mutex(uint64_t addr) {
     wake_thread(*next);
 }
 
-// Monotonic nanoseconds from the 19.2 MHz tick (1 tick = 625/12 ns).
+// Convert the registered platform clock, including the 31.25 MHz Switch 2 tick.
 int64_t now_ns() {
     const uint64_t t = system_tick();
-    return static_cast<int64_t>(t / 12 * 625 + t % 12 * 625 / 12);
+    const uint64_t hz = tick_hz();
+    return static_cast<int64_t>((t / hz) * 1000000000 + (t % hz) * 1000000000 / hz);
+}
+
+int64_t deadline(int64_t timeout_ns) {
+    const int64_t now = now_ns();
+    return timeout_ns > std::numeric_limits<int64_t>::max() - now
+        ? std::numeric_limits<int64_t>::max() : now + timeout_ns;
 }
 
 }  // namespace
 
 // Waits (g_k held, released while sleeping) until t.wake or the timeout; false on timeout.
 bool block_on_wake(KThread& t, int64_t timeout_ns) {
-    const int64_t until = timeout_ns < 0 ? 0 : now_ns() + timeout_ns;
+    const int64_t until = timeout_ns < 0 ? 0 : deadline(timeout_ns);
     while (!t.wake) {
-        DWORD ms = INFINITE;
+        int64_t remaining = -1;
         if (timeout_ns >= 0) {
             int64_t rem = until - now_ns();
             if (rem <= 0) return false;
-            int64_t m = (rem + 999999) / 1000000;
-            ms = static_cast<DWORD>(m > 0x7FFFFFFE ? 0x7FFFFFFE : m);
+            remaining = rem;
         }
-        SleepConditionVariableSRW(thread_cv(t), &g_k, ms, 0);
+        wait_thread(t, remaining);
     }
     return true;
 }
@@ -101,13 +108,13 @@ bool block_on_wake(KThread& t, int64_t timeout_ns) {
 void wake_thread(KThread& t, uint32_t result) {
     t.wake = true;
     t.wait_result = result;
-    WakeConditionVariable(thread_cv(t));
+    notify_thread(t);
 }
 
 void thread_mark_exited(KThread& t) {
     Guard g;
     t.exited = true;
-    for (KThread* w : g_sync_waiters) WakeConditionVariable(thread_cv(*w));
+    for (KThread* w : g_sync_waiters) notify_thread(*w);
 }
 
 void sync_reset() {
@@ -124,8 +131,8 @@ using namespace detail;
 
 std::string sync_wait_report() {
     // Called from the watchdog thread while the process may be frozen: never block on the kernel lock.
-    if (!TryAcquireSRWLockExclusive(&g_k)) return "kernel sync report: the kernel lock is held (a thread is inside a sync call)\n";
-    struct Release { ~Release() { ReleaseSRWLockExclusive(&g_k); } } release;
+    if (!try_lock_kernel()) return "kernel sync report: the kernel lock is held (a thread is inside a sync call)\n";
+    struct Release { ~Release() { unlock_kernel(); } } release;
     std::string out = "kernel sync waiters:\n";
     char b[256];
     auto list = [&](const char* kind, const std::vector<KThread*>& v, uint64_t KThread::*field) {
@@ -261,16 +268,17 @@ uint32_t signal_to_address(uint64_t addr, uint32_t type, int32_t value, int32_t 
         case 0:  // Signal
             break;
         case 1:  // SignalAndIncrementIfEqual
-            if (!cas32(addr, static_cast<uint32_t>(value), static_cast<uint32_t>(value + 1))) return kInvalidState;
+            if (!cas32(addr, static_cast<uint32_t>(value), static_cast<uint32_t>(value) + 1u)) return kInvalidState;
             break;
         case 2: {  // SignalAndModifyByWaitingCountIfEqual
-            int32_t updated;
+            uint32_t updated;
+            const uint32_t bits = static_cast<uint32_t>(value);
             if (count <= 0)
-                updated = waiters ? value - 2 : value + 1;
+                updated = waiters ? bits - 2u : bits + 1u;
             else if (waiters)
-                updated = waiters <= count ? value - 1 : value;
+                updated = waiters <= count ? bits - 1u : bits;
             else
-                updated = value + 1;
+                updated = bits + 1u;
             if (!cas32(addr, static_cast<uint32_t>(value), static_cast<uint32_t>(updated))) return kInvalidState;
             break;
         }
@@ -302,7 +310,7 @@ uint32_t wait_synchronization(const uint32_t* handles, int32_t count, int64_t ti
             if (objs[i]->signaled()) return i;
         return -1;
     };
-    const int64_t until = timeout_ns <= 0 ? 0 : now_ns() + timeout_ns;
+    const int64_t until = timeout_ns <= 0 ? 0 : deadline(timeout_ns);
     Guard g;
     KThread& me = self();
     g_sync_waiters.push_back(&me);
@@ -322,14 +330,13 @@ uint32_t wait_synchronization(const uint32_t* handles, int32_t count, int64_t ti
             return kOk;
         }
         if (timeout_ns == 0) return kTimedOut;
-        DWORD ms = INFINITE;
+        int64_t remaining = -1;
         if (timeout_ns > 0) {
             int64_t rem = until - now_ns();
             if (rem <= 0) return kTimedOut;
-            int64_t m = (rem + 999999) / 1000000;
-            ms = static_cast<DWORD>(m > 0x7FFFFFFE ? 0x7FFFFFFE : m);
+            remaining = rem;
         }
-        SleepConditionVariableSRW(thread_cv(me), &g_k, ms, 0);
+        wait_thread(me, remaining);
     }
 }
 
@@ -338,13 +345,13 @@ uint32_t cancel_synchronization(uint32_t thread_handle) {
     if (!t) return kInvalidHandle;
     Guard g;
     t->cancel_sync = true;
-    if (std::find(g_sync_waiters.begin(), g_sync_waiters.end(), t.get()) != g_sync_waiters.end()) WakeConditionVariable(thread_cv(*t));
+    if (std::find(g_sync_waiters.begin(), g_sync_waiters.end(), t.get()) != g_sync_waiters.end()) notify_thread(*t);
     return kOk;
 }
 
 void notify_waitable_changed() {
     Guard g;
-    for (KThread* t : g_sync_waiters) WakeConditionVariable(thread_cv(*t));
+    for (KThread* t : g_sync_waiters) notify_thread(*t);
 }
 
 // ---- gauges (include/nxrt/gauge.h): wait-queue lengths ----
@@ -358,9 +365,9 @@ struct GaugeHook {
 
 // Length of one wait queue under the kernel lock. The sampler never waits for the kernel lock: -1 while a thread holds it.
 int64_t queue_len(const std::vector<KThread*>& v) {
-    if (!TryAcquireSRWLockExclusive(&g_k)) return -1;
+    if (!try_lock_kernel()) return -1;
     const int64_t n = static_cast<int64_t>(v.size());
-    ReleaseSRWLockExclusive(&g_k);
+    unlock_kernel();
     return n;
 }
 

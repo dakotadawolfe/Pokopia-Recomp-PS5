@@ -20,6 +20,16 @@ struct Local {
     ~Local() { tls_destroyed.fetch_add(value); }
 };
 thread_local Local local;
+struct BlockingTls {
+    std::atomic<bool>* entered = nullptr;
+    std::atomic<bool>* release = nullptr;
+    ~BlockingTls() {
+        if (!entered) return;
+        *entered = true;
+        while (!release->load()) std::this_thread::sleep_for(1ms);
+    }
+};
+thread_local BlockingTls blocking_tls;
 extern "C" const NxModule nxmod_subpage_fixture;
 }
 
@@ -116,6 +126,28 @@ NXTEST(host_worker_self_join_is_rejected_without_deadlock) {
     CHECK(thread->start());
     CHECK(thread->join());
     CHECK(context.rejected);
+}
+
+NXTEST(host_worker_timed_join_includes_tls_destructors_and_can_retry) {
+    std::array<std::atomic<bool>, 2> state{};
+    auto thread = Thread::create(+[](void* raw) {
+        auto& state = *static_cast<std::array<std::atomic<bool>, 2>*>(raw);
+        blocking_tls.entered = &state[0]; blocking_tls.release = &state[1];
+    }, &state);
+    REQUIRE(thread);
+    struct Release { std::atomic<bool>& flag; ~Release() { flag = true; } } release{state[1]};
+    CHECK(thread->start());
+    const auto limit = std::chrono::steady_clock::now() + 5s;
+    while (!state[0] && std::chrono::steady_clock::now() < limit) std::this_thread::yield();
+    CHECK(state[0]);
+    CHECK(thread->wait_for(0ns)); // Entry cleanup is done; TLS destruction is blocked.
+    const auto begin = std::chrono::steady_clock::now();
+    CHECK(!thread->join_for(10ms));
+    CHECK_EQ(errno, ETIMEDOUT);
+    CHECK(std::chrono::steady_clock::now() - begin < 1s);
+    state[1] = true;
+    CHECK(thread->join_for(5s));
+    CHECK(thread->join_for(0ms));
 }
 NXTEST(host_worker_validates_entry_and_stack) {
     CHECK(!Thread::create(nullptr, nullptr));

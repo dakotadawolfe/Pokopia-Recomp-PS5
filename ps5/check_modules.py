@@ -30,7 +30,7 @@ def ar(ar_tool, *args):
 
 def inspect(build, ar_tool):
     result = {"abi": ABI, "archives": {}, "modules": {}}
-    for name in [*("pkp_" + name for name in MODULES), "nxrt_ps5_core", "nxrt_ps5_platform"]:
+    for name in [*("pkp_" + name for name in MODULES), "nxrt_ps5_core", "nxrt_ps5_platform", "nxrt_ps5_kernel"]:
         archive = build / ("lib" + name + ".a")
         members = ar(ar_tool, "t", archive).decode().splitlines()
         if not members:

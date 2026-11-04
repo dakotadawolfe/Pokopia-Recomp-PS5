@@ -48,6 +48,8 @@ int main() {
     constexpr const char* prefix = "memory-api";
 #elif defined(NXRT_TEST_THREAD_EXIT)
     constexpr const char* prefix = "thread-runtime";
+#elif defined(NXRT_TEST_KERNEL)
+    constexpr const char* prefix = "kernel-runtime";
 #elif defined(NXRT_TEST_LOADER)
     constexpr const char* prefix = "loader-runtime";
 #elif defined(NXRT_TEST_GAME_IMAGES)

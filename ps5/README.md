@@ -126,21 +126,22 @@ not execute the game or establish complete function discovery.
 
 The component target produces `libpkp_main.a`, `libpkp_sdk.a`,
 `libpkp_subsdk0.a`, `libpkp_rtld.a`, `libnxrt_ps5_platform.a` and
-`libnxrt_ps5_core.a`. These are link inputs, not a finished game executable.
+`libnxrt_ps5_core.a` and `libnxrt_ps5_kernel.a`. These are link inputs, not a finished game executable.
 The platform library contains synchronization, logging, configuration, the
 gauge registry and the PS5 guest-memory API, including sparse fixed regions,
 shared heaps and aliases.
 The core library contains dispatch, the generated-code ABI,
-module registration, hooks, NSO loading and linking. Guest threads, services,
-guest exceptions, write tracking and rendering still need platform integration
+module registration, hooks, NSO loading and linking. The kernel component adds
+guest thread objects, handles, TLS, timing and synchronization queues. SVC
+dispatch, services, guest exceptions, write tracking and rendering need integration
 before the core can run the game.
 The optional Windows frame recorder and stack sampler are disabled in the PS5
 core build; ordinary HLE call logging remains available.
 
-The platform check runs 67 cases on the host: 17 upstream cases for mutexes,
+The platform check runs 68 cases on the host: 17 upstream cases for mutexes,
 condition variables, events and semaphores, 23 upstream cases for logging and
-configuration, eight memory cases, nine subpage cases and ten host-worker cases. The PS5 build runs
-76 cases, including two additional direct-memory ownership/release tests and
+configuration, eight memory cases, nine subpage cases and eleven host-worker cases. The PS5 build runs
+77 cases, including two additional direct-memory ownership/release tests and
 seven sparse guest-region cases. It writes a report
 to `/data/pokopia-recomp/tests/platform-<time>-<pid>.log`; individual temporary
 test files are removed by the tests. Windows retains its native synchronization
@@ -319,8 +320,8 @@ its [scan API](https://github.com/drakmor/ShadowMountPlus/blob/1.7/docs/api.md).
 Launch **Pokopia Runtime Tests** from the PS5 home screen. This headless suite
 normally displays a blank screen while running and exits when finished. It writes
 `/data/pokopia-recomp/tests/app-platform-<time>-<pid>.log`, containing
-`context=native-app title=PPSA98731`. The current baseline has 135 cases; enabling
-the game-image check makes 136. Only the expected complete report with zero
+`context=native-app title=PPSA98731`. The current baseline has 158 cases; enabling
+the game-image check makes 159. Only the expected complete report with zero
 failures, together with a clean application exit, establishes success. Registration,
 FSELF inspection and payload-suite results do not establish application runtime
 behavior. Native game boot and gameplay remain separate checks.
@@ -383,7 +384,7 @@ a clean return home. Executable SHA-256:
 The optional next check maps the real `main`, `sdk`, `subsdk0` and `rtld` NSOs at
 their compiled addresses. It does not register or execute the lifted game code,
 call game constructors, apply host relocations, access RomFS or touch saves.
-The normal 135-case suite still needs no game files. To build the additional
+The normal 158-case suite still needs no game files. To build the additional
 case, supply the dump as the third argument:
 
 ```sh
@@ -404,7 +405,7 @@ Stage only the four named files from that manifest under
 and retain a `source-manifest.json` in the parent directory. Preserve any existing
 unidentified input folder. Original PC files remain unchanged. The app package
 does not bundle these files; its manifest records `requires_game_images: true`
-and `expected_cases: 136`. Omitting the third build argument restores the normal
+and `expected_cases: 159`. Omitting the third build argument restores the normal
 suite. The standalone diagnostic target is `ps5_game_image_tests`.
 
 On 2026-11-04 the standalone diagnostic passed and exited: all four modules were
@@ -421,7 +422,7 @@ from `heap_create`, before the first game file is loaded. Its 12 GiB virtual hea
 needs several 3 MiB metadata vectors; no 12 GiB physical allocation was attempted.
 That failed executable's SHA-256 is
 `77b1829775910efbd86412f78dbae9d8add60fe1d28b0c8a70d4321193ed48c2`.
-Game execution, native guest threads/services, graphics and gameplay remain ahead.
+Game execution, SVC/service integration, graphics and gameplay remain ahead.
 
 ## Native application allocations
 
@@ -497,7 +498,8 @@ CRT's C++ TLS cleanup.
 
 `wait_for()` observes entry completion, not completion of TLS destruction.
 `join()` establishes full termination. This distinction must be preserved by the
-future guest join implementation. Stack size is an explicit creation parameter;
+guest join implementation. A bounded `join_for()` also waits for TLS cleanup;
+a timeout leaves the worker owned and permits a later retry. Stack size is an explicit creation parameter;
 zero uses the platform default. No default game stack size, affinity mapping or
 priority policy is selected by these tests.
 
@@ -505,19 +507,64 @@ Ten cases exercise startup gating, cancelled gates, join ownership, timeout
 behavior, exception transfer, explicit exit/TLS cleanup, self-join rejection,
 invalid inputs and stack sizing, repeated worker creation, and four workers
 executing the original lifted LDAR/STLR fixture with independent register state.
-The current host suite passes 67 cases plus the six existing TLS-runtime cases.
+The host suite at that milestone passed 67 cases plus the six existing TLS-runtime cases.
 The console payload check also passed all 76 platform cases and exited.
 Report: `platform-1793775610-157.log`; ELF SHA-256:
 `8f3b992c027f92e0ca4ccef53b3003379ba3df95dfa0bedd640dbce08a379432`.
 
-The combined 136-case native application is installed and readback-verified;
-its native launch check is pending. Executable SHA-256:
+The combined native application passed **136 cases, zero failures**, and returned
+home on 2026-11-04. Report: `app-platform-1793775707-158.log`. Executable SHA-256:
 `d8cf633da4d013309dec34fe14c14acdc66047df1450bfdb865daf4a0ad30a0f`.
-The prior 126-case result remains the verified native baseline.
+This is the verified native baseline before the guest-kernel additions.
 
-This is the host worker foundation. Horizon thread handles, guest TLS setup,
-SVC dispatch, synchronization queues and PS5 scheduling still need integration.
-It does not start a Pokopia thread or execute game code.
+This establishes the host worker foundation. It does not start a Pokopia thread
+or execute game code.
+
+## Guest threads and synchronization
+
+`ps5/kernel.cmake` builds `libnxrt_ps5_kernel.a` with the shared handle table and
+Horizon wait queues, plus POSIX guest-thread and clock backends. Each guest
+thread owns its registers, kernel-region TLS and a gated host worker. Handles
+can close while a worker runs without destroying its context. Completed workers
+are joined outside the thread-list lock; reset refuses to discard live threads.
+Explicit guest exit and C++ exceptions both mark the thread waitable. A host join
+includes TLS destruction and retains ownership when its deadline expires.
+
+The wait queues use the existing Horizon mutex-word, process-wide-key and address
+arbitration protocols, with priority/FIFO handoff and remembered cancellation.
+Timeout conversion now uses the registered platform frequency instead of assuming
+19.2 MHz for every game. Repeated-wake tests cover both 19.2 and 31.25 MHz clocks.
+Finite deadlines saturate safely, and 32-bit address-signal arithmetic wraps
+without signed-overflow undefined behavior.
+
+The 22-case kernel diagnostic passed on PS5 and its process exited:
+`kernel-runtime-1793776543-162.log`; ELF SHA-256
+`92e3ef571bcc72fd53f8eb5d951cea809140d08ef06c7ffa20a857ba94af7832`.
+It covers template TLS, thread exit and ownership, handle limits, adopted-main
+stacks, mutex priority ordering, 1,000 producer/consumer handoffs, condition
+transfer timeouts, address signaling, waitable lifetime, cancellation and clock
+regressions. Four guest workers also dispatch the original lifted LDAR/STLR
+fixture. The first run found an incomplete TLS test setup: the fixture must be
+linked before reading the process template. The corrected test passed.
+
+This component is not wired into the SVC dispatcher yet. Host affinity/priority
+mapping, exception handling, services and gameplay remain. Guest priorities
+currently determine kernel queue order; POSIX workers inherit the application's
+host scheduling policy. The 64 MiB host-stack default is retained from upstream,
+while these tests explicitly request 2 MiB. Game stack usage must be measured
+before changing that default. No PS5 scheduling or 60 FPS claim follows from the
+thread tests.
+
+The updated host suite passes 68 platform cases and six TLS-runtime cases. The
+PS5 platform diagnostic passes 77 cases, including a timed join that expires
+while a TLS destructor is deliberately blocked, then succeeds after release.
+The implementation uses the absolute-deadline join interface documented by
+[FreeBSD's pthread implementation](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_join.c),
+with a monotonic budget for retries. Both diagnostic processes exited.
+
+The combined 159-case native application is installed and all package files are
+readback-verified. Its native launch check is pending. Executable SHA-256:
+`4c4268f316fb4f39e5cf38f5cfd7d530e93ba2c1ce9b09295125cc64cf3f5693`.
 
 ## Repository ownership
 

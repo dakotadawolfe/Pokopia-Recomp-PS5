@@ -17,6 +17,7 @@ nxrecomp_add_module(subpage_fixture INPUT "${fixture_elf}" NAME subpage_fixture 
 target_compile_definitions(subpage_fixture PUBLIC NXRECOMP_SUBPAGE_CHECKS=1)
 include("${CMAKE_CURRENT_LIST_DIR}/../platform.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../core.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/../kernel.cmake")
 set(platform_test_sources sync_main.cpp "${root}/runtime/tests/test_sync.cpp"
     "${root}/runtime/tests/test_log_config.cpp" test_host_vm.cpp test_subpage.cpp test_host_thread.cpp)
 add_executable(ps5_sync_tests ${platform_test_sources} "${CMAKE_CURRENT_LIST_DIR}/../app/thread_exit.cpp")
@@ -26,6 +27,13 @@ target_include_directories(ps5_sync_tests PRIVATE "${root}/runtime/include" "${r
 target_compile_options(ps5_sync_tests PRIVATE -Wall -Wextra -Werror -mcx16)
 target_link_libraries(ps5_sync_tests PRIVATE nxrt_ps5_core subpage_fixture)
 if(PS5)
+    add_executable(ps5_kernel_tests sync_main.cpp test_kernel_posix.cpp "${root}/ps5/app/thread_exit.cpp")
+    target_include_directories(ps5_kernel_tests PRIVATE "${root}/runtime/tests")
+    target_compile_definitions(ps5_kernel_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_KERNEL=1
+        NXRT_TEST_DATA_DIR="/data/pokopia-recomp/tests/loader-data")
+    target_compile_options(ps5_kernel_tests PRIVATE -Wall -Wextra -Werror -mcx16)
+    target_link_libraries(ps5_kernel_tests PRIVATE nxrt_ps5_kernel subpage_fixture)
+    target_link_options(ps5_kernel_tests PRIVATE "LINKER:--wrap,pthread_create")
     target_sources(ps5_sync_tests PRIVATE test_guest_region.cpp)
     target_compile_definitions(ps5_sync_tests PRIVATE NXRT_TEST_PS5=1)
     target_compile_definitions(ps5_memory_capabilities PRIVATE NXRT_TEST_PS5=1)
@@ -57,7 +65,10 @@ set(PKP_GAME_IMAGE_INPUT "" CACHE PATH "Optional verified decrypted dump for the
 file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/test_host_thread.cpp" host_thread_cases REGEX "^NXTEST\\(")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_host_thread.cpp")
 list(LENGTH host_thread_cases host_thread_count)
-math(EXPR runtime_case_count "125 + ${host_thread_count}")
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/test_kernel_posix.cpp" kernel_cases REGEX "^NXTEST\\(")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_kernel_posix.cpp")
+list(LENGTH kernel_cases kernel_count)
+math(EXPR runtime_case_count "125 + ${host_thread_count} + ${kernel_count}")
 set(runtime_game_images false)
 if(PKP_GAME_IMAGE_INPUT)
     if(NOT PS5)
@@ -83,7 +94,7 @@ if(PKP_GAME_IMAGE_INPUT)
     target_compile_options(ps5_game_image_tests PRIVATE -Wall -Wextra -Werror -mcx16)
     target_link_libraries(ps5_game_image_tests PRIVATE nxrt_ps5_core)
     target_link_options(ps5_game_image_tests PRIVATE "LINKER:--wrap,pthread_create")
-    math(EXPR runtime_case_count "126 + ${host_thread_count}")
+    math(EXPR runtime_case_count "126 + ${host_thread_count} + ${kernel_count}")
     set(runtime_game_images true)
 endif()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/runtime-suite.json"
@@ -98,7 +109,7 @@ if(PKP_BUILD_NATIVE_APP)
     endif()
     set(native "${PKP_NATIVE_APP_ROOT}/tooling/native")
     set(sdk "$ENV{PS5_PAYLOAD_SDK}")
-    add_executable(ps5_runtime_app ${platform_test_sources} test_guest_region.cpp
+    add_executable(ps5_runtime_app ${platform_test_sources} test_guest_region.cpp test_kernel_posix.cpp
         test_app_runtime.cpp test_app_heap.cpp heap_fault.cpp "${CMAKE_CURRENT_LIST_DIR}/../app/heap.cpp"
         "${native}/app_crt.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/runtime.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/../app/thread_exit.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/lifecycle.cpp"
@@ -118,7 +129,7 @@ if(PKP_BUILD_NATIVE_APP)
         "LINKER:--version-script,${CMAKE_CURRENT_LIST_DIR}/../app/exports.map"
         "LINKER:--eh-frame-hdr" "LINKER:--no-dynamic-linker" "LINKER:-e,_start"
         "LINKER:--wrap,mprotect" "LINKER:--wrap,pthread_create")
-    target_link_libraries(ps5_runtime_app PRIVATE nxrt_ps5_core subpage_fixture
+    target_link_libraries(ps5_runtime_app PRIVATE nxrt_ps5_kernel subpage_fixture
         "-Wl,--start-group" "${sdk}/target/lib/libc++.a" "${sdk}/target/lib/libc++abi.a"
         "${sdk}/target/lib/libunwind.a" "-Wl,--end-group" "-Wl,--as-needed"
         "${sdk}/target/lib/libSceLibcInternal.so" "${sdk}/target/lib/libkernel.so"

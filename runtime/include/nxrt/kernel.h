@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// A small Horizon kernel: result codes, kernel objects and the handle table, guest threads (one Win32 thread per guest thread,
-// console core model), and the 19.2 MHz system tick. The SVC dispatcher lives in svc.h, IPC sessions in ipc.h.
+// A small Horizon kernel: result codes, objects, handles, guest threads and platform-frequency system ticks.
+// Windows and POSIX use separate host-thread backends. The SVC dispatcher lives in svc.h, IPC sessions in ipc.h.
 // Pattern from SuperMarioWonderRecomp runtime/src/kernel.cpp + kernel_state.h (MIT) and smo-recomp runtime/os/os_threads.c (GPL-3.0).
 #pragma once
 #include <atomic>
@@ -8,6 +8,11 @@
 #include <memory>
 #include <string>
 #include <vector>
+#ifndef _WIN32
+#include <condition_variable>
+#include <mutex>
+#include "nxrt/host_thread.h"
+#endif
 
 #include "nxrt/abi.h"
 
@@ -109,9 +114,16 @@ struct KThread : KObject {
     uint32_t wait_result = 0;
     uint64_t wait_mutex = 0, wait_key = 0, wait_addr = 0;
     uint32_t wait_tag = 0;
+#ifdef _WIN32
     void* cv_storage[1] = {nullptr};    // CONDITION_VARIABLE is pointer sized: this thread's own wake-up (kernel_sync.cpp)
+#else
+    std::condition_variable wake_condition;
+    std::mutex host_mutex;             // protects worker publication, start and join
+    std::unique_ptr<host_thread::Thread> worker;
+    uint64_t host_stack_bytes = 0;
+#endif
     std::weak_ptr<KThread> self;
-    ~KThread() override;                // closes host_handle
+    ~KThread() override;                // releases the platform-owned thread resource
     ObjType type() const override { return ObjType::Thread; }
     bool signaled() const override { return exited; }
 };
@@ -126,8 +138,8 @@ struct ThreadParams {
 
 // Creates the thread object (TLS region and static TLS block included) without starting it. Returns its handle, 0 on failure.
 uint32_t thread_create(const ThreadParams& p);
-// Starts the host thread: it registers with diag, applies the console core/priority model, runs entry(arg) through dispatch_call
-// with sp = stack_top and exits when the function returns (like svcExitThread).
+// Starts the host thread and runs entry(arg) through dispatch_call with sp = stack_top.
+// Windows also applies its console scheduling model; the POSIX scheduling port is pending.
 uint32_t thread_start(uint32_t handle);                    // result code
 [[noreturn]] void thread_exit();                           // svcExitThread for the calling guest thread
 // Turns the calling host thread into the main guest thread (stack allocated in the kernel region). Returns its handle.
@@ -175,7 +187,7 @@ void install_busy_mutex_hle();           // nn::os::LockBusyMutex as host code t
 void sched_reset_for_tests();            // forget the slot and re-read the config at the next sched_info()
 
 // ---- time --------------------------------------------------------------------------------------------------------------------
-uint64_t system_tick();                  // the console tick (tick_hz()), from QueryPerformanceCounter
+uint64_t system_tick();                  // the console tick (tick_hz()), from the host monotonic clock
 constexpr uint64_t kTickHzSwitch1 = 19200000;   // Switch 1 system tick (CNTFRQ_EL0)
 constexpr uint64_t kTickHzSwitch2 = 31250000;   // Switch 2 system tick (SDK 20.5 for Switch 2 uses 31.25 MHz)
 uint64_t tick_hz();                      // the registered game's platform tick frequency
