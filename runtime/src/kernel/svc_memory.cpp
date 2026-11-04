@@ -936,6 +936,12 @@ void svc_register_memory_group() {
     svc_register(0x04, map_memory);
     svc_register(0x05, unmap_memory);
     svc_register(0x06, query_memory);
+#ifndef _WIN32
+    svc_register(0x13, [](::Ctx* c) { svc_ret(c, kernel::shared_memory_map(static_cast<uint32_t>(reg(c, 0)),
+        reg(c, 1), reg(c, 2), static_cast<uint32_t>(reg(c, 3)))); });
+    svc_register(0x14, [](::Ctx* c) { svc_ret(c, kernel::shared_memory_unmap(static_cast<uint32_t>(reg(c, 0)),
+        reg(c, 1), reg(c, 2))); });
+#endif
 #ifdef _WIN32
     svc_register(0x80, set_gpu_memory_attribute);
     svc_register(0x13, map_shared_memory);
@@ -962,6 +968,7 @@ void svc_memory_reset_for_tests() {
     g_phys.clear();
     g_maps.clear();
 #else
+    kernel::shared_memory_reset_for_tests();
     mem::stack_reset_for_tests();
 #endif
     g_perm_locked.clear();

@@ -32,6 +32,9 @@ void make_utc_rule(uint8_t* out /*kRuleSize bytes*/);
 // false when the host zone cannot be read). *name_out receives a location name for GetDeviceLocationName ("Europe/Berlin" when the
 // Windows zone maps to one, else the Windows zone id; "UTC" for the fallback).
 bool make_host_rule(uint8_t* out, std::string* name_out);
+// Validate a complete rule before a conversion whose empty result can also mean
+// a valid but nonexistent local time (for example a daylight-saving gap).
+bool rule_valid(const uint8_t* rule);
 
 // tzcode localtime for `posix` seconds under `rule`. False for an invalid rule.
 bool to_calendar(const uint8_t* rule, int64_t posix, CalendarTime* cal, CalendarAdditionalInfo* info);

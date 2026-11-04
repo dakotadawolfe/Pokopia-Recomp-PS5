@@ -76,6 +76,105 @@ NXTEST(heap_svc_grows_preserves_prefix_and_zeroes_regrown_tail) {
     REQUIRE(resize(0).rc == k::kOk); CHECK_EQ(nxrt::svc_current_heap_size(), 0u);
     CHECK_EQ(mem::heap_committed(), 0u);
 }
+NXTEST(shared_memory_svc_uses_live_aliases_and_keeps_service_pointer_stable) {
+    Fixture f;
+    constexpr auto first = mem::kAliasBase, second = first + 0x10000;
+    auto object = k::shared_memory_create(page, "shared-read-test"); REQUIRE(object);
+    const auto host = object->host;
+    const auto handle = k::handle_add(object);
+    CHECK_EQ(*reinterpret_cast<uint64_t*>(host), 0u);
+    REQUIRE(call(0x13, handle, first, page, 1).rc == k::kOk);
+    REQUIRE(call(0x13, handle, second, page, 1).rc == k::kOk);
+    for (uint64_t value : {uint64_t{17}, uint64_t{0xabcdef0123456789}}) {
+        *reinterpret_cast<uint64_t*>(host) = value;
+        CHECK_EQ(rd64(first), value); CHECK_EQ(rd64(second), value);
+    }
+    CHECK_EQ(object->host, host); CHECK(mem::is_mapped(first, page));
+    CHECK(!mem::SubpageMap::allows(first, page, 2));
+    CHECK(!mem::is_mapped(first + page, page));
+    CHECK_EQ(f.query(first).state, mem::kMemShared); CHECK_EQ(f.query(first).perm, 1u);
+    const auto guard = f.query(first + page);
+    CHECK_EQ(guard.state, mem::kMemFree); CHECK_EQ(guard.perm, 0u);
+    CHECK(guard.base + guard.size >= first + page + 0x4000); // SDK checks 16 KiB after the logical end.
+    REQUIRE(call(0x14, handle, first, page).rc == k::kOk);
+    *reinterpret_cast<uint64_t*>(host) = 93; CHECK_EQ(rd64(second), 93u);
+    CHECK_EQ(object->host, host); CHECK_EQ(f.query(first).state, mem::kMemFree);
+    CHECK(!mem::SubpageMap::allows(first, page, 1));
+    REQUIRE(call(0x14, handle, second, page).rc == k::kOk);
+}
+NXTEST(shared_memory_svc_round_trips_writes_without_copying_on_unmap) {
+    Fixture f; constexpr auto first = mem::kAliasBase, second = first + 0x10000;
+    auto object = k::shared_memory_create(5 * page, "shared-write-test", 3); REQUIRE(object);
+    const auto h = k::handle_add(object);
+    REQUIRE(call(0x13, h, first, 5 * page, 3).rc == k::kOk);
+    REQUIRE(call(0x13, h, second, 5 * page, 3).rc == k::kOk);
+    wr64(first + 5 * page - 8, 0xfedcba);
+    CHECK_EQ(*reinterpret_cast<uint64_t*>(object->host + 5 * page - 8), 0xfedcbau);
+    CHECK_EQ(rd64(second + 5 * page - 8), 0xfedcbau);
+    CHECK(!mem::SubpageMap::allows(first + 5 * page, page, 1));
+    REQUIRE(call(0x14, h, first, 5 * page).rc == k::kOk);
+    CHECK_EQ(rd64(second + 5 * page - 8), 0xfedcbau);
+}
+NXTEST(shared_memory_svc_rejects_invalid_requests_without_changing_views) {
+    Fixture f; const auto at = mem::kAliasBase;
+    auto object = k::shared_memory_create(page, "shared-invalid-test"); REQUIRE(object);
+    const auto h = k::handle_add(object);
+    CHECK(!k::shared_memory_create(0, "invalid")); CHECK(!k::shared_memory_create(page + 1, "invalid"));
+    CHECK(!k::shared_memory_create(page, "invalid", 7));
+    CHECK_EQ(call(0x13, h, at + 1, page, 1).rc, k::kInvalidAddress);
+    CHECK_EQ(call(0x13, h, at, 0, 1).rc, k::kInvalidSize);
+    CHECK_EQ(call(0x13, h, at, page + 1, 1).rc, k::kInvalidSize);
+    CHECK_EQ(call(0x13, h, UINT64_MAX - page + 1, 2 * page, 1).rc, k::kInvalidMemoryState);
+    CHECK_EQ(call(0x13, 0, at, page, 1).rc, k::kInvalidHandle);
+    CHECK_EQ(call(0x13, h, at, 2 * page, 1).rc, k::kInvalidSize);
+    CHECK_EQ(call(0x13, h, at, page, 3).rc, k::kInvalidPermission);
+    CHECK_EQ(call(0x13, h, at, page, 0).rc, k::kInvalidPermission);
+    CHECK_EQ(call(0x13, h, mem::kHeapBase, page, 1).rc, k::kInvalidMemoryRegion);
+    CHECK_EQ(call(0x13, h, at + page, page, 1).rc, k::kInvalidMemoryState);
+    REQUIRE(call(0x13, h, at, page, 1).rc == k::kOk);
+    CHECK_EQ(call(0x13, h, at, page, 1).rc, k::kInvalidMemoryState);
+    CHECK_EQ(call(0x14, h, at, 2 * page).rc, k::kInvalidSize);
+    auto other = k::shared_memory_create(page, "other"); REQUIRE(other);
+    CHECK_EQ(call(0x14, k::handle_add(other), at, page).rc, k::kInvalidMemoryState);
+    CHECK(mem::SubpageMap::allows(at, page, 1));
+}
+NXTEST(shared_memory_svc_preserves_existing_native_reservations) {
+    Fixture f; const auto at = mem::kAliasBase;
+    REQUIRE(mem::reserve_fixed(at, 0x10000, "shared collision")); REQUIRE(mem::commit(at, 0x10000));
+    wr64(at, 0x1234); // No vm metadata: native reservation still must prevent overwrite.
+    auto object = k::shared_memory_create(page, "shared-collision-test"); REQUIRE(object);
+    CHECK_EQ(call(0x13, k::handle_add(object), at, page, 1).rc, k::kInvalidMemoryState);
+    CHECK_EQ(rd64(at), 0x1234u);
+}
+NXTEST(shared_memory_svc_rolls_back_failed_guest_permission_publication) {
+    Fixture f; const auto at = mem::kAliasBase;
+    auto object = k::shared_memory_create(page, "shared-rollback-test"); REQUIRE(object);
+    const auto h = k::handle_add(object);
+    test_fail_protect = 1;
+    CHECK_EQ(call(0x13, h, at, page, 1).rc, k::kOutOfMemory);
+    test_fail_protect = 0;
+    CHECK_EQ(f.query(at).state, mem::kMemFree); CHECK(!mem::SubpageMap::allows(at, page, 1));
+    REQUIRE(call(0x13, h, at, page, 1).rc == k::kOk);
+    REQUIRE(call(0x14, h, at, page).rc == k::kOk);
+}
+NXTEST(shared_memory_svc_retains_closed_handles_until_mapping_teardown) {
+    Fixture f; const auto at = mem::kAliasBase;
+    auto object = k::shared_memory_create(page, "shared-lifetime-test"); REQUIRE(object);
+    const auto h = k::handle_add(object); const auto duplicate = k::handle_add(object);
+    std::weak_ptr<k::KSharedMemory> weak = object;
+    *reinterpret_cast<uint64_t*>(object->host) = 44;
+    REQUIRE(call(0x13, h, at, page, 1).rc == k::kOk);
+    k::handle_close(h); object.reset(); CHECK(!weak.expired()); CHECK_EQ(rd64(at), 44u);
+    CHECK_EQ(call(0x14, h, at, page).rc, k::kInvalidHandle);
+    REQUIRE(call(0x14, duplicate, at, page).rc == k::kOk);
+    k::handle_close(duplicate); CHECK(weak.expired());
+    object = k::shared_memory_create(page, "shared-reset-test"); REQUIRE(object);
+    const auto next = k::handle_add(object); weak = object;
+    REQUIRE(call(0x13, next, at, page, 1).rc == k::kOk);
+    k::handle_close(next); object.reset(); CHECK(!weak.expired());
+    nxrt::svc_memory_reset_for_tests(); CHECK(weak.expired());
+    CHECK_EQ(f.query(at).state, mem::kMemFree); CHECK(!mem::SubpageMap::allows(at, page, 1));
+}
 NXTEST(heap_svc_rejects_sizes_without_changing_live_memory) {
     Fixture f; REQUIRE(resize(2 * mib).rc == k::kOk); wr64(heap, 17);
     CHECK_EQ(resize(2 * mib + page).rc, k::kInvalidSize);

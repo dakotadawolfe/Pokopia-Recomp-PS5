@@ -1,6 +1,6 @@
 # Native graphics integration audit
 
-Initial source/artifact inspection and subsequent local diagnostic build, 2026-11-04. The standalone native app below compiles, links, packages, and passes native FSELF inspection. No console connection or presentation test was performed by this work. The later audit sections retain the source boundaries for integrating actual game rendering.
+Source/artifact inspection and native diagnostics, 2026-11-04. The standalone display app passed on the PS5. A subsequent combined guest-memory/GPU diagnostic is built and packaged but awaits its own console result. Neither diagnostic runs game code. The later audit sections retain the source boundaries for integrating actual game rendering.
 
 ## Standalone diagnostic build
 
@@ -20,7 +20,9 @@ bash ps5/build_graphics_app.sh \
   /path/to/isolated/libvulkan_radeon.ps5.a /path/to/graphics-build
 ```
 
-The helper verified all 9,161 renamed symbols and reproduced the default isolated SHA exactly from the default raw SHA. Rebuilding the app against that newly generated archive produced the same `eboot.bin`: **19,047,859 bytes**, SHA-256 `be8b0cdc9aeefb04dd82c0b7324149939aff3c1f1d413ea1aa56f080bcdf9462`. Its native ELF SHA-256 is `e8a8934cf4fd0d2308add9e19e7938f79eecd53021319215b5c053cd64307811`. The reviewed host used SDK Clang 21.1.8 and GNU binutils 2.42. This is local package evidence, not a console pass.
+The helper verified all 9,161 renamed symbols and reproduced the default isolated SHA exactly from the default raw SHA. Rebuilding the app against that newly generated archive produced the same `eboot.bin`: **19,047,859 bytes**, SHA-256 `be8b0cdc9aeefb04dd82c0b7324149939aff3c1f1d413ea1aa56f080bcdf9462`. Its native ELF SHA-256 is `e8a8934cf4fd0d2308add9e19e7938f79eecd53021319215b5c053cd64307811`. The reviewed host used SDK Clang 21.1.8 and GNU binutils 2.42.
+
+The installed build passed on the console: `work/ps5/graphics-display-1793789355-386.log` records 300/300 frames at 3840x2160, 59940 mHz, four exact readback pixels, and 280 measured frames in 4.695 seconds against 4.671 expected. Cleanup completed, main returned zero, and the user observed colored quadrants followed by Home. This proves that native Vulkan/VideoOut path and its lifecycle; it does not establish NVN, imported guest memory, or game rendering. The original clear-only package remains preserved separately from the next diagnostic.
 
 ### Rebuild the dependencies from public source
 
@@ -69,9 +71,46 @@ bash ps5/build_graphics_app.sh \
 
 Hash overrides are explicit cache inputs; mismatches still fail configuration and linking. `graphics-provenance.json` records actual hashes/source revisions/compiler, and `graphics-app-manifest.json` records package file hashes with `console_verified=false`. The isolation helper does not attest that an arbitrary input was built from the documented sources. New source-built artifacts require their own console test. The public full-source recipe is documented from the pinned scripts; it was not rerun during this diagnostic implementation.
 
-## Next useful visible test
+## Combined guest-memory and GPU diagnostic
 
-The smallest GPU presentation test is a bounded native Vulkan clear/present loop using the existing RADV driver, before adding the NVN renderer. It can validate native imports, AGC initialization, the display surface, swapchain acquisition, submission, FIFO pacing, pixel readback, and orderly surface destruction. It does not validate game startup, translated shaders, NVN commands, or gameplay performance.
+`PKP_GRAPHICS_MEMORY_TEST=ON` selects `tests/test_graphics_memory.cpp` in the same dedicated graphics app and retains title `PPSA98732`. The default remains the original clear-only mode. The new mode uses the production `ps5_vm::Reservation` and `DirectMemory` owners to reserve the full heap, alias, stack, and kernel windows at their actual guest addresses. It also maps one guarded host page at each main/SDK image base; it does not load their images. Physical backing is only seven 16 KiB pages. It maps the same guarded heap backing into the primary and alias windows before Vulkan initialization, then imports the middle alias page using `VK_EXT_external_memory_host`.
+
+The original RADV arena overlapped those guest windows. `build_graphics_radv_partition.py` applies a small, checked-in source transformation to the pinned adapted `radv_ps5_platform.c`: the normal arena becomes `[0x4000000000, 0x6000000000)`, or 128 GiB, and ordinary non-32-bit allocations must land exactly on a claimed granule within that arena. An OS fallback outside it is rejected and released. The existing separate 32-bit GPU window remains `[0x200000000, 0x300000000)`. External imports intentionally retain the guest alias address. This guarantee covers ordinary allocations used by this probe; fixed-address, capture/replay, and sparse paths can accept explicit addresses and need a separate ownership audit before enabling them with guest mappings. No general renderer VA-safety claim follows from this test. This is a driver allocation partition, not a change to guest pointers or process/kernel state.
+
+The helper requires the original adapted platform source SHA-256 `8112c2b41a600043d3096a0198c4e3c2d7dcf6b56e8f738f6ce8eb537943725c`, exact patch anchors, the raw archive's explicit expected hash, and its real compile database. It recompiles only `winsys_ps5_radv_ps5_platform.c.o` into its own directory and replaces that one member in a private archive copy. It checks the unchanged member list and unchanged original source/archive hashes. Generated sources, the compile command, replacement-object hash, and archive hashes are saved beside the private archive. No shared SDK, source tree, or original build output is edited.
+
+Build this mode after the public dependency recipe above, retaining its Meson compile database and generated headers:
+
+```sh
+partition_dir="$project_dir/work/ps5/graphics-partition"
+compile_db="$graphics_deps/mihawk-vulkan-review/.deps/work/radv-build-ps5-release/compile_commands.json"
+python3 -B ps5/build_graphics_radv_partition.py "$raw_driver" "$compile_db" "$partition_dir" \
+  --expected-raw-sha256 "$raw_sha"
+# Inspect partition-manifest.json and the generated source before accepting its hashes.
+partition_raw_sha="$(sha256sum "$partition_dir/libvulkan_radeon.ps5.a" | cut -d' ' -f1)"
+python3 -B ps5/prepare_graphics_radv.py "$partition_dir/libvulkan_radeon.ps5.a" \
+  "$partition_dir/isolated" --expected-raw-sha256 "$partition_raw_sha" --record-rebuilt-output
+partition_isolated_sha="$(sha256sum "$partition_dir/isolated/libvulkan_radeon.ps5.a" | cut -d' ' -f1)"
+bash ps5/build_graphics_app.sh \
+  "$graphics_deps/ps5-native-app-boilerplate" "$graphics_deps/mihawk-vulkan-review" \
+  "$driver_sdk" "$graphics_deps/mihawk-mesa-review" \
+  "$partition_dir/isolated/libvulkan_radeon.ps5.a" "$project_dir/work/ps5/graphics-memory-build" \
+  "$partition_dir/isolated/manifest.json" \
+  -DPKP_GRAPHICS_MEMORY_TEST=ON \
+  -DPKP_RADV_PARTITION_MANIFEST="$partition_dir/partition-manifest.json" \
+  -DPKP_GRAPHICS_RAW_SHA="$partition_raw_sha" -DPKP_GRAPHICS_RADV_SHA="$partition_isolated_sha" \
+  -DPKP_GRAPHICS_PLATFORM_SHA="$platform_sha"
+```
+
+The local private rebuild produced raw SHA-256 `d1f377cee27b5842eb981805494866c8a7f87d6c44dd8ed73e79f9ad2756f65c` and isolated SHA-256 `423321a55c3daa7bd8bd361473d1f8d9e3a606a9b04a651c34eacd31ad9c2e9a`. The package is `/root/pokopia-recomp-ps5-graphics-memory/app/package/PPSA98732` in WSL `PS5ColdbootLab`; `eboot.bin` is **19,069,699 bytes**, SHA-256 `81ad5acc606e7716dd25f324cc22bb0c13ce6f722338483ef45b5b6d4de8be0d`. Its native ELF SHA-256 is `8006fcf00b9c4a507ebf893959c940d1485ee17a5e2b54c05fb2f11cc8197121`. Compilation with warnings as errors, linking, packaging, and FSELF integrity inspection passed. All package files were subsequently readback-verified at `/data/homebrew/PPSA98732`; installation receipt `work/ps5/graphics-memory-console-install.json` records the previous and new hashes. Native execution of this new mode remains pending.
+
+The console log is `/data/pokopia-recomp/tests/graphics-memory-<time>-<pid>.log`. It checks imported-pointer identity, 16 KiB alignment, queried import capabilities, allocation placement for the staging/display readback buffers, unchanged primary read-only permissions, and GPU read/write permission on the alias. Eight rounds each compare all 4,096 words for CPU writes copied by the GPU and GPU fills read through both CPU views. Every round checks neighboring guard pages and the main/SDK/stack/kernel marker pages. It then runs the established 300-frame display/readback loop while the guest reservations remain alive. Imported Vulkan memory is released before its physical memory owner, and uncertain GPU completion retains mappings for process teardown.
+
+Two cache paths are measured separately. The first uses Vulkan barriers, fence completion, `vkFlushMappedMemoryRanges`, and `vkInvalidateMappedMemoryRanges`. The second additionally uses explicit `CLFLUSHOPT`/fences on only the test's owned mappings. The pinned RADV implementation's flush/invalidate entry points are no-ops (`radv_device_memory.c:392,398`), so successful import alone cannot establish coherence. A nominal mismatch followed by an explicit-cache pass is intentionally reported as overall FAIL with separate counters; that result would identify required cache maintenance before connecting NVN. A pass covers this bounded transfer/alias workload only, not every shader, allocation size, cache direction, sparse operation, or game renderer path.
+
+## Initial presentation path and reference code
+
+The completed standalone test uses a bounded native Vulkan clear/present loop with the existing RADV driver, before adding the NVN renderer. It validated native imports, AGC initialization, the display surface, swapchain acquisition, submission, FIFO pacing, pixel readback, and orderly surface destruction. It does not validate game startup, translated shaders, NVN commands, or gameplay performance.
 
 There is already reference code for this exact path in WSL `PS5ColdbootLab`, under `/root/eglantineps5-build/mihawk-vulkan-review/radv/radv_smoke.c`: display declarations at line 1930, `display_frame` at 1986, `display_swapchain` at 2055, and display-plane creation around 2119. Extract the bounded display case rather than run the entire driver smoke suite. Its readback coordinates assume 3840x2160; use the chosen surface extent instead. Keep the native app's existing exit/lifecycle handling.
 

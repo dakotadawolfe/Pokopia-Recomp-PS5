@@ -209,7 +209,9 @@ bool is_mapped(uint64_t address, uint64_t size) {
     uint64_t first, end;
     if (!span(address, size, first, end)) return false;
     std::vector<Part> ranges;
-    if (!parts(first, end, ranges)) return false;
+    // Service-owned shared objects publish real aliases through SubpageMap.
+    // Their lifetime is independent of this module's heap/fixed reservations.
+    if (!parts(first, end, ranges)) return size && SubpageMap::allows(address, size, 1);
     return std::all_of(ranges.begin(), ranges.end(), [](const Part& r) { return r.accessible(); });
 }
 uint64_t alloc_kernel(uint64_t size, uint64_t alignment) {

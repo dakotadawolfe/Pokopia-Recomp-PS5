@@ -69,12 +69,27 @@ struct KEvent : KObject {                                  // readable and writa
     bool signaled() const override { return state->signaled; }
 };
 
+#ifndef _WIN32
+struct SharedMemoryBacking;
+#endif
 struct KSharedMemory : KObject {
     uint64_t size = 0;
-    uint64_t host = 0;           // backing memory (kernel region) the service writes to
+    uint64_t host = 0;           // service write view; stable private alias on POSIX
     std::string name;
+#ifndef _WIN32
+    std::shared_ptr<SharedMemoryBacking> backing;
+    uint32_t guest_permission = 1;
+#endif
     ObjType type() const override { return ObjType::SharedMemory; }
 };
+#ifndef _WIN32
+// Stable private service view and real shared guest aliases. All guest access
+// must stop before reset; mapped views retain the object after handle closure.
+std::shared_ptr<KSharedMemory> shared_memory_create(uint64_t size, const char* name, uint32_t guest_permission = 1);
+uint32_t shared_memory_map(uint32_t handle, uint64_t address, uint64_t size, uint32_t permission);
+uint32_t shared_memory_unmap(uint32_t handle, uint64_t address, uint64_t size);
+void shared_memory_reset_for_tests();
+#endif
 
 struct KTransferMemory : KObject {
     uint64_t addr = 0, size = 0;

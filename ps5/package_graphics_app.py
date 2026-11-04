@@ -58,14 +58,18 @@ def main():
     with (args.build / "graphics-fself-inspection.txt").open("w") as output:
         subprocess.run([str(args.tool), "self", "--inspect", "--file", str(app / "eboot.bin")], stdout=output, check=True)
     provenance = json.loads((args.build / "graphics-provenance.json").read_text())
-    manifest = {"title_id": TITLE, "context": "native-app", "diagnostic": "GPU quadrant clear/present/readback",
+    memory_mode = provenance.get("diagnostic_mode") == "guest_gpu_memory"
+    manifest = {"title_id": TITLE, "context": "native-app", "diagnostic": "guest memory import, coherence and display" if memory_mode else "GPU quadrant clear/present/readback",
                 "console_verified": False, **provenance,
                 "files": {name: {"bytes": (app / name).stat().st_size, "sha256": sha(app / name)}
                           for name in sorted(expected)}}
     (args.build / "graphics-app-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Native graphics diagnostic package: {app}")
     print("Shows colored quadrants for about five seconds, verifies four pixels, then requests shell exit.")
-    print("No game code/assets or guest mappings. Native display behavior still requires a console test.")
+    if memory_mode:
+        print("Tests actual guest address reservations and a guarded 16 KiB heap alias. No game code/assets.")
+    else:
+        print("No game code/assets or guest mappings. Native display behavior still requires a console test.")
 
 
 if __name__ == "__main__":

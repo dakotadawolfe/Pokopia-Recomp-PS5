@@ -96,11 +96,13 @@ void civil_from_days(int64_t z, int64_t* y, int* m, int* d) {
     *y = yoe + era * 400 + (*m <= 2 ? 1 : 0);
 }
 
+#ifdef _WIN32
 int days_in_month(int64_t y, int m) {
     static constexpr int kDays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     const bool leap = (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0);
     return (m == 2 && leap) ? 29 : kDays[m - 1];
 }
+#endif
 
 // ---- rule access (tzcode localtime.c semantics) ----
 
@@ -111,6 +113,9 @@ bool valid_rule(const RuleImage& r) {
     if (r.defaulttype < 0 || r.defaulttype >= r.typecnt) return false;
     for (int i = 0; i < r.timecnt; ++i) {
         if (r.types[i] >= r.typecnt) return false;
+        // Keep extension differences and 400-year shifts representable even
+        // for malformed caller-supplied rules. Real TZ transitions are far inside.
+        if (r.ats[i] < INT64_MIN / 2 || r.ats[i] > INT64_MAX / 2) return false;
         if (i > 0 && r.ats[i] <= r.ats[i - 1]) return false;
     }
     for (int j = 0; j < r.typecnt; ++j) {
@@ -228,6 +233,7 @@ int to_posix_impl(const RuleImage& r, const CalendarTime& cal, int64_t out[2]) {
 
 // ---- host rule (Windows) ----
 
+#ifdef _WIN32
 struct AbbrMap {
     const char* windows_id;
     const char* iana;
@@ -314,7 +320,6 @@ int find_or_add(std::vector<HostType>& types, int32_t utoff, bool isdst, const s
     return static_cast<int>(types.size() - 1);
 }
 
-#ifdef _WIN32
 std::string wide_to_utf8(const wchar_t* w) {
     const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
     if (n <= 1) return {};
@@ -469,10 +474,22 @@ bool make_host_rule(uint8_t* out, std::string* name_out) {
 
 bool to_calendar(const uint8_t* rule, int64_t posix, CalendarTime* cal, CalendarAdditionalInfo* info) {
     if (!rule || !cal || !info) return false;
+    // CalendarTime's year is signed 16-bit. Reject remote timestamps before
+    // applying UTC offsets or transition-extension arithmetic.
+    // Include the distance from 1970 to the negative end of the year range.
+    constexpr int64_t range = 35000ll * 366 * 86400;
+    if (posix < -range || posix > range) return false;
     auto img = std::make_unique<RuleImage>();
     std::memcpy(img.get(), rule, kRuleSize);
     if (!valid_rule(*img)) return false;
     return calendar_of(*img, posix, cal, info);
+}
+
+bool rule_valid(const uint8_t* rule) {
+    if (!rule) return false;
+    auto img = std::make_unique<RuleImage>();
+    std::memcpy(img.get(), rule, kRuleSize);
+    return valid_rule(*img);
 }
 
 int to_posix(const uint8_t* rule, const CalendarTime& cal, int64_t out[2]) {

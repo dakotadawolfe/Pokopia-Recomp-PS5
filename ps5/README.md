@@ -1097,7 +1097,7 @@ the diagnostic's domain-close guard at call 110. Neither is a passing startup
 test. The native runtime title `PPSA98731` remains the previously proven
 239-case installation; these additional runtime cases have not replaced it.
 
-The final automated trace `sdk-startup-1793789090-385.log` completes parental
+That batch's final automated trace `sdk-startup-1793789090-385.log` completes parental
 service creation/initialization and domain/session teardown. It stops at SVC
 call 131 on the next unported dependency, `time:u`; the process then exits.
 ELF SHA-256:
@@ -1110,10 +1110,59 @@ no guest mappings, game code or assets. Every package file was readback-verified
 at `/data/homebrew/PPSA98732`; its executable is 19,047,859 bytes, SHA-256
 `be8b0cdc9aeefb04dd82c0b7324149939aff3c1f1d413ea1aa56f080bcdf9462`.
 ShadowMountPlus reports the separate title installed and available.
-Native display behavior still requires a manual console launch. Its independent
-process avoids combining the driver's current VA allocation window with guest
-addresses; that overlap remains a required game-renderer integration task.
+The user observed the colored quadrants followed by a return home. Console log
+`graphics-display-1793789355-386.log` confirms 300 presentations at
+3840x2160/59.94 Hz, four exact pixel readbacks, complete cleanup and main status
+zero. Its 280-frame timing sample took 4.695 seconds against 4.671 expected.
+This proves the native display path, not game rendering. Its independent process
+avoids combining the driver's current VA allocation window with guest addresses;
+that overlap remains a required game-renderer integration task.
 See [graphics build instructions and remaining renderer work](GRAPHICS_PORT.md).
+
+Service-owned shared memory now has real shared backing and a stable private
+service pointer. SVC 0x13/0x14 map and unmap aliases without copying pages. The
+PS5 SVC suite passed **105 cases, zero failures** in
+`svc-runtime-1793789794-390.log`, executable SHA-256
+`d50688c9a17be828bc22bee330eee7fba406015d6bcf823dfe476a3af1395399`.
+Six new cases cover two live views, service/guest write coherence, permissions,
+reservation collisions, failed-map rollback and lifetime after handle closure.
+See [shared-memory semantics and current alignment limit](SHARED_MEMORY_PORT.md).
+
+The current clock service uses real host UTC anchored to monotonic guest ticks,
+read-only shared clock pages, and the current SDK's continuous-adjustment layout.
+UTC calendar conversion is implemented; other host time zones and administrative
+clock writes are not. The expanded SVC suite passed **117 cases, zero failures**
+in `svc-runtime-1793790497-394.log`, including all twelve time cases. ELF SHA-256:
+`abd77a25c0643c8749b8291fd2cf692d8c3d67e3fd49a464243bdbb24406d499`.
+See [time service semantics and SDK layout evidence](TIME_PORT.md).
+
+The first clock trace caught a real integration defect: QueryMemory reported
+unused host-page padding as inaccessible memory, so the SDK's
+`CheckGuardSpace` rejected the logical 4 KiB mapping, unmapped it and entered
+its abort path. The padding is now logically free with no guest access while
+the native reservation prevents replacement. The regression checks the SDK's
+16 KiB guard-space requirement after the logical end.
+
+The corrected trace `sdk-startup-1793790561-395.log` opens `time:u`, gets the
+timezone object and shared-memory handle, maps it at `0x37e16bc000`, and passes
+both guard-space queries. It then reaches the actual game startup import
+`nninitStartup`, where the diagnostic deliberately stops because the main
+module's compiled functions are not linked into this trace. This is the next
+integration boundary, not completed game startup. The trace ELF was
+132,101,024 bytes, SHA-256
+`cc05fc01f2245653b18aa8f1d4e2939cbfdd8cd85c69940a671542228a261d5a`.
+
+The next `PPSA98732` package combines the display probe with real guest address
+reservations and 16 KiB shared heap aliases. It tests CPU/GPU copies in both
+directions with normal Vulkan synchronization and explicit cache maintenance,
+checks guest page protections/markers, then presents the quadrants. Ordinary
+driver allocations use a private rebuilt arena below `0x6000000000`; explicit
+fixed/capture-replay/sparse allocations still require a separate ownership
+audit. No game modules or assets are included. The executable is 19,069,699 bytes,
+SHA-256 `81ad5acc606e7716dd25f324cc22bb0c13ce6f722338483ef45b5b6d4de8be0d`.
+All package files were readback-verified at `/data/homebrew/PPSA98732`. This new
+mode writes `graphics-memory-*.log` and awaits a manual native-app test; the prior
+clear-only result does not validate it.
 
 ## Repository ownership
 

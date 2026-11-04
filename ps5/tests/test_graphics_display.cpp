@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Standalone native display diagnostic. No guest mappings, assets, or shaders.
+// Native display harness. The default mode uses no guest mappings or game data.
 #if !defined(PKP_GRAPHICS_STANDALONE)
-#error "The display probe must run in its own process before any guest mappings"
+#error "The display probe must run in its dedicated native diagnostic process"
 #endif
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
@@ -129,9 +129,17 @@ struct Probe {
         count = static_cast<uint32_t>(device_extensions.size());
         if (!check(EnumerateDeviceExtensionProperties(physical, nullptr, &count, device_extensions.data()), "device-extensions")) return false;
         bool swapchain_extension = false;
+#ifdef PKP_GRAPHICS_MEMORY_TEST
+        bool host_memory_extension = false;
+#endif
         for (uint32_t i = 0; i < count; ++i)
             swapchain_extension |= std::strcmp(device_extensions[i].extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0;
         if (!swapchain_extension) return fail("swapchain-extension", VK_ERROR_EXTENSION_NOT_PRESENT);
+#ifdef PKP_GRAPHICS_MEMORY_TEST
+        for (uint32_t i = 0; i < count; ++i)
+            host_memory_extension |= std::strcmp(device_extensions[i].extensionName, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) == 0;
+        if (!host_memory_extension) return fail("external-memory-host-extension", VK_ERROR_EXTENSION_NOT_PRESENT);
+#endif
         VkPhysicalDeviceVulkan13Features supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
         VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features.pNext = &supported;
@@ -144,12 +152,16 @@ struct Probe {
         queue_info.queueFamilyIndex = family;
         queue_info.queueCount = 1;
         queue_info.pQueuePriorities = &priority;
-        const char* device_requested[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+        const char* device_requested[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME
+#ifdef PKP_GRAPHICS_MEMORY_TEST
+            , VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME
+#endif
+        };
         VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         device_info.pNext = &enabled;
         device_info.queueCreateInfoCount = 1;
         device_info.pQueueCreateInfos = &queue_info;
-        device_info.enabledExtensionCount = 1;
+        device_info.enabledExtensionCount = sizeof(device_requested) / sizeof(device_requested[0]);
         device_info.ppEnabledExtensionNames = device_requested;
         if (!check(CreateDevice(physical, &device_info, nullptr, &device), "create-device")) return false;
 #define LOAD_DEVICE(name) name = reinterpret_cast<PFN_vk##name>(GetDeviceProcAddr(device, "vk" #name)); \
