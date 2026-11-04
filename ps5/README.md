@@ -100,19 +100,21 @@ level match upstream. Their runtime memory layout remains to be implemented.
 The component target produces `libpkp_main.a`, `libpkp_sdk.a`,
 `libpkp_subsdk0.a`, `libpkp_rtld.a`, `libnxrt_ps5_platform.a` and
 `libnxrt_ps5_core.a`. These are link inputs, not a finished game executable.
-The platform library contains synchronization, logging, configuration and the
-gauge registry. The core library contains dispatch, the generated-code ABI,
+The platform library contains synchronization, logging, configuration, the
+gauge registry and native memory primitives. The core library contains dispatch, the generated-code ABI,
 module registration, hooks, NSO loading and linking. Memory, guest threads,
 services, exceptions and rendering still need platform implementations before
 the core can run the game.
 
-The platform check runs 40 existing upstream cases on the host: 17 for mutexes,
-condition variables, events and semaphores, and 23 for logging and configuration.
-The same test program also links with the PS5 SDK. Its PS5 build writes a report
+The platform check runs 48 cases on the host: 17 upstream cases for mutexes,
+condition variables, events and semaphores, 23 upstream cases for logging and
+configuration, and eight memory cases. The PS5 build runs 49 cases, including
+an additional native direct-memory ownership test. It writes a report
 to `/data/pokopia-recomp/tests/platform-<time>-<pid>.log`; individual temporary
 test files are removed by the tests. Windows retains its native synchronization
 primitives; the PS5 backend uses the target C++ threading runtime and a monotonic
-clock. Host success does not prove the PS5 backend's runtime behavior.
+clock. Host success does not prove the PS5 backend's runtime behavior; collect
+the console report for the exact uploaded ELF and verify the process exits.
 
 The lifted output currently contains 200,586 function entries across 280
 translation units, with no emitted `guest_unimpl` calls in those units. This
@@ -120,9 +122,59 @@ checks translation coverage of the discovered functions, not execution or
 complete discovery of every possible runtime code path.
 
 On 2026-11-03 all four game archives and both runtime component archives built
-locally with the PS5 SDK. The 40 host platform cases passed, and the PS5 version
-of that suite linked successfully. Console execution and game boot remain
-unverified.
+locally with the PS5 SDK. The 48 host platform cases passed. The PS5 suite was
+uploaded, readback-verified and executed: **49 cases, zero failures**, followed
+by a clean process exit. Test ELF SHA-256:
+`9993227bdc44477b9eafff7bbc1ef1a2b630decdcf9186d064f8da2576e769ea`.
+The saved report is `platform-1793764792-102.log` in the private `work/ps5/`
+directory. This establishes platform behavior, not game boot or performance.
+
+## Native memory foundation
+
+`nxrt/host_vm.h` owns POSIX anonymous/shared mappings and rejects unaligned,
+out-of-bounds or overflowing operations. Exact-address requests never replace
+an occupied mapping. These primitives are useful for host tests and small
+runtime allocations; large PS5 regions use `nxrt/ps5_vm.h` instead.
+
+The PS5 implementation reserves virtual ranges with
+`sceKernelReserveVirtualRange` and attaches direct-memory allocations only to
+owned, previously unbacked subranges. Every view retains its backing until the
+view is unmapped. Protection changes require complete backing and host-page
+alignment. The guest heap must initialize new physical pages before exposing
+them to game code.
+
+Hardware findings that determine the implementation:
+
+- Host protection pages are 16 KiB. A successful `mprotect` for 4 KiB also
+  protected the neighboring guest page. The low-level wrappers reject that
+  request instead of silently rounding it. Guest 4 KiB permission handling and
+  write tracking remain to be ported; changing the guest page constant is not
+  a solution.
+- The second ordinary 4 GiB anonymous reservation returned `ENOMEM`. Native
+  reservations successfully held the 4 GiB stack region, 4 GiB kernel region
+  and 12 GiB heap region simultaneously at their original guest addresses.
+- The full-layout test backed only three 16 KiB pages, including two distant
+  heap pages and an alias. This verifies address space, not a 12 GiB physical
+  memory budget or GPU compatibility.
+- `sceKernelGetDirectMemorySize` reported zero in this payload context while
+  allocations using that returned bound succeeded. The wrapper passes the
+  value through and checks the allocation result rather than rejecting zero.
+- The diagnostic alias-enable call returned an error, but both direct-memory
+  mappings shared writes correctly. The production wrapper does not depend
+  on that call.
+
+`ps5_memory_capabilities` is a separate bounded diagnostic. It records host
+page behavior and native reservation/alias results under
+`/data/pokopia-recomp/tests/memory-<time>-<pid>.log`. The native capability run
+reported zero failures; the final platform suite exercises the production
+wrappers rather than substitutes. All target results so far are payload-process
+tests, not a launched homebrew game application.
+
+Next: connect these primitives to the guest memory and loader contracts,
+resolve 4 KiB guest permissions and write tracking, and partition the RADV
+address arena before initializing graphics. The existing RADV arena spans
+`0x4000000000` through `0x8000000000` and overlaps the lifted game layout.
+Do not combine the allocators until their ranges have been separated and tested.
 
 ## Repository ownership
 

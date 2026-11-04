@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Runs the upstream synchronization cases against the production platform code.
+// Runs upstream platform cases and native memory checks against production code.
 #include "test_framework.h"
 #include "nxrt/sync.h"
 #include "nxrt/gauge.h"
