@@ -126,14 +126,17 @@ not execute the game or establish complete function discovery.
 
 The component target produces `libpkp_main.a`, `libpkp_sdk.a`,
 `libpkp_subsdk0.a`, `libpkp_rtld.a`, `libnxrt_ps5_platform.a` and
-`libnxrt_ps5_core.a` and `libnxrt_ps5_kernel.a`. These are link inputs, not a finished game executable.
+`libnxrt_ps5_core.a`, `libnxrt_ps5_kernel.a` and `libnxrt_ps5_svc.a`.
+These are link inputs, not a finished game executable.
 The platform library contains synchronization, logging, configuration, the
 gauge registry and the PS5 guest-memory API, including sparse fixed regions,
 shared heaps and aliases.
 The core library contains dispatch, the generated-code ABI,
 module registration, hooks, NSO loading and linking. The kernel component adds
-guest thread objects, handles, TLS, timing and synchronization queues. SVC
-dispatch, services, guest exceptions, write tracking and rendering need integration
+guest thread objects, handles, TLS, timing and synchronization queues. The SVC
+component connects 23 thread, event, synchronization, timing and debug-string
+handlers to the generated-code ABI. Memory, process-information and IPC handlers,
+services, guest exceptions, write tracking and rendering still need integration
 before the core can run the game.
 The optional Windows frame recorder and stack sampler are disabled in the PS5
 core build; ordinary HLE call logging remains available.
@@ -280,8 +283,10 @@ The runtime suite also builds as the native title **Pokopia Runtime Tests**,
 `PPSA98731`. This is an application-process check before game integration. It
 contains original ARM fixtures and runtime tests, with no Pokopia code or assets.
 It uses the native application CRT, kernel provider, C++ libraries and companion
-`libc.prx`, rather than the payload CRT. Its 118 cases comprise 66 platform cases,
-six thread-lifetime/exception cases, 30 memory API cases and 16 loader cases.
+`libc.prx`, rather than the payload CRT. Its current 177 cases comprise 77 platform
+cases, six thread-lifetime/exception cases, seven application-heap cases, 30 memory
+API cases, 16 loader cases, 22 guest-kernel cases and 19 SVC cases. The optional
+decrypted game-image check brings the total to 178.
 
 The app supplies C++ thread-local destructor registration and wraps statically
 linked `pthread_create` calls. Worker cleanup handlers drain C++ destructors before
@@ -320,8 +325,8 @@ its [scan API](https://github.com/drakmor/ShadowMountPlus/blob/1.7/docs/api.md).
 Launch **Pokopia Runtime Tests** from the PS5 home screen. This headless suite
 normally displays a blank screen while running and exits when finished. It writes
 `/data/pokopia-recomp/tests/app-platform-<time>-<pid>.log`, containing
-`context=native-app title=PPSA98731`. The current baseline has 158 cases; enabling
-the game-image check makes 159. Only the expected complete report with zero
+`context=native-app title=PPSA98731`. The current baseline has 177 cases; enabling
+the game-image check makes 178. Only the expected complete report with zero
 failures, together with a clean application exit, establishes success. Registration,
 FSELF inspection and payload-suite results do not establish application runtime
 behavior. Native game boot and gameplay remain separate checks.
@@ -384,7 +389,7 @@ a clean return home. Executable SHA-256:
 The optional next check maps the real `main`, `sdk`, `subsdk0` and `rtld` NSOs at
 their compiled addresses. It does not register or execute the lifted game code,
 call game constructors, apply host relocations, access RomFS or touch saves.
-The normal 158-case suite still needs no game files. To build the additional
+The normal 177-case suite still needs no game files. To build the additional
 case, supply the dump as the third argument:
 
 ```sh
@@ -405,7 +410,7 @@ Stage only the four named files from that manifest under
 and retain a `source-manifest.json` in the parent directory. Preserve any existing
 unidentified input folder. Original PC files remain unchanged. The app package
 does not bundle these files; its manifest records `requires_game_images: true`
-and `expected_cases: 159`. Omitting the third build argument restores the normal
+and `expected_cases: 178`. Omitting the third build argument restores the normal
 suite. The standalone diagnostic target is `ps5_game_image_tests`.
 
 On 2026-11-04 the standalone diagnostic passed and exited: all four modules were
@@ -547,8 +552,8 @@ regressions. Four guest workers also dispatch the original lifted LDAR/STLR
 fixture. The first run found an incomplete TLS test setup: the fixture must be
 linked before reading the process template. The corrected test passed.
 
-This component is not wired into the SVC dispatcher yet. Host affinity/priority
-mapping, exception handling, services and gameplay remain. Guest priorities
+The thread component is now connected to the SVC dispatcher as described below.
+Host affinity/priority mapping, exception handling, services and gameplay remain. Guest priorities
 currently determine kernel queue order; POSIX workers inherit the application's
 host scheduling policy. The 64 MiB host-stack default is retained from upstream,
 while these tests explicitly request 2 MiB. Game stack usage must be measured
@@ -562,9 +567,49 @@ The implementation uses the absolute-deadline join interface documented by
 [FreeBSD's pthread implementation](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_join.c),
 with a monotonic budget for retries. Both diagnostic processes exited.
 
-The combined 159-case native application is installed and all package files are
-readback-verified. Its native launch check is pending. Executable SHA-256:
+The combined native application passed **159 cases, zero failures** in two launches
+on 2026-11-04. Reports `app-platform-1793776905-165.log` and
+`app-platform-1793776937-167.log` both record main status zero; both processes
+exited, and the user confirmed returning home. Executable SHA-256:
 `4c4268f316fb4f39e5cf38f5cfd7d530e93ba2c1ce9b09295125cc64cf3f5693`.
+
+## System-call ABI integration
+
+`ps5/svc.cmake` builds the shared dispatcher and 23 handlers for thread creation,
+startup and exit, priority/core-mask metadata, sleep/ticks, events, handles,
+synchronization, address arbitration and debug strings. Unported calls return
+the dispatcher's explicit not-implemented result and retain their call-site
+records. Memory, process-information and IPC groups are not registered yet.
+Process exit, processor-number mapping, exception return, thread activity and
+preemption-state handling also remain unported.
+
+Handler registration uses atomic publication. Event state is atomic, and resetting
+a signal consumes it once even with concurrent callers. Writable/readable event
+handle roles follow the [Atmosphere event implementation](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/svc/kern_svc_event.cpp)
+and [synchronization implementation](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/svc/kern_svc_synchronization.cpp).
+PS5 handlers check the full guest buffer's permissions before accessing handle
+arrays, debug strings and synchronization words, including mixed 4 KiB guest
+permissions within one 16 KiB host page. This preflight does not yet provide
+fault recovery for a concurrent guest unmap. The newer 64-bit address-wait mode
+is unsupported; the current backend implements the three 32-bit modes.
+
+The separate `ps5_svc_tests` diagnostic passed **19 cases, zero failures** on PS5,
+and its process exited. Report: `svc-runtime-1793777448-173.log`; ELF SHA-256:
+`19e8178934a64c631cbfb8f432880a3cb5bf522f5b54db65843acd0dd85b837c`.
+Cases cover register conventions, missing calls, concurrent registration,
+event roles and reset races, handle-allocation rollback, guest-buffer permissions,
+thread lifecycle/cancellation, clocks, mutex/address protocols and diagnostics.
+Four original ARM fixture functions, containing 66 translated instructions,
+execute through the real SVC ABI: reading the clock, creating/starting/joining
+a child, exiting that child with independent TLS, and an event signal/reset cycle.
+These are test programs, not Pokopia game code.
+
+The combined **178-case native application** is installed and every package file
+is readback-verified. Its native launch check is pending. Executable SHA-256:
+`eb9dfdf40185aae7254b9c849f371e863c678bc157b18f2afd294d384ad52383`.
+The host checks pass 68 platform cases and six TLS cases, and the production SVC
+archive builds with the PS5 SDK. All four ABI 4 game archives still pass the
+module verifier. These results do not establish game startup or performance.
 
 ## Repository ownership
 

@@ -18,6 +18,7 @@ target_compile_definitions(subpage_fixture PUBLIC NXRECOMP_SUBPAGE_CHECKS=1)
 include("${CMAKE_CURRENT_LIST_DIR}/../platform.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../core.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../kernel.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/../svc.cmake")
 set(platform_test_sources sync_main.cpp "${root}/runtime/tests/test_sync.cpp"
     "${root}/runtime/tests/test_log_config.cpp" test_host_vm.cpp test_subpage.cpp test_host_thread.cpp)
 add_executable(ps5_sync_tests ${platform_test_sources} "${CMAKE_CURRENT_LIST_DIR}/../app/thread_exit.cpp")
@@ -27,6 +28,20 @@ target_include_directories(ps5_sync_tests PRIVATE "${root}/runtime/include" "${r
 target_compile_options(ps5_sync_tests PRIVATE -Wall -Wextra -Werror -mcx16)
 target_link_libraries(ps5_sync_tests PRIVATE nxrt_ps5_core subpage_fixture)
 if(PS5)
+    set(svc_fixture_elf "${CMAKE_CURRENT_BINARY_DIR}/svc_fixture.elf")
+    add_custom_command(OUTPUT "${svc_fixture_elf}"
+        COMMAND "${NX_HOST_CLANG}" --target=aarch64-none-elf -nostdlib -static -fuse-ld=lld
+                "-Wl,-T,${CMAKE_CURRENT_LIST_DIR}/svc_fixture.ld" "${CMAKE_CURRENT_LIST_DIR}/svc_instructions.S" -o "${svc_fixture_elf}"
+        DEPENDS svc_fixture.ld svc_instructions.S VERBATIM)
+    nxrecomp_add_module(svc_fixture INPUT "${svc_fixture_elf}" NAME svc_fixture INDEX 1
+        BASE 0x7300000000 KIND static_elf SHARDS 1 JOBS 1)
+    target_compile_definitions(svc_fixture PUBLIC NXRECOMP_SUBPAGE_CHECKS=1)
+    add_executable(ps5_svc_tests sync_main.cpp test_svc_posix.cpp "${root}/ps5/app/thread_exit.cpp")
+    target_include_directories(ps5_svc_tests PRIVATE "${root}/runtime/tests")
+    target_compile_definitions(ps5_svc_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_SVC=1)
+    target_compile_options(ps5_svc_tests PRIVATE -Wall -Wextra -Werror -mcx16)
+    target_link_libraries(ps5_svc_tests PRIVATE nxrt_ps5_svc svc_fixture)
+    target_link_options(ps5_svc_tests PRIVATE "LINKER:--wrap,pthread_create")
     add_executable(ps5_kernel_tests sync_main.cpp test_kernel_posix.cpp "${root}/ps5/app/thread_exit.cpp")
     target_include_directories(ps5_kernel_tests PRIVATE "${root}/runtime/tests")
     target_compile_definitions(ps5_kernel_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_KERNEL=1
@@ -68,7 +83,10 @@ list(LENGTH host_thread_cases host_thread_count)
 file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/test_kernel_posix.cpp" kernel_cases REGEX "^NXTEST\\(")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_kernel_posix.cpp")
 list(LENGTH kernel_cases kernel_count)
-math(EXPR runtime_case_count "125 + ${host_thread_count} + ${kernel_count}")
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/test_svc_posix.cpp" svc_cases REGEX "^NXTEST\\(")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_svc_posix.cpp")
+list(LENGTH svc_cases svc_count)
+math(EXPR runtime_case_count "125 + ${host_thread_count} + ${kernel_count} + ${svc_count}")
 set(runtime_game_images false)
 if(PKP_GAME_IMAGE_INPUT)
     if(NOT PS5)
@@ -94,7 +112,7 @@ if(PKP_GAME_IMAGE_INPUT)
     target_compile_options(ps5_game_image_tests PRIVATE -Wall -Wextra -Werror -mcx16)
     target_link_libraries(ps5_game_image_tests PRIVATE nxrt_ps5_core)
     target_link_options(ps5_game_image_tests PRIVATE "LINKER:--wrap,pthread_create")
-    math(EXPR runtime_case_count "126 + ${host_thread_count} + ${kernel_count}")
+    math(EXPR runtime_case_count "126 + ${host_thread_count} + ${kernel_count} + ${svc_count}")
     set(runtime_game_images true)
 endif()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/runtime-suite.json"
@@ -109,7 +127,7 @@ if(PKP_BUILD_NATIVE_APP)
     endif()
     set(native "${PKP_NATIVE_APP_ROOT}/tooling/native")
     set(sdk "$ENV{PS5_PAYLOAD_SDK}")
-    add_executable(ps5_runtime_app ${platform_test_sources} test_guest_region.cpp test_kernel_posix.cpp
+    add_executable(ps5_runtime_app ${platform_test_sources} test_guest_region.cpp test_kernel_posix.cpp test_svc_posix.cpp
         test_app_runtime.cpp test_app_heap.cpp heap_fault.cpp "${CMAKE_CURRENT_LIST_DIR}/../app/heap.cpp"
         "${native}/app_crt.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/runtime.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/../app/thread_exit.cpp" "${CMAKE_CURRENT_LIST_DIR}/../app/lifecycle.cpp"
@@ -129,7 +147,7 @@ if(PKP_BUILD_NATIVE_APP)
         "LINKER:--version-script,${CMAKE_CURRENT_LIST_DIR}/../app/exports.map"
         "LINKER:--eh-frame-hdr" "LINKER:--no-dynamic-linker" "LINKER:-e,_start"
         "LINKER:--wrap,mprotect" "LINKER:--wrap,pthread_create")
-    target_link_libraries(ps5_runtime_app PRIVATE nxrt_ps5_kernel subpage_fixture
+    target_link_libraries(ps5_runtime_app PRIVATE nxrt_ps5_svc subpage_fixture svc_fixture
         "-Wl,--start-group" "${sdk}/target/lib/libc++.a" "${sdk}/target/lib/libc++abi.a"
         "${sdk}/target/lib/libunwind.a" "-Wl,--end-group" "-Wl,--as-needed"
         "${sdk}/target/lib/libSceLibcInternal.so" "${sdk}/target/lib/libkernel.so"

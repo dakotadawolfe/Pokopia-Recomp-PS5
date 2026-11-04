@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SVC table and dispatcher (see include/nxrt/svc.h). Dispatch pattern from SuperMarioWonderRecomp runtime/src/kernel.cpp (MIT).
 #include "nxrt/svc.h"
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -15,15 +17,18 @@
 #include <string>
 
 #include "nxrt/config.h"
-#include "nxrt/diag.h"
 #include "nxrt/dispatch.h"
 #include "nxrt/gauge.h"
 #include "nxrt/kernel.h"
+#ifndef NXRT_DISABLE_FRAME_TRACE
 #include "nxrt/ftrace.h"
+#endif
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
 #include "nxrt/module.h"
+#ifndef NXRT_DISABLE_TEST_TOOLING
 #include "nxrt/tt.h"
+#endif
 
 namespace nxrt {
 namespace {
@@ -35,7 +40,7 @@ const NameEntry kNames[] = {
 };
 #undef NXRT_SVC
 
-SvcHandler g_handlers[kSvcCount];
+std::atomic<SvcHandler> g_handlers[kSvcCount];
 std::atomic<uint64_t> g_calls[kSvcCount];
 std::once_flag g_init_once;
 
@@ -44,6 +49,7 @@ std::map<uint32_t, SvcUnknownRecord> g_unknown;
 std::atomic<uint64_t> g_unknown_total{0};
 std::atomic<int64_t> g_log_limit{-1};
 
+#ifndef NXRT_DISABLE_FRAME_TRACE
 // [diag] wait_sites (env NXRT_DIAG_WAIT_SITES=1): every svc that takes 20 us or more is counted against its thread, its number and the first two
 // return addresses in main (frame-pointer walk); the 12 sites with the most time are logged every 10 s (time since the previous dump).
 struct WaitSite { uint64_t n = 0, ns = 0, req_ns = 0; };
@@ -96,6 +102,8 @@ void wait_site_record(::Ctx* c, uint32_t number, uint64_t req, uint64_t t0, uint
     g_ws_dump_ns = t1;
 }
 
+#endif
+
 // ---- gauges (include/nxrt/gauge.h) ----
 // Removes its gauge when the file's statics are torn down (declared after the tables above, so it goes first).
 struct GaugeHook {
@@ -122,19 +130,21 @@ const char* svc_name(uint32_t number) {
 }
 
 void svc_register(uint32_t number, SvcHandler fn) {
-    if (number < kSvcCount) g_handlers[number] = fn;
+    if (number < kSvcCount) g_handlers[number].store(fn, std::memory_order_release);
 }
 
-SvcHandler svc_handler(uint32_t number) { return number < kSvcCount ? g_handlers[number] : nullptr; }
+SvcHandler svc_handler(uint32_t number) { return number < kSvcCount ? g_handlers[number].load(std::memory_order_acquire) : nullptr; }
 
 void svc_init() {
     std::call_once(g_init_once, [] {
+        svc_register_thread_group();
+#ifndef NXRT_SVC_THREAD_GROUP_ONLY
         svc_register_memory_group();
         svc_register_info_group();
-        svc_register_thread_group();
         svc_register_ipc_group();
+#endif
         size_t n = 0;
-        for (auto* h : g_handlers) n += h != nullptr;
+        for (auto& h : g_handlers) n += h.load() != nullptr;
         NXLOG_I("svc", "%zu SVC handlers registered", n);
     });
 }
@@ -168,6 +178,7 @@ static void report_unknown(::Ctx* c, uint32_t number, uint64_t pc) {
 namespace {
 std::atomic<void (*)()> g_busy_hook{nullptr};
 
+#ifndef NXRT_DISABLE_FRAME_TRACE
 // The hitch line's split of the game's presenting thread: time in system calls, and of it IPC (services, file reads) and waits.
 struct GameSvcTimer {
     uint64_t t0;
@@ -183,14 +194,21 @@ struct GameSvcTimer {
     GameSvcTimer(const GameSvcTimer&) = delete;
     GameSvcTimer& operator=(const GameSvcTimer&) = delete;
 };
+#endif
 }
 void svc_set_busy_hook(void (*fn)()) { g_busy_hook.store(fn, std::memory_order_release); }
 
 void svc_dispatch(::Ctx* c, uint32_t number, uint64_t pc) {
+#ifndef NXRT_DISABLE_FRAME_TRACE
     GameSvcTimer game_timer(number);
+#endif
+#ifdef _WIN32
     if (kernel::KThread* self = kernel::current_thread()) self->last_proc.store(static_cast<int>(GetCurrentProcessorNumber()), std::memory_order_relaxed);   // the starvation line
+#endif
     if (auto fn = g_busy_hook.load(std::memory_order_relaxed)) fn();
+#ifndef NXRT_DISABLE_TEST_TOOLING
     if (tt::detail::svc_every.load(std::memory_order_relaxed)) tt::detail::on_svc(c);      // test tooling: frame_source = svc:N
+#endif
     SvcHandler h = svc_handler(number);
     if (number < kSvcCount) g_calls[number].fetch_add(1, std::memory_order_relaxed);
     if (!h) {
@@ -198,6 +216,7 @@ void svc_dispatch(::Ctx* c, uint32_t number, uint64_t pc) {
         c->x[0] = kernel::kNotImplemented;
         return;
     }
+#ifndef NXRT_DISABLE_FRAME_TRACE
     if (wait_sites_on()) {
         const uint64_t req = number == 0x0B ? c->x[0] : number == 0x18 || number == 0x1C ? c->x[3] : 0;   // SleepThread / WaitSynchronization / WaitProcessWideKeyAtomic timeout
         const uint64_t t0 = ft::now_ns();
@@ -214,6 +233,7 @@ void svc_dispatch(::Ctx* c, uint32_t number, uint64_t pc) {
         if (t1 - t0 >= 100000) { static const uint16_t z = ft::zone_id("svc"); ft::event(z, t0, t1, number); }
         return;
     }
+#endif
     h(c);
 }
 

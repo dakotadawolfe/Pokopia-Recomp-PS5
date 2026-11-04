@@ -2,17 +2,23 @@
 // Thread, event, synchronisation, time and diagnostic SVCs. Semantics from the Switchbrew SVC page; structure of the handlers
 // adapted from SuperMarioWonderRecomp runtime/src/kernel.cpp svc_impl (MIT, Copyright (c) 2026 BelmanteGu; see THIRD_PARTY_NOTICES.md).
 // Argument registers (AArch64): see include/nxrt/svc.h.
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "nxrt/subpage.h"
+#include "kernel_internal.h"
+#endif
 
 #include <cstring>
 #include <string>
 
 #include <cstdio>
-#include "nxrt/diag.h"
 #include "nxrt/dispatch.h"
 #include "nxrt/kernel.h"
 #include "nxrt/log.h"
+#ifdef _WIN32
 #include "nxrt/runtime.h"
+#endif
 #include "nxrt/memory.h"
 #include "nxrt/module.h"
 #include "nxrt/svc.h"
@@ -24,6 +30,7 @@ using namespace kernel;
 
 uint64_t& X(::Ctx* c, int n) { return c->x[n]; }
 
+#ifdef _WIN32
 void svc_exit_process(::Ctx* c) {
     NXLOG_I("svc", "svcExitProcess from thread %s", current_thread() ? current_thread()->name.c_str() : "?");
     {   // who asked: lr and the x29 frame chain (a game that quits during boot leaves no other trace)
@@ -45,6 +52,8 @@ void svc_exit_process(::Ctx* c) {
     log_flush();
     ExitProcess(0);
 }
+
+#endif
 
 void svc_create_thread(::Ctx* c) {            // x1 entry, x2 arg, x3 stack top, w4 priority, w5 core -> x1 handle
     int32_t prio = static_cast<int32_t>(X(c, 4)), core = static_cast<int32_t>(X(c, 5));
@@ -76,6 +85,9 @@ void svc_sleep_thread(::Ctx* c) {              // x0 ns (0, -1, -2 = yield varia
 void svc_get_thread_priority(::Ctx* c) {       // w1 handle -> w1 priority
     auto t = handle_as<KThread>(static_cast<uint32_t>(X(c, 1)));
     if (!t) return svc_ret(c, kInvalidHandle);
+#ifndef _WIN32
+    detail::KernelGuard lock;
+#endif
     X(c, 1) = static_cast<uint32_t>(t->prio);
     svc_ret(c, kOk);
 }
@@ -90,6 +102,9 @@ void svc_set_thread_priority(::Ctx* c) {       // w0 handle, w1 priority
 void svc_get_thread_core_mask(::Ctx* c) {      // w2 handle -> w1 ideal core, x2 affinity mask
     auto t = handle_as<KThread>(static_cast<uint32_t>(X(c, 2)));
     if (!t) return svc_ret(c, kInvalidHandle);
+#ifndef _WIN32
+    detail::KernelGuard lock;
+#endif
     X(c, 1) = static_cast<uint32_t>(t->ideal_core);
     X(c, 2) = t->core_mask;
     svc_ret(c, kOk);
@@ -111,7 +126,9 @@ void svc_set_thread_core_mask(::Ctx* c) {      // w0 handle, w1 ideal core (0..3
     uint64_t mask = X(c, 2);
     if (ideal == -3) {                                   // keep the ideal core, replace the mask
         if (!mask) return fail(kInvalidCombination);
+#ifdef _WIN32
         ideal = t->ideal_core;
+#endif // POSIX resolves the keep-current request under the kernel lock.
     } else if (ideal != -2 && (ideal < -1 || ideal > 7)) {              // -1 = IdealCoreDontCare: only the mask matters
         return fail(kInvalidCoreId);
     } else if (!mask) {
@@ -121,11 +138,13 @@ void svc_set_thread_core_mask(::Ctx* c) {      // w0 handle, w1 ideal core (0..3
     svc_ret(c, kOk);
 }
 
+#ifdef _WIN32
 void svc_get_current_processor_number(::Ctx* c) { X(c, 0) = static_cast<uint32_t>(sched_current_core()); }
+#endif
 
 void svc_signal_event(::Ctx* c) {              // w0 event handle (writable)
     auto e = handle_as<KEvent>(static_cast<uint32_t>(X(c, 0)));
-    if (!e) return svc_ret(c, kInvalidHandle);
+    if (!e || !e->writable) return svc_ret(c, kInvalidHandle);
     e->state->signaled = true;
     notify_waitable_changed();
     svc_ret(c, kOk);
@@ -140,9 +159,8 @@ void svc_clear_event(::Ctx* c) {               // w0 event handle
 
 void svc_reset_signal(::Ctx* c) {              // w0 readable event handle: InvalidState when it was not signaled
     auto e = handle_as<KEvent>(static_cast<uint32_t>(X(c, 0)));
-    if (!e) return svc_ret(c, kInvalidHandle);
-    if (!e->state->signaled) return svc_ret(c, kInvalidState);
-    e->state->signaled = false;
+    if (!e || e->writable) return svc_ret(c, kInvalidHandle);
+    if (!e->state->signaled.exchange(false)) return svc_ret(c, kInvalidState);
     svc_ret(c, kOk);
 }
 
@@ -177,21 +195,72 @@ void svc_wait_synchronization(::Ctx* c) {      // x1 handles*, w2 count, x3 time
     uint32_t count = static_cast<uint32_t>(X(c, 2));
     if (count > 0x40) return svc_ret(c, kOutOfRange);
     uint32_t handles[0x40];
+#ifdef _WIN32
     if (count && !mem::is_mapped(X(c, 1), count * 4ull)) return svc_ret(c, kInvalidPointer);
-    for (uint32_t i = 0; i < count; i++) handles[i] = *reinterpret_cast<uint32_t*>(X(c, 1) + 4 * i);
+#else
+    if (!mem::SubpageMap::allows(X(c, 1), count * 4ull, 1)) return svc_ret(c, kInvalidPointer);
+#endif
+    for (uint32_t i = 0; i < count; i++) {
+        std::memcpy(&handles[i], reinterpret_cast<const void*>(X(c, 1) + 4 * i), 4);
+#ifndef _WIN32
+        auto object = handle_get(handles[i]);
+        auto event = std::dynamic_pointer_cast<KEvent>(object);
+        if (!object || (object->type() != ObjType::Thread && (!event || event->writable))) {
+            X(c, 1) = UINT32_MAX;
+            return svc_ret(c, kInvalidHandle);
+        }
+#endif
+    }
     uint32_t rc = wait_synchronization(handles, static_cast<int32_t>(count), static_cast<int64_t>(X(c, 3)), &index);
     X(c, 1) = static_cast<uint32_t>(index);
     svc_ret(c, rc);
 }
 
 void svc_cancel_synchronization(::Ctx* c) { svc_ret(c, cancel_synchronization(static_cast<uint32_t>(X(c, 0)))); }
-void svc_arbitrate_lock(::Ctx* c) { svc_ret(c, arbitrate_lock(static_cast<uint32_t>(X(c, 0)), X(c, 1), static_cast<uint32_t>(X(c, 2)))); }
-void svc_arbitrate_unlock(::Ctx* c) { svc_ret(c, arbitrate_unlock(X(c, 0))); }
-void svc_wait_pwk(::Ctx* c) { svc_ret(c, wait_process_wide_key(X(c, 0), X(c, 1), static_cast<uint32_t>(X(c, 2)), static_cast<int64_t>(X(c, 3)))); }
-void svc_signal_pwk(::Ctx* c) { signal_process_wide_key(X(c, 0), static_cast<int32_t>(X(c, 1))); }   // returns void on Horizon: x0 untouched
+// Validate raw guest words before the shared kernel protocol touches them.
+uint32_t word_access(uint64_t address, unsigned access) {
+    if (address & 3) return kInvalidAddress;
+#ifndef _WIN32
+    if (!mem::SubpageMap::allows(address, 4, access)) return kInvalidMemoryState;
+#else
+    (void)access;
+#endif
+    return kOk;
+}
+void svc_arbitrate_lock(::Ctx* c) {
+    const auto rc = word_access(X(c, 1), 3);
+    svc_ret(c, rc ? rc : arbitrate_lock(static_cast<uint32_t>(X(c, 0)), X(c, 1), static_cast<uint32_t>(X(c, 2))));
+}
+void svc_arbitrate_unlock(::Ctx* c) {
+    const auto rc = word_access(X(c, 0), 3);
+    svc_ret(c, rc ? rc : arbitrate_unlock(X(c, 0)));
+}
+void svc_wait_pwk(::Ctx* c) {
+    auto rc = word_access(X(c, 0), 3);
+    if (!rc) rc = word_access(X(c, 1), 3);
+    svc_ret(c, rc ? rc : wait_process_wide_key(X(c, 0), X(c, 1), static_cast<uint32_t>(X(c, 2)), static_cast<int64_t>(X(c, 3))));
+}
+void svc_signal_pwk(::Ctx* c) {
+    // Horizon returns void, so the argument register must remain intact.
+    if (!word_access(X(c, 0), 3)) signal_process_wide_key(X(c, 0), static_cast<int32_t>(X(c, 1)));
+    else NXLOG_W("svc", "SignalProcessWideKey rejected an inaccessible key at %llx", static_cast<unsigned long long>(X(c, 0)));
+}
 void svc_get_system_tick(::Ctx* c) { X(c, 0) = system_tick(); }
-void svc_wait_for_address(::Ctx* c) { svc_ret(c, wait_for_address(X(c, 0), static_cast<uint32_t>(X(c, 1)), static_cast<int32_t>(X(c, 2)), static_cast<int64_t>(X(c, 3)))); }
-void svc_signal_to_address(::Ctx* c) { svc_ret(c, signal_to_address(X(c, 0), static_cast<uint32_t>(X(c, 1)), static_cast<int32_t>(X(c, 2)), static_cast<int32_t>(X(c, 3)))); }
+void svc_wait_for_address(::Ctx* c) {
+    if (X(c, 0) & 3) return svc_ret(c, kInvalidAddress);
+    const auto type = static_cast<uint32_t>(X(c, 1));
+    if (type > 2) return svc_ret(c, kInvalidEnum);
+    const auto rc = word_access(X(c, 0), type == 1 ? 3 : 1);
+    svc_ret(c, rc ? rc : wait_for_address(X(c, 0), type, static_cast<int32_t>(X(c, 2)), static_cast<int64_t>(X(c, 3))));
+}
+void svc_signal_to_address(::Ctx* c) {
+    if (X(c, 0) & 3) return svc_ret(c, kInvalidAddress);
+    const auto type = static_cast<uint32_t>(X(c, 1));
+    if (type > 2) return svc_ret(c, kInvalidEnum);
+    const auto rc = word_access(X(c, 0), type ? 3 : 1);
+    svc_ret(c, rc ? rc : signal_to_address(X(c, 0), type, static_cast<int32_t>(X(c, 2)), static_cast<int32_t>(X(c, 3))));
+}
+#ifdef _WIN32
 void svc_nop_ok(::Ctx* c) { svc_ret(c, kOk); }
 void svc_nop_void(::Ctx*) {}
 
@@ -217,26 +286,38 @@ void svc_break(::Ctx* c) {
     TerminateProcess(GetCurrentProcess(), 2);
 }
 
+#endif
+
 void svc_output_debug_string(::Ctx* c) {       // x0 pointer, x1 length
     uint64_t p = X(c, 0), n = X(c, 1);
     if (n > 1024) n = 1024;
+#ifdef _WIN32
     if (n && !mem::is_mapped(p, n)) return svc_ret(c, kInvalidPointer);
-    std::string s(reinterpret_cast<const char*>(p), static_cast<size_t>(n));
+#else
+    if (!mem::SubpageMap::allows(p, n, 1)) return svc_ret(c, kInvalidPointer);
+#endif
+    std::string s;
+    if (n) s.assign(reinterpret_cast<const char*>(p), static_cast<size_t>(n));
     while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == '\0')) s.pop_back();
     NXLOG_I("guest", "%s", s.c_str());
     svc_ret(c, kOk);
 }
 
+#ifdef _WIN32
 void svc_return_from_exception(::Ctx* c) {
     NXLOG_E("svc", "svcReturnFromException(0x%llx): guest exception handlers are not supported", (unsigned long long)X(c, 0));
     log_flush();
     RaiseException(0xE0000003, EXCEPTION_NONCONTINUABLE, 0, nullptr);
 }
 
+#endif
+
 }  // namespace
 
 void svc_register_thread_group() {
+#ifdef _WIN32
     svc_register(0x07, svc_exit_process);
+#endif
     svc_register(0x08, svc_create_thread);
     svc_register(0x09, svc_start_thread);
     svc_register(0x0A, svc_exit_thread);
@@ -245,7 +326,9 @@ void svc_register_thread_group() {
     svc_register(0x0D, svc_set_thread_priority);
     svc_register(0x0E, svc_get_thread_core_mask);
     svc_register(0x0F, svc_set_thread_core_mask);
+#ifdef _WIN32
     svc_register(0x10, svc_get_current_processor_number);
+#endif
     svc_register(0x11, svc_signal_event);
     svc_register(0x12, svc_clear_event);
     svc_register(0x16, svc_close_handle);
@@ -257,13 +340,21 @@ void svc_register_thread_group() {
     svc_register(0x1C, svc_wait_pwk);
     svc_register(0x1D, svc_signal_pwk);
     svc_register(0x1E, svc_get_system_tick);
+#ifdef _WIN32
     svc_register(0x26, svc_break);
+#endif
     svc_register(0x27, svc_output_debug_string);
+#ifdef _WIN32
     svc_register(0x28, svc_return_from_exception);
+#endif
+#ifdef _WIN32
     svc_register(0x32, svc_nop_ok);          // SetThreadActivity: threads run until they exit
+#endif
     svc_register(0x34, svc_wait_for_address);
     svc_register(0x35, svc_signal_to_address);
+#ifdef _WIN32
     svc_register(0x36, svc_nop_void);        // SynchronizePreemptionState
+#endif
     svc_register(0x45, svc_create_event);
 }
 

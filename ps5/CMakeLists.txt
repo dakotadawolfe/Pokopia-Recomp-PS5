@@ -23,6 +23,7 @@ include("${PKP_ROOT}/recomp/cmake/NxRecomp.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/platform.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/core.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/kernel.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/svc.cmake")
 
 # Keep the upstream addresses until the runtime and RADV allocation domains
 # have been partitioned together. These archives do not map or execute them.
@@ -39,4 +40,4 @@ add_custom_target(pkp_modules ALL DEPENDS pkp_main pkp_sdk pkp_subsdk0 pkp_rtld)
 foreach(module pkp_main pkp_sdk pkp_subsdk0 pkp_rtld)
     target_compile_definitions(${module} PUBLIC NXRECOMP_SUBPAGE_CHECKS=1)
 endforeach()
-add_custom_target(pkp_native_components DEPENDS pkp_modules nxrt_ps5_platform nxrt_ps5_core nxrt_ps5_kernel)
+add_custom_target(pkp_native_components DEPENDS pkp_modules nxrt_ps5_platform nxrt_ps5_core nxrt_ps5_kernel nxrt_ps5_svc)

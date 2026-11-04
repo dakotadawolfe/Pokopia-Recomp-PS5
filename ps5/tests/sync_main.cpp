@@ -50,6 +50,8 @@ int main() {
     constexpr const char* prefix = "thread-runtime";
 #elif defined(NXRT_TEST_KERNEL)
     constexpr const char* prefix = "kernel-runtime";
+#elif defined(NXRT_TEST_SVC)
+    constexpr const char* prefix = "svc-runtime";
 #elif defined(NXRT_TEST_LOADER)
     constexpr const char* prefix = "loader-runtime";
 #elif defined(NXRT_TEST_GAME_IMAGES)

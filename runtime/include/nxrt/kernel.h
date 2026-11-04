@@ -60,7 +60,7 @@ struct KObject {
 };
 
 struct EventState {
-    bool signaled = false;
+    std::atomic<bool> signaled{false};
 };
 struct KEvent : KObject {                                  // readable and writable handles share `state`
     std::shared_ptr<EventState> state = std::make_shared<EventState>();
