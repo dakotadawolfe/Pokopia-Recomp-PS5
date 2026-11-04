@@ -8,6 +8,9 @@
 #include "nxrt/log.h"
 #include "nxrt/services_api.h"
 #include "nxrt/am_ps5.h"
+#include "nxrt/config.h"
+#include "nxrt/game.h"
+#include "nxrt/services.h"
 #include "trace_ipc_reply.h"
 #include <array>
 #include <algorithm>
@@ -813,6 +816,154 @@ NXTEST(applet_gpu_error_event_copies_remain_shared_and_reset_isolates_old_reader
     const auto next = f.child(f.open(), 20); REQUIRE(next);
     CHECK_EQ(f.send(next, request(130)), k::kOk); reply = f.reply(); REQUIRE(reply.copy.size() == 1);
     CHECK(k::handle_as<k::KEvent>(reply.copy[0])->signaled());
+}
+NXTEST(applet_offline_events_use_shared_readable_handles_and_isolated_channels) {
+    AmFixture f; const auto application = f.child(f.open(), 20); REQUIRE(application);
+    auto convert = request(0); convert.type = hipc::kInvoke2ManagerMethodOld;
+    REQUIRE(f.send(application, convert) == k::kOk);
+    std::vector<std::shared_ptr<k::KEvent>> events;
+    for (auto command : {140u, 150u, 160u, 210u}) {
+        const auto inner = request(command); auto m = request(0); m.raw.clear();
+        push(m.raw, uint8_t{1}); push(m.raw, uint8_t{0}); push(m.raw, uint16_t{16});
+        push(m.raw, uint32_t{1}); push(m.raw, uint64_t{0});
+        m.raw.insert(m.raw.end(), inner.raw.begin(), inner.raw.end());
+        REQUIRE(f.send(application, m) == k::kOk); auto r = f.reply();
+        CHECK_EQ(word(r.raw, 16), 0x4f434653u); CHECK_EQ(word(r.raw, 24), 0u);
+        REQUIRE(r.copy.size() == 1); CHECK(r.move.empty()); CHECK_EQ(word(r.raw, 0), 0u);
+        auto first = k::handle_as<k::KEvent>(r.copy[0]); REQUIRE(first);
+        CHECK(!first->writable && !first->signaled()); k::handle_close(r.copy[0]);
+        REQUIRE(f.send(application, m) == k::kOk); r = f.reply(); REQUIRE(r.copy.size() == 1);
+        CHECK(k::handle_as<k::KEvent>(r.copy[0])->state == first->state);
+        for (const auto& previous : events) CHECK(first->state != previous->state);
+        events.push_back(first);
+    }
+    nxrt::services::amctl::signal_gpu_error();
+    for (const auto& event : events) CHECK(!event->signaled());
+    nxrt::services::am_reset(); const auto fresh = f.child(f.open(), 20); REQUIRE(fresh);
+    REQUIRE(f.send(fresh, request(210)) == k::kOk); const auto r = f.reply(); REQUIRE(r.copy.size() == 1);
+    CHECK(k::handle_as<k::KEvent>(r.copy[0])->state != events.back()->state);
+}
+NXTEST(applet_event_and_metadata_queries_reject_foreign_resources_without_handle_leaks) {
+    AmFixture f; const auto application = f.child(f.open(), 20); REQUIRE(application);
+    const auto service = k::handle_as<ipc::KSession>(application)->svc; const auto count = k::handle_count();
+    for (auto command : {21u, 23u, 65u, 121u, 123u, 130u, 140u, 141u, 150u, 151u, 160u, 210u}) {
+        ipc::Request req; req.cmd = command; ipc::Response rsp;
+        req.in_copy = {k::kPseudoCurrentProcess}; CHECK_EQ(service->handle(req, rsp), k::kInvalidHandle);
+        req.in_copy.clear(); req.a = {{f.base, 4}}; CHECK_EQ(service->handle(req, rsp), k::kInvalidCombination);
+        req.a.clear(); req.in_services = {service}; CHECK_EQ(service->handle(req, rsp), k::kInvalidCombination);
+        CHECK(rsp.out.empty() && rsp.out_copy.empty() && rsp.out_objects.empty()); CHECK_EQ(k::handle_count(), count);
+    }
+}
+NXTEST(applet_event_handle_exhaustion_fails_without_losing_service_state) {
+    AmFixture f; const auto application = f.child(f.open(), 20); REQUIRE(application);
+    const auto service = k::handle_as<ipc::KSession>(application)->svc;
+    auto object = std::make_shared<k::KEvent>(); std::vector<uint32_t> handles;
+    for (;;) { auto h = k::handle_add(object); if (!h) break; handles.push_back(h); }
+    ipc::Request req; req.cmd = 210; ipc::Response rsp;
+    CHECK_EQ(service->handle(req, rsp), k::kOutOfHandles); CHECK(rsp.out_copy.empty()); REQUIRE(!handles.empty());
+    k::handle_close(handles.back()); handles.pop_back();
+    CHECK_EQ(service->handle(req, rsp), 0u); REQUIRE(rsp.out_copy.size() == 1);
+    CHECK(!k::handle_as<k::KEvent>(rsp.out_copy[0])->signaled());
+    for (auto h : handles) k::handle_close(h);
+}
+NXTEST(applet_empty_launch_and_notification_channels_reach_the_sdk_unchanged) {
+    AmFixture f; const auto application = f.child(f.open(), 20); REQUIRE(application);
+    const auto count = k::handle_count();
+    for (auto command : {1u, 141u, 151u}) {
+        auto m = request(command); if (command == 1) push(m.raw, uint32_t{1});
+        REQUIRE(f.send(application, m) == k::kOk); auto r = f.reply();
+        CHECK_EQ(word(r.raw, 8), k::make_result(128, 2)); CHECK(r.copy.empty() && r.move.empty());
+        const auto decoded = nxrt::diagnostic::decode_reply(reinterpret_cast<const uint32_t*>(f.base), 64, false);
+        CHECK(!nxrt::diagnostic::stop_on_reply(decoded, "IApplicationFunctions", command));
+        CHECK(nxrt::diagnostic::stop_on_reply(decoded, "IApplicationFunctions", 210));
+        CHECK(nxrt::diagnostic::stop_on_reply(decoded, "OtherService", command));
+        CHECK(nxrt::diagnostic::stop_on_reply({false, decoded.result, 0}, "IApplicationFunctions", command));
+        CHECK(nxrt::diagnostic::stop_on_reply({true, k::kInvalidHandle, 0x4f434653}, "IApplicationFunctions", command));
+    }
+    auto m = request(1); push(m.raw, uint32_t{2}); REQUIRE(f.send(application, m) == k::kOk);
+    CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 2)); CHECK_EQ(k::handle_count(), count);
+    m = request(1); push(m.raw, uint32_t{3}); REQUIRE(f.send(application, m) == k::kOk);
+    CHECK_EQ(word(f.reply().raw, 8), k::kOutOfRange);
+    ipc::Request req; ipc::Response rsp; req.cmd = 1;
+    CHECK_EQ(k::handle_as<ipc::KSession>(application)->svc->handle(req, rsp), k::kInvalidSize);
+}
+NXTEST(applet_user_channel_preserves_copies_lifo_order_and_clear) {
+    AmFixture f; const auto p = f.open(), application = f.child(p, 20), creator = f.child(p, 11);
+    REQUIRE(application && creator); const auto data = f.base + 0x1000;
+    const auto storage = f.storage(creator, 4), accessor = f.child(storage, 0); REQUIRE(accessor);
+    for (const char* text : {"one!", "two!"}) {
+        std::memcpy(reinterpret_cast<void*>(data), text, 4);
+        auto m = request(10); push(m.raw, int64_t{0}); m.send.push_back({data, 4, 0});
+        REQUIRE(f.send(accessor, m) == k::kOk); REQUIRE(word(f.reply().raw, 8) == 0);
+        // Move a second session for the same storage. The retained accessor
+        // mutates the source later, so the channel must keep a byte snapshot.
+        const auto duplicate = ipc::create_session_handle(k::handle_as<ipc::KSession>(storage)->svc);
+        REQUIRE(duplicate); m = request(122); m.move = {duplicate};
+        REQUIRE(f.send(application, m) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+        CHECK(!k::handle_get(duplicate));
+    }
+    for (const char* expected : {"two!", "one!"}) {
+        auto m = request(1); push(m.raw, uint32_t{1}); REQUIRE(f.send(application, m) == k::kOk);
+        auto r = f.reply(); REQUIRE(r.move.size() == 1); const auto reader = f.child(r.move[0], 0); REQUIRE(reader);
+        std::memset(reinterpret_cast<void*>(data), 0, 4);
+        m = request(11); push(m.raw, int64_t{0}); m.recv.push_back({data, 4, 0});
+        REQUIRE(f.send(reader, m) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+        CHECK(std::memcmp(reinterpret_cast<void*>(data), expected, 4) == 0);
+    }
+    auto m = request(122); m.move = {storage}; REQUIRE(f.send(application, m) == k::kOk);
+    REQUIRE(f.send(application, request(121)) == k::kOk); CHECK_EQ(word(f.reply().raw, 8), 0u);
+    m = request(1); push(m.raw, uint32_t{1}); REQUIRE(f.send(application, m) == k::kOk);
+    CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 2));
+}
+NXTEST(applet_user_channel_validates_domain_objects_and_bounds_queued_storage) {
+    AmFixture f; const auto p = f.open(); REQUIRE(p);
+    auto convert = request(0); convert.type = hipc::kInvoke2ManagerMethodOld;
+    REQUIRE(f.send(p, convert) == k::kOk);
+    const auto invoke = [&](uint32_t target, hipc::Message inner, uint32_t object = 0) {
+        auto m = request(0); m.raw.clear();
+        push(m.raw, uint8_t{1}); push(m.raw, static_cast<uint8_t>(object != 0));
+        push(m.raw, static_cast<uint16_t>(inner.raw.size()));
+        push(m.raw, target); push(m.raw, uint64_t{0});
+        m.raw.insert(m.raw.end(), inner.raw.begin(), inner.raw.end()); if (object) push(m.raw, object); return m;
+    };
+    REQUIRE(f.send(p, invoke(1, request(20))) == k::kOk); const auto application = word(f.reply().raw, 32);
+    REQUIRE(f.send(p, invoke(1, request(11))) == k::kOk); const auto creator = word(f.reply().raw, 32);
+    auto create = request(10); push(create.raw, int64_t{0});
+    REQUIRE(f.send(p, invoke(creator, create)) == k::kOk); const auto storage = word(f.reply().raw, 32);
+    REQUIRE(application != UINT32_MAX && creator != UINT32_MAX && storage != UINT32_MAX);
+    for (auto object : {1u, 999u}) {
+        REQUIRE(f.send(p, invoke(application, request(122), object)) == k::kOk);
+        CHECK_EQ(word(f.reply().raw, 24), k::make_result(128, 511));
+    }
+    for (unsigned n = 0; n < 16; ++n) {
+        REQUIRE(f.send(p, invoke(application, request(122), storage)) == k::kOk); CHECK_EQ(word(f.reply().raw, 24), 0u);
+    }
+    REQUIRE(f.send(p, invoke(application, request(122), storage)) == k::kOk);
+    CHECK_EQ(word(f.reply().raw, 24), k::make_result(128, 600));
+    nxrt::services::am_reset(); const auto fresh = f.child(f.open(), 20); REQUIRE(fresh);
+    auto m = request(1); push(m.raw, uint32_t{1}); REQUIRE(f.send(fresh, m) == k::kOk);
+    CHECK_EQ(word(f.reply().raw, 8), k::make_result(128, 2));
+}
+NXTEST(applet_basic_queries_return_native_locale_title_version_and_capabilities) {
+    AmFixture f; const auto application = f.child(f.open(), 20); REQUIRE(application);
+    struct ProfileGuard {
+        const nxrt::game::Info* old = nxrt::game::current(); nxrt::game::Info game{};
+        ProfileGuard() {
+            nxrt::config_clear(); game.title_defaults = +[](nxrt::services::TitleProfile& p) { p.display_version = "2.0.1a"; };
+            nxrt::game::set_current(&game);
+        }
+        ~ProfileGuard() { nxrt::game::set_current(old); nxrt::config_clear(); }
+    } guard;
+    auto service = k::handle_as<ipc::KSession>(application)->svc; ipc::Request req; ipc::Response rsp;
+    req.cmd = 21; CHECK_EQ(service->handle(req, rsp), 0u); REQUIRE(rsp.out.size() == 8);
+    CHECK(std::memcmp(rsp.out.data(), "en-US\0\0\0", 8) == 0);
+    req.cmd = 23; rsp = {}; CHECK_EQ(service->handle(req, rsp), 0u); REQUIRE(rsp.out.size() == 16);
+    CHECK(std::memcmp(rsp.out.data(), "2.0.1a", 6) == 0); CHECK_EQ(rsp.out[6], 0);
+    nxrt::config_set("title", "display_version", "12345678901234567890"); rsp = {};
+    CHECK_EQ(service->handle(req, rsp), 0u); REQUIRE(rsp.out.size() == 16);
+    CHECK(std::memcmp(rsp.out.data(), "123456789012345\0", 16) == 0);
+    req.cmd = 65; rsp = {}; CHECK_EQ(service->handle(req, rsp), 0u); REQUIRE(rsp.out.size() == 1); CHECK_EQ(rsp.out[0], 0);
+    req.cmd = 123; rsp = {}; CHECK_EQ(service->handle(req, rsp), 0u); CHECK_EQ(word(rsp.out, 0), UINT32_MAX);
 }
 NXTEST(applet_capture_policy_disables_guest_capture_and_does_not_enable_unbacked_sharing) {
     AmFixture f; const auto p = f.open(), application = f.child(p, 20), self = f.child(p, 1);

@@ -4,6 +4,7 @@
 #include "services_internal.h"
 #include "gsv_ps5.h"
 #include "nxrt/am_ps5.h"
+#include "nxrt/config.h"
 #include "nxrt/kernel.h"
 #include "nxrt/subpage.h"
 #include "nxrt/services_api.h"
@@ -20,6 +21,22 @@ using ipc::Response;
 using ipc::Service;
 using Ptr = std::shared_ptr<Service>;
 constexpr uint32_t focus_changed = 15, operation_changed = 30, performance_changed = 31;
+constexpr uint32_t no_channel_data = res(128, 2);
+struct Storage {
+    std::mutex mu;
+    std::vector<uint8_t> bytes;
+    explicit Storage(size_t size) : bytes(size) {}
+};
+Ptr accessor(const std::shared_ptr<Storage>& data);
+class AppletStorage final : public Service {
+public:
+    const std::shared_ptr<Storage> data;
+    explicit AppletStorage(std::shared_ptr<Storage> value) : Service("IStorage"), data(std::move(value)) {
+        add_cmd(0, "Open", [data = data](Request&, Response& out) -> uint32_t {
+            out.push_object(accessor(data)); return 0;
+        });
+    }
+};
 struct State {
     std::mutex mu;
     std::shared_ptr<kernel::KProcess> process = kernel::current_process();
@@ -28,6 +45,12 @@ struct State {
     std::shared_ptr<kernel::EventState> suspended_event = std::make_shared<kernel::EventState>();
     std::shared_ptr<kernel::EventState> gpu_error_event = std::make_shared<kernel::EventState>();
     std::shared_ptr<kernel::EventState> resolution_event = std::make_shared<kernel::EventState>();
+    std::shared_ptr<kernel::EventState> invitation_event = std::make_shared<kernel::EventState>();
+    std::shared_ptr<kernel::EventState> notification_event = std::make_shared<kernel::EventState>();
+    std::shared_ptr<kernel::EventState> health_warning_event = std::make_shared<kernel::EventState>();
+    std::shared_ptr<kernel::EventState> event210 = std::make_shared<kernel::EventState>();
+    std::vector<std::shared_ptr<Storage>> user_channel;
+    size_t user_channel_bytes = 0;
     std::deque<uint32_t> messages{focus_changed};
     bool docked = true, focused = true, foreground = false;
     bool operation_notify = false, performance_notify = false;
@@ -193,6 +216,32 @@ Ptr window(const std::shared_ptr<State>& state) {
 }
 Ptr application(const std::shared_ptr<State>& state) {
     return make_iface("IApplicationFunctions", [state](Service& s) {
+        s.add_cmd(1, "PopLaunchParameter", [state](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 4)) return rc;
+            const auto kind = req.arg<uint32_t>(0);
+            if (kind != 1 && kind != 2) return kernel::kOutOfRange;
+            // The folder picker does not select a guest account. No fabricated
+            // preselected-user record is returned for kind 2.
+            std::lock_guard lock(state->mu);
+            if (kind == 2 || state->user_channel.empty()) return no_channel_data;
+            auto data = state->user_channel.back();
+            rsp.push_object(std::make_shared<AppletStorage>(data));
+            state->user_channel.pop_back(); state->user_channel_bytes -= data->bytes.size();
+            return 0;
+        });
+        s.add_cmd(21, "GetDesiredLanguage", [](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 0)) return rc;
+            // The native frontend currently has a fixed American English locale.
+            constexpr char code[8] = {'e', 'n', '-', 'U', 'S', 0, 0, 0};
+            rsp.out.assign(code, code + sizeof code); return 0;
+        });
+        s.add_cmd(23, "GetDisplayVersion", [](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 0)) return rc;
+            const auto defaults = title_defaults();
+            const auto version = config_get_str("title", "display_version", defaults.display_version.c_str());
+            rsp.out.resize(16, 0);
+            std::memcpy(rsp.out.data(), version.data(), std::min<size_t>(version.size(), 15)); return 0;
+        });
         s.add_cmd(22, "SetTerminateResult", [state](Request& req, Response&) -> uint32_t {
             if (req.in_size < 4) return kernel::kInvalidCombination;
             std::lock_guard lock(state->mu); state->terminate_result = req.arg<uint32_t>(0); return 0;
@@ -202,9 +251,57 @@ Ptr application(const std::shared_ptr<State>& state) {
             std::lock_guard lock(state->mu); state->startup.notified_running = true;
             rsp.push<uint8_t>(1); return 0;
         });
-        s.add_cmd(130, "GetGpuErrorDetectedSystemEvent", [state](Request&, Response& rsp) {
-            return event_handle(state->gpu_error_event, rsp);
+        s.add_cmd(65, "IsGamePlayRecordingSupported", [](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 0)) return rc;
+            rsp.push<uint8_t>(0); return 0;
         });
+        s.add_cmd(121, "ClearUserChannel", [state](Request& req, Response&) -> uint32_t {
+            if (const auto rc = scalar_request(req, 0)) return rc;
+            std::lock_guard lock(state->mu);
+            state->user_channel.clear(); state->user_channel_bytes = 0; return 0;
+        });
+        s.add_cmd(122, "UnpopToUserChannel", [state](Request& req, Response&) -> uint32_t {
+            if (!req.in_copy.empty() || req.in_move.size() > 1) return kernel::kInvalidHandle;
+            if (!req.a.empty() || !req.b.empty() || !req.w.empty() || !req.x.empty() || !req.c.empty())
+                return kernel::kInvalidCombination;
+            if (req.in_services.size() != 1) return res(128, 511);
+            const auto source = std::dynamic_pointer_cast<AppletStorage>(req.in_services[0]);
+            if (!source) return res(128, 511);
+            if (!req.in_move.empty()) {
+                const auto session = kernel::handle_as<ipc::KSession>(req.in_move[0]);
+                if (!session || session->svc != source) return kernel::kInvalidHandle;
+            }
+            std::scoped_lock lock(state->mu, source->data->mu);
+            // Bound the service's retained memory independently of caller-owned storage.
+            if (state->user_channel.size() >= 16 || source->data->bytes.size() > (0x10000000 - state->user_channel_bytes))
+                return res(128, 600);
+            auto copy = std::make_shared<Storage>(0); copy->bytes = source->data->bytes;
+            state->user_channel.push_back(copy); state->user_channel_bytes += copy->bytes.size(); return 0;
+        });
+        s.add_cmd(123, "GetPreviousProgramIndex", [](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 0)) return rc;
+            rsp.push<int32_t>(-1); return 0;
+        });
+        const auto event = [&s](uint32_t command, const char* name, std::shared_ptr<kernel::EventState> source) {
+            s.add_cmd(command, name, [source](Request& req, Response& rsp) -> uint32_t {
+                if (const auto rc = scalar_request(req, 0)) return rc;
+                return event_handle(source, rsp);
+            });
+        };
+        event(130, "GetGpuErrorDetectedSystemEvent", state->gpu_error_event);
+        // Offline channels have no host producer. Each gets its own unsignaled
+        // event; an empty poll returns the SDK's no-data result, not an object.
+        event(140, "GetFriendInvitationStorageChannelEvent", state->invitation_event);
+        event(150, "GetNotificationStorageChannelEvent", state->notification_event);
+        event(160, "GetHealthWarningDisappearedSystemEvent", state->health_warning_event);
+        // SDK proxy 0x75001bd8cc uses the same native-handle reply helper as
+        // events 130/140/150/160. The event's producer is still unidentified.
+        event(210, "GetUnknownEvent210", state->event210);
+        for (const auto command : {141u, 151u})
+            s.add_cmd(command, "TryPopStorageChannel", [](Request& req, Response&) -> uint32_t {
+                if (const auto rc = scalar_request(req, 0)) return rc;
+                return no_channel_data;
+            });
         // SDK InitializeApplet passes these bytes to its initial screenshot /
         // recording policy and RTC screen-sharing policy respectively. The PS5
         // port exposes neither guest capture nor guest RTC sharing. Names below
@@ -217,11 +314,6 @@ Ptr application(const std::shared_ptr<State>& state) {
         });
     });
 }
-struct Storage {
-    std::mutex mu;
-    std::vector<uint8_t> bytes;
-    explicit Storage(size_t size) : bytes(size) {}
-};
 Ptr accessor(const std::shared_ptr<Storage>& data) {
     return make_iface("IStorageAccessor", [data](Service& s) {
         s.add_cmd(0, "GetSize", [data](Request&, Response& rsp) -> uint32_t {
@@ -253,11 +345,7 @@ Ptr library_creator() {
             if (size < 0 || size > 0x10000000) return res(128, 600);
             try {
                 auto data = std::make_shared<Storage>(static_cast<size_t>(size));
-                rsp.push_object(make_iface("IStorage", [data](Service& storage) {
-                    storage.add_cmd(0, "Open", [data](Request&, Response& out) -> uint32_t {
-                        out.push_object(accessor(data)); return 0;
-                    });
-                }));
+                rsp.push_object(std::make_shared<AppletStorage>(data));
                 return 0;
             } catch (const std::bad_alloc&) { return res(128, 600); }
         });

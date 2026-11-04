@@ -47,6 +47,8 @@ inline bool stop_on_reply(const IpcReplyResult& reply, std::string_view service,
     if (service == "ICommonStateGetter" && command == 1 && reply.result == ((3u << 9) | 128u)) return false;
     if (service == "IPurchaseEventManager" && (command == 3 || command == 4) &&
         reply.result == ((400u << 9) | 164u)) return false;
+    if (service == "IApplicationFunctions" && (command == 1 || command == 141 || command == 151) &&
+        reply.result == ((2u << 9) | 128u)) return false;
     return true;
 }
 inline IpcReplyResult decode_reply(const uint32_t* words, size_t count, bool tipc, size_t cmif_header = 0) {

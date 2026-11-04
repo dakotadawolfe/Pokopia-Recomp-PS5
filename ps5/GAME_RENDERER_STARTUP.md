@@ -417,7 +417,66 @@ and installed readback hashes. The owned FTP helper (PID 91) and completed
 service-test process (PID 100) are gone; both owned payload slots were removed
 and port 2121 is closed. Cleanup is recorded in
 `game-renderer-wire-result-console.json`.
-Game execution beyond the access-log query remains unverified.
+Report `game-native-1793832840-109.log` confirms the access-log query succeeds.
+The title opens the selected USB RomFS twice, queries its size and issues
+multiple successful storage reads. It then asks IApplicationFunctions for
+command 210 and stops at that unported call with `0xbcbd5`. Dispatch reaches
+the stop in 800 ms; native graphics remain initialized with zero draws and
+presentations. The return Home is a controlled dependency exit, not evidence
+of a native crash or a rendered game frame.
+
+## Application events and launch channels
+
+The supplied SDK's command-210 proxy at `0x75001bd8cc` calls the same
+native-handle reply helper (`0x75000d4da4`) as the notification and health-warning
+event getters. The proxy is present at relocated table entry `0x7500db82d0`.
+Local, hash-verified NSO disassembly is retained in
+`work/ps5/sdk-event210-evidence.txt`; this is Capstone/static evidence, not a
+REA provider trace. SDK SHA-256 remains
+`7c12078e9f853f5d77f395155f7308f264fa6e93fadaeba8dca525f4483c09b2`.
+The event's purpose and producer remain unidentified. The implementation
+returns a dedicated unsignaled readable event; it does not synthesize a signal.
+
+The same batch ports friend-invitation and notification event/poll pairs
+(140/141 and 150/151), plus the health-warning event (160). Each event is separate
+and shared across repeated getters within one application state. Offline
+channels have no producer and polls return `128-2` without an output object.
+Only that exact result from commands 1, 141 and 151 is allowed through the
+startup observer; malformed replies and unrelated errors still stop.
+
+Launch-channel commands 1, 121 and 122 now support actual storage snapshots,
+last-in-first-out retrieval and clearing through both session and domain IPC.
+Storage passed to UnpopToUserChannel must be the port's typed applet storage;
+later writes to the source cannot change queued bytes. The native queue is
+bounded to 16 entries and 256 MiB total. No guest account has been selected,
+so the preselected-user query returns no data. Reset isolates new sessions
+from existing channels. These contracts follow the
+[applet interface research](https://switchbrew.org/wiki/Applet_Manager_services#IApplicationFunctions)
+and the inherited runtime's storage-channel implementation.
+
+Basic application queries report the native frontend's fixed `en-US` locale,
+the verified title display version, no guest recording support and no previous
+program index. This does not enable save writes, recording, online invitations,
+account selection or application switching.
+
+Console report `svc-runtime-1793833203-119.log` records **146 cases, zero
+failures**. The added cases exercise readable event handles through the SDK's
+CMIF domain envelope, handle exhaustion, separate event state, exact no-data
+results, storage snapshots/order/clear, moved session ownership, domain objects,
+queue limits, reset isolation and bounded metadata outputs. Payload SHA-256:
+`d442750fa38980885817be64fdeaa998f33b4253ee7ba21bf3bff623cc40131f`.
+Native build, exception-linkage checks and packaging pass. FSELF:
+278,379,713 bytes, SHA-256
+`400ea821018be7686e9cac2dd73f4c99e1171d1185cf8f0d95a7f57e565ae9b9`.
+Native ELF: 284,181,652 bytes, SHA-256
+`e8def8f82ad3b6dfa0de93d393540ff79dd2880ff04bdefb4e0dfc3b48453e77`.
+`game-renderer-channels-install.json` records a stopped/unmounted title check,
+the prior executable backup, and matching complete staged/installed readbacks.
+The transfer helper (PID 111) and completed test process (PID 119) are gone;
+both owned payload slots were removed and port 2121 is closed, recorded in
+`game-renderer-fsp-result-console.json`. Game files and shader caches were not
+transferred or changed.
+Actual game execution beyond command 210 remains unverified.
 
 ## Interpreting a run
 

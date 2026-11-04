@@ -57,8 +57,11 @@ The source path is `[fs] romfs` / `NXRT_FS_ROMFS`, defaulting to
 `/data/pokopia-recomp/game/romfs`. Configure it before opening the service and
 reset FS state after changing it. This implementation consumes one already
 prepared tree; it does not merge update layers or stage files. Game RomFS assets
-have not been staged or read by the game as part of this work. Fixture success
-does not establish game startup, rendering, or gameplay.
+are not staged by this service. Report `game-native-1793832840-109.log` now
+records successful `OpenDataStorageByCurrentProcess`, `GetSize` and multiple
+`IStorage::Read` calls against the selected USB tree. This establishes actual
+game-side storage access; it does not establish complete asset loading,
+rendering or gameplay.
 
 Wire layouts were checked against [libnx fs.c](https://github.com/switchbrew/libnx/blob/master/nx/source/services/fs.c)
 and [Switchbrew's filesystem service research](https://switchbrew.org/wiki/Filesystem_services#OpenDataStorageWithProgramIndex).

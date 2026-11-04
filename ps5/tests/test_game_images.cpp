@@ -778,6 +778,10 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     game.title_defaults = +[](nxrt::services::TitleProfile& profile) {
         profile.program_id = startup_program_id;
         profile.name = "Pokémon Pokopia";
+        profile.display_version = startup_version;
+        // The verified build label also includes the update number for logs.
+        const auto suffix = profile.display_version.find(" (");
+        if (suffix != std::string::npos) profile.display_version.resize(suffix);
     };
 #endif
     RtldCleanup cleanup;
