@@ -147,7 +147,8 @@ struct HidState {
     bool connected[kNpadCount] = {};
     std::map<uint32_t, VibValue> vibration; // last value sent per VibrationDeviceHandle
     // Joy-Con 2 mouse
-    uint64_t nm_addr = 0, nm_size = 0;      // Nmouse transfer memory (guest address = host pointer), 0 when not set up
+    uint64_t nm_addr = 0, nm_size = 0;      // Nmouse service view, 0 when not set up
+    std::shared_ptr<kernel::KTransferMemory> nm_memory, jcms_memory;
     int32_t nm_w = 1920, nm_h = 1080;       // pointer range from InitializeNmouse
     uint64_t jcms_addr = 0, jcms_size = 0;  // Jcms transfer memory
     uint32_t nm_merged_types = 0;
@@ -540,7 +541,9 @@ void sample_nmouse(HidState& s) {
 }
 
 // The guest buffer behind a transfer memory handle, or 0 when it is unusable for `need` bytes.
-uint64_t tm_addr(const ipc::Request& req, uint64_t size, uint64_t need, const char* what) {
+uint64_t tm_addr(const ipc::Request& req, uint64_t size, uint64_t need, const char* what,
+                 std::shared_ptr<kernel::KTransferMemory>& retained) {
+    retained.reset();
     if (req.in_copy.empty()) {
         NXLOG_W("hid", "%s: no transfer memory handle", what);
         return 0;
@@ -551,13 +554,19 @@ uint64_t tm_addr(const ipc::Request& req, uint64_t size, uint64_t need, const ch
         return 0;
     }
     const uint64_t n = std::min(size, tm->size);
-    if (n < need || !mem::is_mapped(tm->addr, need)) {
+#ifdef _WIN32
+    const uint64_t host = mem::is_mapped(tm->addr, need) ? tm->addr : 0;
+#else
+    const uint64_t host = tm->host;
+#endif
+    if (n < need || !host) {
         NXLOG_W("hid", "%s: transfer memory %llx size %llx (request %llx) is smaller than %llx or unmapped", what,
                 static_cast<unsigned long long>(tm->addr), static_cast<unsigned long long>(tm->size), static_cast<unsigned long long>(size),
                 static_cast<unsigned long long>(need));
         return 0;
     }
-    return tm->addr;
+    retained = std::move(tm);
+    return host;
 }
 
 // InitializeNmouse (3139) and its NmouseStateRange form (3130) share one layout: u8 pointer type @0, s32 width @4, s32 height @8,
@@ -570,7 +579,7 @@ uint32_t nm_initialize(ipc::Request& req, const char* what) {
     HidState& s = st();
     s.nm_w = w > 0 ? w : 1920;
     s.nm_h = h > 0 ? h : 1080;
-    s.nm_addr = tm_addr(req, size, kNmMinSize, what);
+    s.nm_addr = tm_addr(req, size, kNmMinSize, what, s.nm_memory);
     s.nm_size = s.nm_addr ? size : 0;
     NXLOG_I("hid", "%s(pointer type %u, range %dx%d, size %llx) -> block %llx", what, type, w, h, static_cast<unsigned long long>(size),
             static_cast<unsigned long long>(s.nm_addr));
@@ -1050,7 +1059,7 @@ void setup_hid(ipc::Service& svc) {
         const uint64_t size = req.arg<uint64_t>(8);   // aruid at 0
         std::lock_guard<std::mutex> lk(st().mu);
         HidState& s = st();
-        s.jcms_addr = tm_addr(req, size, kJcmsMinSize, "InitializeJcms");
+        s.jcms_addr = tm_addr(req, size, kJcmsMinSize, "InitializeJcms", s.jcms_memory);
         s.jcms_size = s.jcms_addr ? size : 0;
         if (s.jcms_addr) jcms_setup(s);
         NXLOG_I("hid", "InitializeJcms(size %llx) -> block %llx", static_cast<unsigned long long>(size), static_cast<unsigned long long>(s.jcms_addr));
@@ -1059,6 +1068,7 @@ void setup_hid(ipc::Service& svc) {
     svc.add_cmd(3111, "FinalizeJcms", [](ipc::Request&, ipc::Response&) -> uint32_t {
         std::lock_guard<std::mutex> lk(st().mu);
         st().jcms_addr = st().jcms_size = 0;
+        st().jcms_memory.reset();
         NXLOG_I("hid", "FinalizeJcms");
         return 0;
     });
@@ -1080,6 +1090,7 @@ void setup_hid(ipc::Service& svc) {
     svc.add_cmd(3131, "FinalizeNmouse", [](ipc::Request&, ipc::Response&) -> uint32_t {
         std::lock_guard<std::mutex> lk(st().mu);
         st().nm_addr = st().nm_size = 0;
+        st().nm_memory.reset();
         g_jc2_listed.store(false);
         g_jc2_active.store(false);
         NXLOG_I("hid", "FinalizeNmouse");
@@ -1181,6 +1192,7 @@ void hid_reset() {
     std::memset(s.connected, 0, sizeof s.connected);
     s.vibration.clear();
     s.nm_addr = s.nm_size = s.jcms_addr = s.jcms_size = 0;
+    s.nm_memory.reset(); s.jcms_memory.reset();
     s.nm_w = 1920;
     s.nm_h = 1080;
     s.nm_merged_types = 0;

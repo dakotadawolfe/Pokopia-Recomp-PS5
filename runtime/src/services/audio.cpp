@@ -121,8 +121,9 @@ GaugeHook gauge_frames("audren.frames_rendered", [] { return static_cast<int64_t
 
 class AudioRendererObj : public Service {
 public:
-    AudioRendererObj(std::unique_ptr<audren::AudioRenderSystem> sys, std::shared_ptr<audren::AudioRendererManager> mgr)
-        : Service("nn::audio::detail::IAudioRenderer"), mgr_(std::move(mgr)), sys_(std::move(sys)) {
+    AudioRendererObj(std::unique_ptr<audren::AudioRenderSystem> sys, std::shared_ptr<audren::AudioRendererManager> mgr,
+                     std::shared_ptr<kernel::KTransferMemory> work_memory)
+        : Service("nn::audio::detail::IAudioRenderer"), work_memory_(std::move(work_memory)), mgr_(std::move(mgr)), sys_(std::move(sys)) {
         g_audren_renderers.add(1);
         audren::AudioRenderSystem* s = sys_.get();
         add_cmd(0, "GetSampleRate", [s](Request&, Response& rsp) -> uint32_t {
@@ -195,10 +196,12 @@ public:
         // The renderer leaves the manager (its destructor unregisters the session and joins the DSP thread when it was the last one).
         std::lock_guard<std::mutex> lk(st().mu);
         sys_.reset();
+        work_memory_.reset();
         NXLOG_D("audren", "audio renderer closed");
     }
 
 private:
+    std::shared_ptr<kernel::KTransferMemory> work_memory_; // Released after the renderer stops, even if the client closes its handle.
     std::shared_ptr<audren::AudioRendererManager> mgr_;   // keeps the manager alive for as long as the renderer exists
     std::unique_ptr<audren::AudioRenderSystem> sys_;
 };
@@ -302,6 +305,7 @@ uint32_t open_renderer(Request& req, Response& rsp, bool manual) {
     // OpenAudioRenderer: config (0x34), u64 work buffer size at 0x38, u64 aruid at 0x40; copy handles: the work buffer transfer memory, the process.
     // OpenAudioRendererForManualExecution: config, u64 work buffer address at 0x38, u64 size at 0x40, u64 aruid at 0x48 (and the process handle).
     uint64_t work_addr = 0, size = 0, user = 0;
+    std::shared_ptr<kernel::KTransferMemory> work_memory;
     if (manual) {
         work_addr = req.arg<uint64_t>(0x38);
         size = req.arg<uint64_t>(0x40);
@@ -309,11 +313,15 @@ uint32_t open_renderer(Request& req, Response& rsp, bool manual) {
     } else {
         size = req.arg<uint64_t>(0x38);
         user = req.arg<uint64_t>(0x40);
-        if (!req.in_copy.empty())
-            if (auto tm = kernel::handle_as<kernel::KTransferMemory>(req.in_copy[0])) work_addr = tm->addr;
+        if (!req.in_copy.empty()) {
+            work_memory = kernel::handle_as<kernel::KTransferMemory>(req.in_copy[0]);
+            if (!work_memory || !work_memory->addr) return kernel::kInvalidHandle;
+            if (size > work_memory->size) return static_cast<uint32_t>(audren::ResultCode::WorkBufferTooSmall);
+            work_addr = work_memory->addr;
+        }
     }
-    // The copy handles stay the client's: HIPC copies them, only move handles change owner (debug note 122). The renderer allocates its own
-    // work memory (as Ryujinx does), so the transfer memory is not kept.
+    // HIPC closes its temporary copied handle after dispatch. Retain the object
+    // until renderer close so the SDK work-buffer lease remains valid.
 
     std::unique_ptr<audren::AudioRenderSystem> sys;
     audren::ResultCode rc;
@@ -330,7 +338,7 @@ uint32_t open_renderer(Request& req, Response& rsp, bool manual) {
     }
     NXLOG_I("audren", "OpenAudioRenderer: rate %u, samples %u, mixbuffers %u, voices %u, sinks %u, effects %u, revision REV%d", cfg.sample_rate,
             cfg.sample_count, cfg.mix_buffer_count, cfg.voice_count, cfg.sink_count, cfg.effect_count, audren::BehaviourInfo::GetRevisionNumber(cfg.revision));
-    rsp.push_object(std::make_shared<AudioRendererObj>(std::move(sys), std::move(mgr)));
+    rsp.push_object(std::make_shared<AudioRendererObj>(std::move(sys), std::move(mgr), std::move(work_memory)));
     return 0;
 }
 

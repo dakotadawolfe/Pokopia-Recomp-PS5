@@ -93,6 +93,9 @@ void shared_memory_reset_for_tests();
 
 struct KTransferMemory : KObject {
     uint64_t addr = 0, size = 0;
+#ifndef _WIN32
+    uint64_t host = 0; // Private service view; owner access follows the SVC permission.
+#endif
     ObjType type() const override { return ObjType::TransferMemory; }
 };
 

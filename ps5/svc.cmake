@@ -21,5 +21,5 @@ target_compile_definitions(nxrt_ps5_svc PRIVATE
 target_compile_options(nxrt_ps5_svc PRIVATE -Wall -Wextra -Werror -mcx16)
 target_link_libraries(nxrt_ps5_svc PUBLIC nxrt_ps5_kernel nxrt_ps5_romfs nxrt_ps5_time_support)
 # PS5 memory handlers currently cover heap size, protection, attributes and
-# queries, exclusive stack mapping, and service-owned shared-memory aliases.
+# queries, exclusive stack mapping, shared aliases and transfer-memory leases.
 # Unported calls keep the dispatcher's explicit not-implemented result.

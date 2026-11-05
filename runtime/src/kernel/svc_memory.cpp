@@ -69,6 +69,30 @@ bool overlaps_perm_locked(uint64_t addr, uint64_t size) {   // call with g_mu he
     return it != g_perm_locked.end() && it->first < addr + size;
 }
 
+#ifndef _WIN32
+struct TransferMemory;
+std::map<uint64_t, TransferMemory*> g_transfers; // Non-owning; handles and services retain each lease.
+struct TransferMemory final : kernel::KTransferMemory {
+    void* view = nullptr;
+    void release_locked() {
+        if (!view) return;
+        if (!mem::protect(addr, size, mem::Prot::RW) || !mem::heap_private_view_unmap(view)) std::abort();
+        mem::vm_set(addr, size, mem::kMemHeap, kPermRW);
+        g_transfers.erase(addr);
+        view = nullptr; host = 0;
+    }
+    ~TransferMemory() override { std::lock_guard lock(g_mu); release_locked(); }
+};
+bool overlaps_transfer(uint64_t addr, uint64_t size) { // g_mu held
+    auto it = g_transfers.upper_bound(addr);
+    if (it != g_transfers.begin()) {
+        const auto* previous = std::prev(it)->second;
+        if (previous->addr + previous->size > addr) return true;
+    }
+    return it != g_transfers.end() && it->first < addr + size;
+}
+#endif
+
 #ifdef _WIN32
 // Host views in the alias region made by MapSharedMemory and MapTransferMemory, keyed by their address (MapPhysicalMemory: g_phys).
 enum class WinKind : uint8_t { Shared, Transfer };
@@ -243,7 +267,8 @@ void set_heap_size(::Ctx* c) {
         mem::VmInfo tail;
         if (!uniform_memory(mem::kHeapBase + size, old - size, tail) ||
             tail.state != mem::kMemHeap || tail.perm != kPermRW ||
-            overlaps_perm_locked(mem::kHeapBase + size, old - size)) {
+            overlaps_perm_locked(mem::kHeapBase + size, old - size) ||
+            overlaps_transfer(mem::kHeapBase + size, old - size)) {
             fail(c, "SetHeapSize (tail in use)", kernel::kInvalidMemoryState, size, old, 0);
             return;
         }
@@ -305,7 +330,8 @@ void set_memory_permission(::Ctx* c) {
     mem::VmInfo before;
     const bool uniform = uniform_memory(addr, size, before);
     const bool reprotected = before.state == mem::kMemHeap || before.state == mem::kMemCodeData || before.state == 0x09;
-    if (!inside || !uniform || !reprotected || overlaps_perm_locked(addr, size) || mem::stack_source_locked(addr, size)) {
+    if (!inside || !uniform || !reprotected || overlaps_perm_locked(addr, size) ||
+        overlaps_transfer(addr, size) || mem::stack_source_locked(addr, size)) {
 #endif
         fail(c, "SetMemoryPermission", kernel::kInvalidMemoryState, addr, size, perm);
         return;
@@ -348,7 +374,7 @@ void set_memory_attribute(::Ctx* c) {
 #ifndef _WIN32
     std::lock_guard lk(g_mu);
     mem::VmInfo before;
-    if (!uniform_memory(addr, size, before) || mem::stack_source_locked(addr, size)) {
+    if (!uniform_memory(addr, size, before) || overlaps_transfer(addr, size) || mem::stack_source_locked(addr, size)) {
         fail(c, "SetMemoryAttribute (range)", kernel::kInvalidMemoryState, addr, size, mask);
         return;
     }
@@ -509,7 +535,7 @@ void stack_memory(::Ctx* c, bool unmap) {
     mem::VmInfo source, target;
     if (!uniform_memory(src, size, source) ||
         (source.state != mem::kMemHeap && source.state != mem::kMemCodeData && source.state != 0x09) ||
-        source.perm != (unmap ? 0u : kPermRW) || overlaps_perm_locked(src, size)) {
+        source.perm != (unmap ? 0u : kPermRW) || overlaps_perm_locked(src, size) || overlaps_transfer(src, size)) {
         fail(c, name, kernel::kInvalidMemoryState, dst, src, size); return;
     }
     if (unmap) {
@@ -582,6 +608,19 @@ void query_memory(::Ctx* c) {
         info.base_address = begin; info.size = end - begin;
     }
 #ifndef _WIN32
+    // Transfer ownership preserves Normal memory state and publishes Locked.
+    // Split the query at lease boundaries even when owner permissions are RW.
+    uint64_t begin = info.base_address, end = begin + info.size;
+    auto next = g_transfers.upper_bound(addr);
+    if (next != g_transfers.begin()) {
+        const auto* previous = std::prev(next)->second;
+        const auto stop = previous->addr + previous->size;
+        if (stop > addr) {
+            begin = std::max(begin, previous->addr); end = std::min(end, stop); info.attribute |= 1;
+        } else begin = std::max(begin, stop);
+    }
+    if (next != g_transfers.end()) end = std::min(end, next->first);
+    info.base_address = begin; info.size = end - begin;
     if (mem::stack_source_locked(addr, 1)) info.attribute |= 1; // Locked while its stack view owns the bytes.
     if (vi.state == mem::kMemInaccessible && vi.size == 0) info.size = 0 - vi.addr;
 #endif
@@ -591,6 +630,58 @@ void query_memory(::Ctx* c) {
             vi.perm);
     svc_ret(c, kernel::kOk);
 }
+
+#ifndef _WIN32
+// CreateTransferMemory borrows existing heap pages until the final handle or
+// service reference closes. A private alias keeps service access independent
+// of the owner's None/Read/ReadWrite permission, including 4 KiB subranges.
+void create_transfer_memory(::Ctx* c) {
+    const uint64_t addr = reg(c, 1), size = reg(c, 2);
+    const uint32_t perm = static_cast<uint32_t>(reg(c, 3));
+    if (addr & kPageMask) { fail(c, "CreateTransferMemory", kernel::kInvalidAddress, addr, size, perm); return; }
+    if (!size || (size & kPageMask)) { fail(c, "CreateTransferMemory", kernel::kInvalidSize, addr, size, perm); return; }
+    if (addr + size <= addr) { fail(c, "CreateTransferMemory", kernel::kInvalidMemoryState, addr, size, perm); return; }
+    if (perm != 0 && perm != kPermR && perm != kPermRW) {
+        fail(c, "CreateTransferMemory", kernel::kInvalidPermission, addr, size, perm); return;
+    }
+    // The object must outlive the lock even on handle-table failure.
+    auto tm = std::make_shared<TransferMemory>();
+    std::lock_guard lock(g_mu);
+    mem::VmInfo before;
+    if (!in_heap(addr, size, heap_now()) || !uniform_memory(addr, size, before) ||
+        before.state != mem::kMemHeap || before.perm != kPermRW || overlaps_perm_locked(addr, size) ||
+        overlaps_transfer(addr, size) || mem::stack_source_locked(addr, size)) {
+        fail(c, "CreateTransferMemory (owner)", kernel::kInvalidMemoryState, addr, size, perm); return;
+    }
+    std::vector<std::pair<uint64_t, uint64_t>> aliases;
+    mem::heap_alias_ranges(aliases);
+    const uint64_t offset = addr - mem::kHeapBase;
+    for (const auto& [start, bytes] : aliases) if (offset < start + bytes && start < offset + size) {
+        fail(c, "CreateTransferMemory (aliased owner)", kernel::kInvalidMemoryState, addr, size, perm); return;
+    }
+    const uint64_t aligned = offset & ~(mem::kAllocGranularity - 1);
+    tm->addr = addr; tm->size = size;
+    // Allocate the tracking node before changing protections.
+    g_transfers.emplace(addr, tm.get());
+    try { tm->view = mem::heap_private_view(aligned, offset - aligned + size); }
+    catch (...) { g_transfers.erase(addr); throw; }
+    if (!tm->view) {
+        g_transfers.erase(addr);
+        fail(c, "CreateTransferMemory (service view)", kernel::kOutOfMemory, addr, size, perm); return;
+    }
+    tm->host = reinterpret_cast<uint64_t>(tm->view) + offset - aligned;
+    const auto access = perm == 0 ? mem::Prot::None : (perm == kPermR ? mem::Prot::R : mem::Prot::RW);
+    if (!mem::protect(addr, size, access)) {
+        tm->release_locked();
+        fail(c, "CreateTransferMemory (protect)", kernel::kInvalidMemoryState, addr, size, perm); return;
+    }
+    mem::vm_set(addr, size, mem::kMemHeap, perm);
+    const uint32_t handle = kernel::handle_add(tm);
+    if (!handle) { fail(c, "CreateTransferMemory (handles)", kernel::kOutOfHandles, addr, size, perm); return; }
+    reg(c, 1) = handle;
+    svc_ret(c, kernel::kOk);
+}
+#endif
 
 #ifdef _WIN32
 // ---- MapSharedMemory (0x13) / UnmapSharedMemory (0x14) ----------------------------------------------------------------------
@@ -936,6 +1027,7 @@ void svc_register_memory_group() {
     svc_register(0x04, map_memory);
     svc_register(0x05, unmap_memory);
     svc_register(0x06, query_memory);
+    svc_register(0x15, create_transfer_memory);
 #ifndef _WIN32
     svc_register(0x13, [](::Ctx* c) { svc_ret(c, kernel::shared_memory_map(static_cast<uint32_t>(reg(c, 0)),
         reg(c, 1), reg(c, 2), static_cast<uint32_t>(reg(c, 3)))); });
@@ -946,7 +1038,6 @@ void svc_register_memory_group() {
     svc_register(0x80, set_gpu_memory_attribute);
     svc_register(0x13, map_shared_memory);
     svc_register(0x14, unmap_shared_memory);
-    svc_register(0x15, create_transfer_memory);
     svc_register(0x2A, flush_entire_data_cache);
     svc_register(0x2B, flush_data_cache);
     svc_register(0x2C, map_physical_memory);
@@ -968,6 +1059,7 @@ void svc_memory_reset_for_tests() {
     g_phys.clear();
     g_maps.clear();
 #else
+    while (!g_transfers.empty()) g_transfers.begin()->second->release_locked();
     kernel::shared_memory_reset_for_tests();
     mem::stack_reset_for_tests();
 #endif

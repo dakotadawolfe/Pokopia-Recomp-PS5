@@ -13,6 +13,10 @@ The next work is ordered around reaching an interactive game:
    Reject unsupported/manual and excess sessions without corrupting a live
    renderer. Coalesce the guest's 240-sample updates into 256-frame output
    blocks, with a bounded queue and stereo downmix.
+   Implement `CreateTransferMemory` for the SDK work buffer: retain coherent
+   service access while enforcing owner permissions, prevent heap shrink or
+   remapping while borrowed, and restore access after the final reference.
+   Keep audio/HID transfer objects alive across IPC's temporary copy handles.
 2. **Shader correctness and observed coverage.** Read compute shared memory
    from control offset `0x64`, separately from local memory at `0x50`, in both
    the runtime and translator. Regenerate the existing private cache and the
@@ -33,12 +37,19 @@ The next work is ordered around reaching an interactive game:
 
 ## Evidence and scope
 
-The automatic PS5 dependency payload passed **60 cases, zero failures**.
+The automatic PS5 dependency payload passed **64 cases, zero failures**.
 These exercise the real AudioOut device with silent samples, audio renderer
 events and PCM processing, session failure/reuse, controller mapping and
 shared-memory updates, import dispatch/overrides, and offline network objects
 and error propagation. The native-module rejection test now uses the compiled
 ABI version rather than assuming that version 4 is always invalid.
+The transfer-memory cases cover 4 KiB subranges, all three owner permissions,
+coherent service writes, final-reference restoration, overlapping leases,
+heap shrink, handle exhaustion and the SDK's audio-open call through HIPC.
+The owner remains Normal/Locked, following
+[Atmosphere's transfer-memory semantics](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/kern_k_transfer_memory.cpp).
+The current POSIX implementation accepts heap-backed owner ranges; guest
+`MapTransferMemory` and `UnmapTransferMemory` remain explicitly unimplemented.
 
 Host audio and NVN2 control-field checks passed. Four shader selection/cache
 tests passed. The native app builds locally; ELF conversion and the package's

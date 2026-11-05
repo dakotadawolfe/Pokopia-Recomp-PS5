@@ -6,6 +6,7 @@
 #include "nxrt/kernel.h"
 #include "nxrt/memory.h"
 #include "nxrt/svc.h"
+#include "nxrt/subpage.h"
 #include "../../runtime/src/services/audren/Server/BehaviourInfo.h"
 #include <array>
 #include <cstring>
@@ -120,4 +121,35 @@ NXTEST(audio_revision_validation_and_size_contract) {
     using B = nxrt::audren::BehaviourInfo;
     CHECK(B::CheckValidRevision(0x40764552)); CHECK(!B::CheckValidRevision(0x41764552));
     CHECK(B::SameRevision(0x40764552, 0x40564552)); CHECK(!B::SameRevision(0x40764552, 0x3f564552));
+}
+
+NXTEST(audio_sdk_open_retains_transfer_memory_after_hipc_copy_and_client_close) {
+    Fixture f;
+    auto manager = ipc::make_service("audren:u"); const auto cfg = config();
+    const uint64_t size = call(manager, 1, args(cfg)).get<uint64_t>(); REQUIRE(size > 0);
+    Ctx ctx{}; ctx.x[1] = 2 << 20; nxrt::svc_dispatch(&ctx, 1); REQUIRE(ctx.x[0] == 0);
+    const uint64_t address = nxrt::mem::kHeapBase + 0x1000;
+    ctx = {}; ctx.x[1] = address; ctx.x[2] = (size + 0xfff) & ~0xfffull; ctx.x[3] = 0;
+    nxrt::svc_dispatch(&ctx, 0x15); REQUIRE(ctx.x[0] == 0); const uint32_t transfer = ctx.x[1];
+    uint32_t handle = 0; REQUIRE(ipc::connect_named_port("audren:u", &handle) == 0);
+    nxrt::hipc::Message message; message.type = nxrt::hipc::kInvoke2MethodOld;
+    put(message.raw, 0, uint32_t{0x49434653}); put(message.raw, 4, uint32_t{0});
+    put(message.raw, 8, uint32_t{0}); put(message.raw, 12, uint32_t{0});
+    put(message.raw, 16, cfg); put(message.raw, 16 + 0x38, size); put(message.raw, 16 + 0x40, uint64_t{0x51});
+    message.copy = {transfer, k::kPseudoCurrentProcess};
+    REQUIRE(nxrt::hipc::build(message, reinterpret_cast<uint32_t*>(f.base), 64));
+    ctx = {}; ctx.tpidrro = f.base; ctx.x[0] = handle; nxrt::svc_dispatch(&ctx, 0x21); REQUIRE(ctx.x[0] == 0);
+    nxrt::hipc::Message reply; REQUIRE(nxrt::hipc::parse(reinterpret_cast<uint32_t*>(f.base), 64, reply));
+    REQUIRE(reply.move.size() == 1);
+    k::handle_close(transfer); CHECK(!nxrt::mem::SubpageMap::allows(address, 4, 1));
+    {
+        auto renderer = k::handle_as<ipc::KSession>(reply.move[0]); REQUIRE(renderer);
+        auto event = call(renderer->svc, 7); REQUIRE(event.data.out_copy.size() == 1);
+        const uint32_t ready = event.data.out_copy[0]; int32_t index = -1;
+        CHECK_EQ(call(renderer->svc, 5).result, 0u);
+        CHECK_EQ(k::wait_synchronization(&ready, 1, 500000000, &index), 0u);
+        CHECK_EQ(call(renderer->svc, 6).result, 0u); k::handle_close(ready);
+    }
+    k::handle_close(reply.move[0]); CHECK(nxrt::mem::SubpageMap::allows(address, size, 3));
+    k::handle_close(handle);
 }
