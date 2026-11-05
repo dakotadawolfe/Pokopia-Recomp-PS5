@@ -39,6 +39,23 @@ struct Thread::State {
 };
 
 Thread::Thread(std::unique_ptr<State> state) : state_(std::move(state)) {}
+thread_local Thread::State* Thread::current_ = nullptr;
+CurrentSample Thread::sample_current() {
+    CurrentSample result;
+    timespec time{};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time)) result.cpu_error = errno;
+    else result.cpu_ns = uint64_t(time.tv_sec) * 1000000000 + time.tv_nsec;
+#ifdef NXRT_TARGET_PS5
+    if (current_ && current_->stack) {
+        const auto low = reinterpret_cast<uintptr_t>(current_->stack->data()) + host_vm::page_size();
+        const auto high = low + current_->stack_size;
+        const auto at = reinterpret_cast<uintptr_t>(&result);
+        result.stack_bytes = current_->stack_size;
+        if (at >= low && at < high) result.stack_used = high - at;
+    }
+#endif
+    return result;
+}
 std::unique_ptr<Thread> Thread::create(Entry entry, void* argument, size_t stack_bytes) {
     if (!entry) { errno = EINVAL; return {}; }
     auto state = std::make_unique<State>(entry, argument);
@@ -102,6 +119,7 @@ Thread::~Thread() {
     if (state_ && !join()) std::abort();
 }
 void Thread::finish(void* raw) {
+    current_ = nullptr;
     auto& state = *static_cast<State*>(raw);
     std::lock_guard lock(state.mutex);
     state.finished = true;
@@ -109,6 +127,7 @@ void Thread::finish(void* raw) {
 }
 void* Thread::run(void* raw) {
     auto& state = *static_cast<State*>(raw);
+    current_ = &state;
     // pthread_exit must signal completion as well as a normal return. The
     // native app's pthread wrapper drains C++ TLS before actual thread exit.
     pthread_cleanup_push(finish, raw);

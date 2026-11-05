@@ -2,10 +2,16 @@
 #pragma once
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <memory>
 
 namespace nxrt::host_thread {
+struct CurrentSample {
+    uint64_t cpu_ns = 0;
+    int cpu_error = 0;
+    size_t stack_bytes = 0, stack_used = 0;
+};
 // Owns one POSIX worker. Creation leaves it behind a start gate, so a guest
 // thread's registers, handle and scheduling can be published before execution.
 // Destruction joins a running worker, or cancels an unstarted gate. The owner
@@ -28,9 +34,13 @@ public:
     bool is_current() const;
     size_t stack_size() const;
     std::exception_ptr failure() const; // Inspect after wait_for or join.
+    // Samples only the calling thread. Stack usage is a point sample of owned
+    // PS5 stacks, not a complete high-water mark or a safe smaller stack size.
+    static CurrentSample sample_current();
     [[noreturn]] static void exit();
 private:
     struct State;
+    static thread_local State* current_;
     explicit Thread(std::unique_ptr<State> state);
     static void* run(void* state);
     static void finish(void* state);

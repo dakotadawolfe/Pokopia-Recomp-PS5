@@ -43,6 +43,12 @@ def main():
             "startup_status_view": True,
             "startup_trace_mode": "first-svc-and-ipc-requests",
             "startup_profile_interval_seconds": 10,
+            "opus_version": "1.6.1",
+            "opus_source_sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
+            "startup_idle_loading_view": True,
+            "startup_thread_cpu_clock": "CLOCK_THREAD_CPUTIME_ID; sampled on the owning worker",
+            "startup_stack_measurement": "owned-stack point samples; not full high-water coverage",
+            "startup_asset_io": "host file reads, opens, bytes, errors and elapsed time",
             "report_buffering": "line",
             "shader_words": "disk-backed; pinned immutable handles during pipeline use",
             "shader_word_resident_budget_bytes": 134217728,
@@ -64,6 +70,7 @@ def main():
     if game_mode:
         copies["fonts/DejaVuSans.ttf"] = ROOT / "runtime/assets/fonts/DejaVuSans.ttf"
         copies["licenses/DejaVu.txt"] = ROOT / "runtime/assets/fonts/LICENSE-DejaVu.txt"
+        copies["licenses/opus-BSD-3-Clause.txt"] = args.build / "graphics-licenses/opus-BSD-3-Clause.txt"
     if runtime_mode:
         for name in ("volk-MIT.txt", "VMA-MIT.txt", "Vulkan-Headers.txt", "Vulkan-Headers-Apache-2.0.txt", "Vulkan-Headers-MIT.txt"):
             copies["licenses/" + name] = args.build / "graphics-licenses" / name

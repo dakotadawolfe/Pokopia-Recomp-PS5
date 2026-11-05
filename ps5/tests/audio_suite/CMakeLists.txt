@@ -1,21 +1,24 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 cmake_minimum_required(VERSION 3.25)
-project(pokopia_audio_tests LANGUAGES CXX)
+project(pokopia_audio_tests LANGUAGES C CXX)
 set(root "${CMAKE_CURRENT_LIST_DIR}/../../..")
 include("${root}/ps5/platform.cmake")
+include("${root}/ps5/opus.cmake")
 add_executable(ps5_audio_tests "${root}/ps5/tests/sync_main.cpp"
     "${root}/ps5/tests/test_audio_output.cpp"
+    "${root}/ps5/tests/test_opus_decoder.cpp"
     "${root}/runtime/tests/test_svc_audren_sys.cpp"
     "${root}/runtime/tests/test_svc_audren_types.cpp"
     "${root}/runtime/tests/test_svc_audren_dec.cpp")
 target_include_directories(ps5_audio_tests PRIVATE "${root}/runtime/tests")
-target_link_libraries(ps5_audio_tests PRIVATE nxrt_ps5_platform)
+target_link_libraries(ps5_audio_tests PRIVATE nxrt_ps5_platform nxrt_ps5_opus)
 if(PS5)
     include("${root}/ps5/core.cmake")
     include("${root}/ps5/kernel.cmake")
     include("${root}/ps5/svc.cmake")
     target_sources(ps5_audio_tests PRIVATE "${root}/ps5/tests/test_audio_service.cpp"
         "${root}/ps5/tests/test_transfer_memory.cpp"
+        "${root}/ps5/tests/test_opus_service.cpp"
         "${root}/ps5/tests/test_startup_dependencies.cpp" "${root}/runtime/tests/test_nxmodule.cpp" "${root}/ps5/app/thread_exit.cpp")
     target_compile_definitions(ps5_audio_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_AUDIO=1)
     target_link_libraries(ps5_audio_tests PRIVATE nxrt_ps5_svc)

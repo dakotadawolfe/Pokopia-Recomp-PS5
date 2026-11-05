@@ -36,6 +36,7 @@ void register_pl();          void pl_reset();          // pl.cpp          pl:u (
 void register_network();     void network_reset();     // network.cpp     nifm, bsd, ssl, nim, friend, prepo, pctl, bcat, ldn, nsd, ...
 void register_misc();        void misc_reset();        // misc.cpp        csrng, ldr:ro, mm:u, hwopus, aoc:u, caps, mii, irs, nfc, nfp, ...
 void register_audio();       void audio_reset();       // audio.cpp       audren:u (calls the two below)
+void register_opus();                                  // opus_ps5.cpp    hwopus (real libopus decoder)
 void register_audio_out();   void audio_out_reset();   // audio_out.cpp   audout:u, audin:u
 std::shared_ptr<ipc::Service> audio_out_manager();   std::shared_ptr<ipc::Service> audio_in_manager();   // for aud:u (Switch 2)
 void register_vi_nv();       void vi_nv_reset();       // vi_nv.cpp       vi:u (vi:m, vi:s), nvdrv (nvdrv:a, nvdrv:s)

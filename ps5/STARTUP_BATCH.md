@@ -126,6 +126,50 @@ Keep these changes in a combined iteration before requesting another manual
 game launch. The current executable remains installed; it was not replaced
 or relaunched during monitoring.
 
+## Opus and startup diagnostics batch
+
+The next app implements `hwopus` with pinned Xiph libopus 1.6.1, including
+single-stream and multistream PCM decoding, the extended large-frame options,
+packet length/final-range validation and explicit reset. A failed decode
+preserves the output and decoder state. The service retains the client's
+transfer-memory object until its decoder closes. The legacy context request
+has no effect on bitstream state; it is not a fabricated decoded-audio path.
+Newer, undocumented client-session commands remain unsupported and will stop
+the diagnostic instead of reporting success.
+
+The decoder dependency uses the official release archive and published hash
+from [Xiph](https://opus-codec.org/downloads/). Its BSD license is copied into
+the native package. The IPC parameter layouts follow
+[libnx](https://github.com/switchbrew/libnx/blob/master/nx/source/services/hwopus.c)
+and [Switchbrew's audio documentation](https://switchbrew.org/wiki/Audio_services).
+The tests generate their own tones and packets; no game audio is included.
+
+All 72 dependency cases passed on the test PS5, including stereo and six-channel
+Opus output, malformed packets, work-memory lifetime, actual CPU-clock access
+and point sampling within an owned worker stack. Host audio, shader-control,
+RomFS and platform/thread checks also passed. These checks do not prove game
+audio, menu or gameplay.
+
+The combined app now reports cumulative host asset reads, actual bytes read,
+open attempts, errors and elapsed read time. Metadata and padding generated in
+memory are excluded. Concurrent read durations may overlap. Per-worker CPU
+time is sampled on that worker at SVC boundaries, at most every 100 ms, with
+sample age, guest call site and owned-stack usage. Old samples are explicitly
+aged; these observations are not complete stack high-water coverage, and the
+64 MiB worker stacks have not been reduced.
+
+A native loading view runs on the existing render thread when its job queue
+has been idle for one second. It shows elapsed time and asset bytes read, and
+stops after a second guest presentation or the app's running notification.
+Loading-view presentations have a separate counter and do not count as game
+frames. This addresses the initial blank presentation without concurrent
+access to the renderer. Visible behavior and startup duration still require
+the next manual game launch.
+
+This batch retains the existing development asset/cache locations. The final
+title-contained installation, console-side preparation and native save-data
+requirements remain outstanding; see [RELEASE_REQUIREMENTS.md](RELEASE_REQUIREMENTS.md).
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
@@ -155,6 +199,10 @@ For the app, use the existing [build/package workflow](GAME_RENDERER_STARTUP.md)
 `replace_graphics_executable.py --install-shared-font` stages and reads back
 the repository's DejaVu font and license before replacing the executable.
 It preserves an existing different resource instead of overwriting it.
+For the Opus batch, also pass `--opus-license` with the package's
+`licenses/opus-BSD-3-Clause.txt` and `--opus-license-sha256` with that entry's
+hash from `graphics-app-manifest.json`. The installer verifies and stages
+the license before activating the new executable.
 
 ## Source and distribution boundaries
 

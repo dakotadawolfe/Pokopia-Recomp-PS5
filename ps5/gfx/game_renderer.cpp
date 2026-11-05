@@ -5,6 +5,7 @@
 #include "picker_draw.h"
 #include "../app/folder_picker.h"
 #include "../../runtime/src/gfx/nvn/nvn_shaders.h"
+#include "../../runtime/src/services/fs_romfs.h"
 #include "nxrt/diag.h"
 #include "nxrt/am_ps5.h"
 #include "nxrt/config.h"
@@ -21,6 +22,7 @@
 #include "nxrt/subpage.h"
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -42,6 +44,27 @@ std::atomic<bool> initialized{false};
 bool vi_initialized = false;
 std::atomic<uint64_t> presents{0};
 std::string selected_folder;
+std::chrono::steady_clock::time_point loading_started;
+std::atomic<uint64_t> loading_views{0};
+bool loading_idle() {
+    // The SDK's initial blank presentation is not a ready menu. Stop the shell
+    // view permanently when the app declares itself running or presents again.
+    if (services::amctl::startup_state().notified_running || presents.load() >= 2) return false;
+    if (!initialized.load()) return true;
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now()-loading_started).count();
+    const auto io = services::fs::romfs_io_stats();
+    app::PickerView view;
+    view.title = "STARTING POKOPIA";
+    view.location = selected_folder;
+    view.status = "Preparing game: " + std::to_string(seconds) + " seconds. Assets read: " + std::to_string(io.bytes/(1024*1024)) + " MB.";
+    view.controls = "WAITING FOR GAME STARTUP";
+    view.controller_connected = true;
+    gfx::FrameInfo fi;
+    if (!renderer->begin_frame(&fi)) return false;
+    app::draw_folder_picker(fi, view); renderer->end_frame();
+    loading_views.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
 [[noreturn]] void fail(const char* why) {
     std::printf("GAME_GRAPHICS_STOP reason=%s\n", why); nxrt_game_startup_stop();
 }
@@ -215,6 +238,7 @@ bool install_game_bridge() {
     const auto bootstrap = sdk->find_symbol("nvnBootstrapLoader");
     if (!bootstrap || !fn_lookup(bootstrap)) return bridge_error("NVN bootstrap export is not registered");
     nvn::BackendDesc bd; bd.device = device.get(); bd.renderer = renderer.get(); bd.keep_aspect = true;
+    loading_started = std::chrono::steady_clock::now(); bd.idle = loading_idle;
     if (!nvn::install_backend(bd)) return bridge_error("native NVN backend failed to initialize");
     driver = token(0x5053354e564e4354ull);
     for (const auto& f : functions) {
@@ -228,6 +252,7 @@ bool install_game_bridge() {
     return true;
 }
 void report() {
+    std::printf("GAME_LOADING_VIEWS count=%llu guest_frames=false\n", static_cast<unsigned long long>(loading_views.load()));
     const auto startup = services::amctl::startup_state();
     std::printf("GAME_APPLET_STATE loading_mode=%u notified_running=%d host_clock_policy=fixed\n",
         startup.cpu_boost_mode, startup.notified_running);

@@ -6,6 +6,7 @@
 #include "nxrt/services_api.h"
 #include "nxrt/ipc.h"
 #include "nxrt/memory.h"
+#include "nxrt/host_thread.h"
 #include "../app/game_input.h"
 #include "trace_ipc_reply.h"
 #include <cstring>
@@ -84,6 +85,20 @@ NXTEST(power_service_reports_docked_mode_without_clock_changes) {
     auto service = nxrt::ipc::make_service("apm"); auto reply = invoke(service, 1);
     REQUIRE(reply.out.size() >= 4); uint32_t mode; std::memcpy(&mode, reply.out.data(), 4); CHECK_EQ(mode, 1u);
     nxrt::services::power_reset(); nxrt::ipc::registry_reset();
+}
+
+NXTEST(startup_thread_cpu_clock_is_available_and_monotonic) {
+    const auto first = nxrt::host_thread::Thread::sample_current();
+    CHECK_EQ(first.cpu_error, 0);
+    const auto second = nxrt::host_thread::Thread::sample_current();
+    CHECK_EQ(second.cpu_error, 0); CHECK(second.cpu_ns >= first.cpu_ns);
+    nxrt::host_thread::CurrentSample owned;
+    auto worker = nxrt::host_thread::Thread::create(+[](void* raw) {
+        *static_cast<nxrt::host_thread::CurrentSample*>(raw) = nxrt::host_thread::Thread::sample_current();
+    }, &owned, 1024*1024);
+    REQUIRE(worker); REQUIRE(worker->start()); REQUIRE(worker->join());
+    CHECK_EQ(owned.cpu_error, 0); CHECK_EQ(owned.stack_bytes, worker->stack_size());
+    CHECK(owned.stack_used > 0); CHECK(owned.stack_used < owned.stack_bytes);
 }
 
 NXTEST(offline_network_startup_exposes_objects_and_real_disconnected_results) {

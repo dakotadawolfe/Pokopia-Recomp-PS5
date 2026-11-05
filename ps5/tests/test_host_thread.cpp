@@ -63,6 +63,19 @@ NXTEST(host_worker_starts_once_and_joins_repeatedly) {
     CHECK(!thread->failure());
     CHECK_EQ(calls.load(), 1u);
 }
+
+NXTEST(host_worker_sampling_reads_own_cpu_clock_and_owned_stack) {
+    nxrt::host_thread::CurrentSample sample;
+    auto thread = Thread::create(+[](void* raw) {
+        *static_cast<nxrt::host_thread::CurrentSample*>(raw) = Thread::sample_current();
+    }, &sample, 1024*1024);
+    REQUIRE(thread); REQUIRE(thread->start()); REQUIRE(thread->join());
+    CHECK_EQ(sample.cpu_error, 0);
+#ifdef NXRT_TARGET_PS5
+    CHECK_EQ(sample.stack_bytes, thread->stack_size());
+    CHECK(sample.stack_used > 0); CHECK(sample.stack_used < sample.stack_bytes);
+#endif
+}
 NXTEST(host_worker_join_cancels_an_unstarted_gate) {
     std::atomic<unsigned> calls{0};
     auto thread = Thread::create(increment, &calls);

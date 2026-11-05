@@ -28,6 +28,10 @@ struct BackendDesc {
     FrameLimiter* limiter = nullptr;          // optional: begin_frame() is called before each presented frame
     bool keep_aspect = false;                 // present with letterbox bars instead of stretching to the window
     bool register_entry_points = true;        // false for tests that call the Vulkan layer directly
+    // Optional shell loading view. Runs only on the render thread after one
+    // second without queued work; false permanently removes the callback.
+    // Shell presentations must not count as guest frames.
+    std::function<bool()> idle;
 };
 
 bool install_backend(const BackendDesc& desc);   // idempotent per process: a second call with another device fails

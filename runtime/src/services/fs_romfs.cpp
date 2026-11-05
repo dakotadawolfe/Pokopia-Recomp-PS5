@@ -18,6 +18,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -36,6 +38,24 @@
 
 namespace nxrt::services::fs {
 namespace {
+
+struct IoCounters {
+    std::atomic<uint64_t> calls{0}, bytes{0}, failures{0}, opens{0}, total_ns{0}, max_ns{0};
+} io;
+struct IoRead {
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    uint64_t bytes = 0;
+    bool success = false;
+    ~IoRead() {
+        const uint64_t elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count();
+        io.calls.fetch_add(1, std::memory_order_relaxed);
+        io.bytes.fetch_add(bytes, std::memory_order_relaxed);
+        if (!success) io.failures.fetch_add(1, std::memory_order_relaxed);
+        io.total_ns.fetch_add(elapsed, std::memory_order_relaxed);
+        auto maximum = io.max_ns.load(std::memory_order_relaxed);
+        while (maximum < elapsed && !io.max_ns.compare_exchange_weak(maximum, elapsed, std::memory_order_relaxed)) {}
+    }
+};
 
 constexpr uint32_t kNone = 0xFFFFFFFFu;     // "no entry" in every link field
 constexpr uint64_t kHeaderSize = 0x50;      // ten u64 fields
@@ -518,6 +538,7 @@ struct RomfsImage::Impl {
             }
         }
         const FileRec& f = l.files[idx];
+        io.opens.fetch_add(1, std::memory_order_relaxed);
         auto box = std::make_shared<HandleBox>();
 #ifdef _WIN32
         box->h = CreateFileW(f.host.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -543,6 +564,7 @@ struct RomfsImage::Impl {
 
     // Positioned reads, so concurrent readers of one handle need no seek lock.
     bool read_host(uint32_t idx, uint64_t ofs, uint8_t* out, uint64_t n) const {
+        IoRead timing;
         std::shared_ptr<HandleBox> box = acquire(idx);
         if (!box) return false;
 #ifdef _WIN32
@@ -571,14 +593,21 @@ struct RomfsImage::Impl {
             if (got <= 0) return false;
 #endif
             out += got;
+            timing.bytes += static_cast<uint64_t>(got);
             ofs += static_cast<uint64_t>(got);
             n -= static_cast<uint64_t>(got);
         }
+        timing.success = true;
         return true;
     }
 };
 
 RomfsImage::RomfsImage() : p_(std::make_unique<Impl>()) {}
+RomfsIoStats romfs_io_stats() {
+    return {io.calls.load(std::memory_order_relaxed), io.bytes.load(std::memory_order_relaxed),
+        io.failures.load(std::memory_order_relaxed), io.opens.load(std::memory_order_relaxed),
+        io.total_ns.load(std::memory_order_relaxed), io.max_ns.load(std::memory_order_relaxed)};
+}
 RomfsImage::~RomfsImage() = default;
 
 bool RomfsImage::build(const std::string& host_dir, std::string* err) {

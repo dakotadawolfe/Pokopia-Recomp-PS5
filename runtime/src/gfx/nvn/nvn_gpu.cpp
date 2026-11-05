@@ -94,6 +94,7 @@ struct Gpu {
     std::mutex qmu;
     std::condition_variable qcv;
     std::deque<std::function<void()>> queue;
+    std::function<bool()> idle;
     bool stop = false;
     std::thread::id tid;
 
@@ -155,12 +156,17 @@ void render_loop() {
             std::unique_lock<std::mutex> lk(g->qmu);
             if (!g->stop && g->queue.empty()) {
                 nxrt::HitchTimer ht(nxrt::kHpRenderIdle);      // the hitch line: the render thread waited for the game
-                g->qcv.wait(lk, [] { return g->stop || !g->queue.empty(); });
+                if (g->idle) g->qcv.wait_for(lk, std::chrono::seconds(1), [] { return g->stop || !g->queue.empty(); });
+                else g->qcv.wait(lk, [] { return g->stop || !g->queue.empty(); });
             }
-            if (g->queue.empty()) return;   // stop requested and drained
-            job = std::move(g->queue.front());
-            g->queue.pop_front();
-            g_gauge_render_queue.sub(1);
+            if (g->queue.empty()) {
+                if (g->stop) return;
+                job = [] { if (g->idle && !g->idle()) g->idle = {}; };
+            } else {
+                job = std::move(g->queue.front());
+                g->queue.pop_front();
+                g_gauge_render_queue.sub(1);
+            }
         }
         try {
             job();
@@ -823,7 +829,7 @@ namespace {
 
 void register_counter_gauges();
 
-bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool keep_aspect) {
+bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool keep_aspect, std::function<bool()> idle = {}) {
     std::lock_guard<std::mutex> lk(g_install_mu);
     if (g) return g->dev == &dev;
     auto* gp = new Gpu();
@@ -831,6 +837,7 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
     gp->rend = rend;
     gp->limiter = limiter;
     gp->keep_aspect = keep_aspect;
+    gp->idle = std::move(idle);
     g = gp;
     if (!dev.features().timeline_semaphore) {
         NXLOG_E(kTag, "the GPU has no timeline semaphores: the NVN back end cannot run");
@@ -988,7 +995,7 @@ namespace nxrt::nvn {
 
 bool install_backend(const BackendDesc& desc) {
     if (!desc.device) return false;
-    if (!be::gpu::bring_up(*desc.device, desc.renderer, desc.limiter, desc.keep_aspect)) return false;
+    if (!be::gpu::bring_up(*desc.device, desc.renderer, desc.limiter, desc.keep_aspect, desc.idle)) return false;
     if (desc.register_entry_points) {
         install();
         register_all_impls();

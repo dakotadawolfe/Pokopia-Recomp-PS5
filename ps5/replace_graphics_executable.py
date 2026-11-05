@@ -29,9 +29,22 @@ def main():
     parser.add_argument("--libc-sha256", required=True)
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--install-shared-font", action="store_true", help="Install the repository's licensed DejaVu fallback and its license")
+    parser.add_argument("--opus-license", type=Path, help="Built libopus license from the verified native package")
+    parser.add_argument("--opus-license-sha256", help="Expected license hash from that package's manifest")
     args = parser.parse_args()
     if args.receipt.exists() or digest(args.file) != args.sha256:
         raise ValueError("Receipt exists or replacement hash differs")
+    if bool(args.opus_license) != bool(args.opus_license_sha256):
+        raise ValueError("Opus license and its expected hash must be supplied together")
+    resources = []
+    if args.opus_license:
+        if digest(args.opus_license) != args.opus_license_sha256:
+            raise ValueError("Opus license hash differs from the native package")
+        resources.append(("licenses/opus-BSD-3-Clause.txt", args.opus_license))
+    if args.install_shared_font:
+        root = Path(__file__).resolve().parents[1]
+        resources.extend((("fonts/DejaVuSans.ttf", root / "runtime/assets/fonts/DejaVuSans.ttf"),
+                          ("licenses/DejaVu.txt", root / "runtime/assets/fonts/LICENSE-DejaVu.txt")))
     with args.file.open("rb") as source:
         if source.read(4) != bytes.fromhex("4f153d1d"):
             raise ValueError("Replacement is not a native FSELF")
@@ -69,11 +82,9 @@ def main():
         ftp.retrbinary("RETR " + remote + "/sce_module/libc.prx", libc_hash.update)
         if libc_hash.hexdigest() != args.libc_sha256:
             raise ValueError("Installed native libc differs from the verified build")
-        if args.install_shared_font:
-            root = Path(__file__).resolve().parents[1]
+        if resources:
             receipt["resources"] = {}
-            for relative, source in (("fonts/DejaVuSans.ttf", root / "runtime/assets/fonts/DejaVuSans.ttf"),
-                                     ("licenses/DejaVu.txt", root / "runtime/assets/fonts/LICENSE-DejaVu.txt")):
+            for relative, source in resources:
                 target = remote + "/" + relative
                 expected = digest(source)
                 directory = target.rsplit("/", 1)[0]

@@ -721,6 +721,7 @@ NXTEST(romfs_file_over_4gib) {
 
 NXTEST(romfs_changed_host_file_is_error) {
     TempTree t;
+    const auto before = nxrt::services::fs::romfs_io_stats();
     const auto bytes = pattern(4096, 7);
     write_host(t.root, {{"/changing.bin", false, bytes}});
     RomfsImage img;
@@ -740,6 +741,14 @@ NXTEST(romfs_changed_host_file_is_error) {
     REQUIRE(std::filesystem::remove(t.root / "changing.bin", ec));
     REQUIRE(!ec);
     CHECK(!img.read(at, got.data(), 1));
+    const auto after = nxrt::services::fs::romfs_io_stats();
+    CHECK_EQ(after.calls-before.calls, uint64_t{3});
+    CHECK_EQ(after.failures-before.failures, uint64_t{2});
+    CHECK_EQ(after.opens-before.opens, uint64_t{2});
+#ifndef _WIN32
+    CHECK_EQ(after.bytes-before.bytes, uint64_t{4097});
+#endif
+    CHECK(after.total_ns >= before.total_ns);
 }
 
 NXTEST(romfs_failed_rebuild_clears_old_image) {

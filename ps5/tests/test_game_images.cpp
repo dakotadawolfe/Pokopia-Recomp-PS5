@@ -54,7 +54,7 @@ namespace nxrt::services { void register_pctl(); }
 namespace nxrt::services { void register_fs(); void fs_reset(); }
 namespace nxrt::services { void register_time(); void time_reset(); }
 namespace nxrt::services { void register_acc(); void acc_reset(); }
-namespace nxrt::services { void register_audio(); void audio_reset(); }
+namespace nxrt::services { void register_audio(); void audio_reset(); void register_opus(); }
 namespace nxrt::services { void register_hid(); void hid_reset(); void register_power(); void power_reset(); void register_pl(); void pl_reset(); }
 namespace nxrt::services { void register_network(); void network_reset(); }
 namespace nxrt::app { void install_game_input(); }
@@ -233,9 +233,33 @@ struct StartupSvcStats {
 };
 std::array<StartupSvcStats, nxrt::kSvcCount> startup_svc_stats;
 std::atomic<uint64_t> startup_started_ns{0};
+struct alignas(64) StartupThreadStats {
+    std::atomic<uint64_t> id{0}, svc{0}, cpu_ns{0}, sample_ns{0}, fn{0}, lr{0}, x0{0}, stack_bytes{0}, stack_peak{0};
+    std::atomic<int> cpu_error{0};
+};
+std::array<StartupThreadStats, 128> startup_thread_stats;
+std::atomic<unsigned> startup_thread_count{0};
 uint64_t startup_now_ns() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+void sample_startup_thread(size_t number, const Ctx* c, uint64_t now) {
+    const auto* thread = nxrt::kernel::current_thread();
+    if (!thread) return;
+    static thread_local const unsigned slot = startup_thread_count.fetch_add(1, std::memory_order_relaxed);
+    static thread_local uint64_t last = 0;
+    if (slot >= startup_thread_stats.size() || now - last < 100000000) return;
+    last = now;
+    const auto sample = nxrt::host_thread::Thread::sample_current();
+    auto& out = startup_thread_stats[slot];
+    out.cpu_ns.store(sample.cpu_ns, std::memory_order_relaxed);
+    out.cpu_error.store(sample.cpu_error, std::memory_order_relaxed);
+    out.sample_ns.store(now, std::memory_order_relaxed);
+    out.svc.store(number, std::memory_order_relaxed);
+    out.fn.store(c->fn, std::memory_order_relaxed); out.lr.store(c->x[30], std::memory_order_relaxed);
+    out.x0.store(c->x[0], std::memory_order_relaxed); out.stack_bytes.store(sample.stack_bytes, std::memory_order_relaxed);
+    if (sample.stack_used > out.stack_peak.load(std::memory_order_relaxed)) out.stack_peak.store(sample.stack_used, std::memory_order_relaxed);
+    out.id.store(thread->id, std::memory_order_release);
 }
 struct StartupSvcScope {
     StartupSvcStats& stats;
@@ -251,6 +275,7 @@ struct StartupSvcScope {
         stats.active.fetch_add(1, std::memory_order_relaxed);
         if (sampled) {
             started = startup_now_ns();
+            sample_startup_thread(number, c, started);
             stats.last_fn.store(c->fn, std::memory_order_relaxed);
             stats.last_lr.store(c->x[30], std::memory_order_relaxed);
             stats.last_x0.store(c->x[0], std::memory_order_relaxed);
@@ -278,6 +303,23 @@ struct StartupSvcScope {
     }
 };
 void report_startup_profile(bool detailed) {
+    const auto now = startup_now_ns();
+    const auto io = nxrt::services::fs::romfs_io_stats();
+    std::printf("GAME_ASSET_IO calls=%llu bytes=%llu failures=%llu opens=%llu host_read_ms=%llu max_read_ms=%llu\n",
+        static_cast<unsigned long long>(io.calls), static_cast<unsigned long long>(io.bytes),
+        static_cast<unsigned long long>(io.failures), static_cast<unsigned long long>(io.opens),
+        static_cast<unsigned long long>(io.total_ns/1000000), static_cast<unsigned long long>(io.max_ns/1000000));
+    for (auto& t : startup_thread_stats) {
+        const auto id = t.id.load(std::memory_order_acquire);
+        if (!id) continue;
+        const auto at = t.sample_ns.load(std::memory_order_relaxed);
+        std::printf("GAME_THREAD_SAMPLE id=%llu cpu_ms=%llu cpu_error=%d age_ms=%llu svc=%02llx fn=%llx lr=%llx x0=%llx stack_bytes=%llu sampled_stack_peak=%llu\n",
+            static_cast<unsigned long long>(id), static_cast<unsigned long long>(t.cpu_ns.load()/1000000), t.cpu_error.load(),
+            static_cast<unsigned long long>(now > at ? (now-at)/1000000 : 0), static_cast<unsigned long long>(t.svc.load()),
+            static_cast<unsigned long long>(t.fn.load()), static_cast<unsigned long long>(t.lr.load()),
+            static_cast<unsigned long long>(t.x0.load()), static_cast<unsigned long long>(t.stack_bytes.load()),
+            static_cast<unsigned long long>(t.stack_peak.load()));
+    }
     uint64_t completed = 0, active = 0, elapsed = 0, handler = 0, timed = 0;
     for (size_t n = 0; n < startup_svc_stats.size(); ++n) {
         auto& s = startup_svc_stats[n];
@@ -860,6 +902,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     nxrt::services::acc_reset(); nxrt::services::register_acc();
     nxrt::services::register_locale();
     nxrt::services::register_audio();
+    nxrt::services::register_opus();
     nxrt::services::register_hid(); nxrt::services::register_power(); nxrt::services::register_pl();
 #ifdef NXRT_GAME_RENDER_NATIVE
     nxrt::app::install_game_input();

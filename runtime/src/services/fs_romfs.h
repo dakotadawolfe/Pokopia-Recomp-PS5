@@ -15,6 +15,11 @@
 
 namespace nxrt::services::fs {
 
+// Cumulative host file I/O, excluding in-memory RomFS metadata and padding.
+// Durations include opening a cached handle and may overlap across readers.
+struct RomfsIoStats { uint64_t calls, bytes, failures, opens, total_ns, max_ns; };
+RomfsIoStats romfs_io_stats();
+
 class RomfsImage {
 public:
     RomfsImage();
