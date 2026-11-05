@@ -361,7 +361,7 @@ of a loading-speed improvement.
 
 All 69 IPC component cases pass on PS5 in private report
 `ipc-runtime-1793905837-116.log`, including unknown-command/stub detection and
-registry reset. Four host shader-selection/installation checks pass. The app
+registry reset. Five host shader-selection/installation checks pass. The app
 builds locally; installation and another native run are tracked separately.
 Normal Saved Data integration, title-contained import and on-console shader
 compilation remain release work. All game-derived artifacts stay private.
@@ -398,6 +398,9 @@ outputs remain ignored private data.
 For immutable caches on one filesystem, `--hardlink` avoids copying SPIR-V
 files again while retaining full validation and a new metadata manifest.
 Never edit those linked files in place; use a separate translation output.
+The installer accepts `--jobs 4` for independent file transfers. Directory
+checks, staging, full readbacks and the stopped-title activation remain ordered;
+a failed worker prevents publication. The default remains one connection.
 
 For the app, use the existing [build/package workflow](GAME_RENDERER_STARTUP.md).
 `replace_graphics_executable.py --install-shared-font` stages and reads back

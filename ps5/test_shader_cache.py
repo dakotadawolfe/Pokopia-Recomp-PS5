@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from install_shader_cache import DESTINATION, activate, verify_remote
 from prepare_shader_cache import checked_name
@@ -107,6 +108,29 @@ class CacheTests(unittest.TestCase):
             activate(ftp, "staging", "backup")
         self.assertEqual(ftp.calls, [(DESTINATION, "backup"), ("staging", DESTINATION),
                                      ("backup", DESTINATION)])
+
+    def test_parallel_readback_checks_every_file_and_propagates_corruption(self):
+        class FTP:
+            host, port, directory = "test", 2121, "/"
+            data = {f"{n}.spv": bytes([n]) * 32 for n in range(9)}
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def connect(self, host, port, timeout):
+                self.host, self.port = host, port
+            def login(self): pass
+            def pwd(self): return self.directory
+            def cwd(self, value): self.directory = value
+            def mlsd(self): return [(name, {"type": "file"}) for name in self.data]
+            def retrbinary(self, command, receive, **_): receive(self.data[command.rsplit("/", 1)[1]])
+        expected = {n: {"bytes": len(v), "sha256": hashlib.sha256(v).hexdigest()} for n, v in FTP.data.items()}
+        with patch("install_shader_cache.ftplib.FTP", FTP):
+            for jobs in (0, 5):
+                with self.assertRaises(ValueError):
+                    verify_remote(FTP(), DESTINATION, expected, jobs=jobs)
+            verify_remote(FTP(), DESTINATION, expected, jobs=4)
+            FTP.data["8.spv"] = b"corrupt"
+            with self.assertRaisesRegex(ValueError, "identity differs"):
+                verify_remote(FTP(), DESTINATION, expected, jobs=4)
 
 
 if __name__ == "__main__":

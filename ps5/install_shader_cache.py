@@ -7,6 +7,7 @@ The existing directory is preserved as a uniquely named backup. Never launches
 the app or changes game assets, saves, or another title's cache.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import ftplib
 import hashlib
 import io
@@ -14,6 +15,7 @@ import json
 from pathlib import Path
 import urllib.request
 import uuid
+from threading import Lock
 
 from prepare_shader_cache import checked_name, identity
 
@@ -21,7 +23,34 @@ DESTINATION = "/data/pokopia-recomp/shader_cache/spirv"
 TITLE = "/data/homebrew/PPSA98732"
 
 
-def verify_remote(ftp, directory, files):
+def transfer_files(ftp, files, action, jobs, progress):
+    if jobs not in range(1, 5):
+        raise ValueError("Use between one and four transfer connections")
+    entries = list(files.items())
+    count, lock = 0, Lock()
+    def batch(connection, items):
+        nonlocal count
+        for name, expected in items:
+            action(connection, name, expected)
+            with lock:
+                count += 1
+                if count % 250 == 0 or count == len(entries):
+                    print(f"{progress} {count}/{len(entries)} files", flush=True)
+    if jobs == 1:
+        batch(ftp, entries)
+        return
+    def worker(items):
+        with ftplib.FTP() as connection:
+            connection.connect(ftp.host, ftp.port, timeout=60)
+            connection.login()
+            batch(connection, items)
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        # Each worker owns its control/data connections and distinct files.
+        # Await every batch before verification or publication can continue.
+        list(pool.map(worker, (entries[i::jobs] for i in range(jobs))))
+
+
+def verify_remote(ftp, directory, files, jobs=1):
     # The PS5 helper ignores MLSD's path argument. Enter the directory first,
     # then restore the original location before any rename or publication.
     previous_directory = ftp.pwd()
@@ -32,17 +61,16 @@ def verify_remote(ftp, directory, files):
         ftp.cwd(previous_directory)
     if set(entries) != set(files) or any(f.get("type") != "file" for f in entries.values()):
         raise ValueError(f"Unexpected contents in {directory}; preserving them")
-    for index, (name, expected) in enumerate(files.items(), 1):
+    def verify(connection, name, expected):
         digest, size = hashlib.sha256(), 0
         def receive(data):
             nonlocal size
             size += len(data)
             digest.update(data)
-        ftp.retrbinary("RETR " + directory + "/" + checked_name(name), receive, blocksize=1024*1024)
+        connection.retrbinary("RETR " + directory + "/" + checked_name(name), receive, blocksize=1024*1024)
         if {"bytes": size, "sha256": digest.hexdigest()} != expected:
             raise ValueError(f"Remote cache identity differs: {directory}/{name}")
-        if index % 250 == 0 or index == len(files):
-            print(f"Readback verified {index}/{len(files)} files in {directory}", flush=True)
+    transfer_files(ftp, files, verify, jobs, f"Readback verified in {directory}:")
 
 
 def activate(ftp, staging, backup):
@@ -60,6 +88,8 @@ def main():
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--previous-receipt", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--jobs", type=int, choices=range(1, 5), default=1,
+                        help="Independent FTP connections for file transfers; publication remains sequential")
     args = parser.parse_args()
     manifest_path = args.cache / "shader-cache-manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -105,22 +135,21 @@ def main():
         ftp.retrbinary("RETR " + TITLE + "/.pokopia-graphics-test", marker.write)
         if marker.getvalue() != b"PPSA98732":
             raise ValueError("Title ownership marker differs")
-        verify_remote(ftp, DESTINATION, previous["files"])
+        verify_remote(ftp, DESTINATION, previous["files"], args.jobs)
         save()
         ftp.mkd(receipt["staging"])
-        for index, name in enumerate(sorted(files), 1):
+        def upload(connection, name, _):
             with (args.cache / name).open("rb") as stream:
-                ftp.storbinary("STOR " + receipt["staging"] + "/" + name, stream, blocksize=1024*1024)
-            if index % 100 == 0:
-                print(f"Staged {index}/{len(files)} cache files", flush=True)
-        verify_remote(ftp, receipt["staging"], files)
+                connection.storbinary("STOR " + receipt["staging"] + "/" + name, stream, blocksize=1024*1024)
+        transfer_files(ftp, dict(sorted(files.items())), upload, args.jobs, "Staged")
+        verify_remote(ftp, receipt["staging"], files, args.jobs)
         receipt["staging_verified"] = True
         save()
         stopped()
         activate(ftp, receipt["staging"], receipt["backup"])
         receipt["renamed"] = True
         save()
-        verify_remote(ftp, DESTINATION, files)
+        verify_remote(ftp, DESTINATION, files, args.jobs)
         receipt["installed"] = True
         save()
         print(f"Installed {manifest['blocks']} shaders; full readback verified and previous cache preserved", flush=True)
