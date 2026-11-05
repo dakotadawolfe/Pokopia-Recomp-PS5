@@ -76,6 +76,12 @@ permission errors, commit recovery, extension, quota limits, write failures,
 and genuine zero-space/I/O-error replies. The fourteen host volume cases pass.
 The native save round trip and game startup still require a manual run.
 
+The corrected private app from `8c95e65` is installed with full executable
+readback verification: 279,847,321 bytes, SHA-256
+`0325f144c31daee5744f941bb6d6b2aa835f13989a357c25ca0fca569504ba61`.
+Matching symbols and the previous executable remain in private rollback
+storage. No automatic game launch was performed.
+
 The prior private app built from `dfa80f1` was installed with full executable readback
 verification. Its native executable is 279,846,745 bytes, SHA-256
 `5aea9402d735de036d06964706d3a7db5aca994fffba08c8e8205d45472255b8`.
