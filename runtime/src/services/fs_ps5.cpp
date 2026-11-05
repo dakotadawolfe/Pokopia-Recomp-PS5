@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Read-only fsp-srv bring-up. The guest parses its RomFS from IStorage; asset
+// fsp-srv bring-up. The guest parses its read-only RomFS from IStorage; asset
 // bytes come from the configured loose tree, never from synthetic success data.
+// Account-save operations are backed by fs_save_ps5.cpp.
 // Wire layouts: libnx nx/source/services/fs.c and Switchbrew Filesystem services.
 #include "fs_romfs.h"
 #include "fs_volume.h"
+#include "fs_save_ps5.h"
 #include "services_internal.h"
 #include "nxrt/config.h"
 #include "nxrt/kernel.h"
@@ -154,8 +156,9 @@ std::shared_ptr<Service> proxy() {
         if (!bound->load(std::memory_order_acquire)) return kernel::kInvalidState;
         return scalar_request(req, bytes);
     };
+    ps5save::add_commands(*service, bound);
     service->add_cmd(1003, "DisableAutoSaveDataCreation", [scalar](Request& req, Response&) -> uint32_t {
-        // This read-only service never creates saves automatically.
+        // Save creation is explicit through EnsureSaveData.
         return scalar(req);
     });
     service->add_cmd(1004, "SetGlobalAccessLogMode", [scalar](Request& req, Response&) -> uint32_t {
@@ -185,5 +188,6 @@ void register_fs() { add("fsp-srv", proxy); }
 void fs_reset() {
     std::lock_guard lock(state_mutex);
     state.reset();
+    ps5save::reset();
 }
 } // namespace nxrt::services

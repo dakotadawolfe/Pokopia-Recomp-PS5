@@ -55,7 +55,7 @@ struct FileTimes {
 class Volume {
 public:
     // `root`: the folder (UTF-8). `journal`: save-data semantics (see above); `read_only`: every mutation answers kReadOnlyFileSystem.
-    // `capacity`: bytes reported by GetTotalSpaceSize and enforced on growth for journalled volumes (0 = unlimited).
+    // `capacity`: reported size; the filesystem service enforces growth while holding its account lock (0 = unlimited).
     Volume(const std::string& root, bool journal, bool read_only, uint64_t capacity);
     ~Volume();
     bool ok() const;                                    // the root exists (or was created) and recovery finished
@@ -96,5 +96,8 @@ private:
 // Guest path hygiene: "/a/b/c" with single separators and no "." / ".." components, no trailing separator, no backslash or control
 // characters, at most 0x300 bytes. Returns false with *err = a result code for a path that is not acceptable.
 bool normalize_path(const char* raw, size_t max_len, std::string* out, uint32_t* err);
+// Native app statvfs is a compatibility shim with synthetic capacity. Use the
+// kernel's descriptor query on PS5 instead of reporting that as free space.
+bool available_storage(const std::string& directory, uint64_t* bytes);
 
 }  // namespace nxrt::services::fs

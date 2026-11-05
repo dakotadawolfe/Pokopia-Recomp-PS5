@@ -4,7 +4,21 @@
 #define _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING
 #include "fs_volume.h"
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <dirent.h>
+#ifdef NXRT_TARGET_PS5
+#include <sys/mount.h>
+extern "C" int _fstatfs(int, struct statfs*);
+#endif
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -26,7 +40,7 @@ namespace {
 
 std::atomic<int> g_crash_point{0};
 
-stdfs::path u8(const std::string& s) { return stdfs::u8path(s); }
+stdfs::path u8(const std::string& s) { return stdfs::path(std::u8string(s.begin(), s.end())); }
 std::string to_u8(const stdfs::path& p) {
     auto s = p.u8string();
     return std::string(s.begin(), s.end());
@@ -39,6 +53,7 @@ std::string parent_of(const std::string& path) {
     return i == 0 || i == std::string::npos ? std::string("/") : path.substr(0, i);
 }
 
+#ifdef _WIN32
 // Positioned I/O on a Win32 handle (several threads may call it at once).
 class HostFile final : public VFile {
 public:
@@ -138,6 +153,7 @@ public:
         m_ = CreateMutexW(nullptr, FALSE, name);
         if (m_) WaitForSingleObject(m_, INFINITE);
     }
+    bool ok() const { return m_ != nullptr; }
     ~RootLock() {
         if (m_) {
             ReleaseMutex(m_);
@@ -148,6 +164,25 @@ public:
 private:
     HANDLE m_ = nullptr;
 };
+using HostHandle = HANDLE;
+const HostHandle invalid_host = INVALID_HANDLE_VALUE;
+constexpr DWORD open_existing = OPEN_EXISTING, create_new = CREATE_NEW;
+uint64_t host_pid() { return GetCurrentProcessId(); }
+bool sync_host(const stdfs::path& path) {
+    HANDLE h = open_host(path, true, OPEN_EXISTING);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    const bool ok = FlushFileBuffers(h); CloseHandle(h); return ok;
+}
+bool sync_parent(const stdfs::path&) { return true; }
+bool sync_directory(const stdfs::path&) { return true; }
+bool publish_marker(const stdfs::path& from, const stdfs::path& to) {
+    return MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+}
+void remove_tree(const stdfs::path& p, std::error_code& ec) { stdfs::remove_all(p, ec); }
+bool safe_components(const stdfs::path&, const stdfs::path& = {}) { return true; }
+#else
+#include "fs_volume_posix_io.h"
+#endif
 
 // Applies a decided commit. Marker lines: "W <work folder>", "R <committed folder>", then "D rel" (delete), "M rel" (make folder),
 // "F rel" (move file work -> committed). Every step can be repeated, so a commit interrupted here is finished by running it again.
@@ -159,6 +194,29 @@ int apply_marker(const stdfs::path& marker, int stop_after = 0) {
     stdfs::path work, root;
     int n = 0;
     std::error_code ec;
+    // Validate the entire decision before replaying it. A corrupt journal must
+    // not redirect recovery outside this volume or through a symbolic link.
+    std::vector<std::string> records;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        records.push_back(line);
+    }
+    if (in.bad() || records.size() < 2 || records[0].rfind("W ", 0) || records[1].rfind("R ", 0)) return -1;
+    work = u8(records[0].substr(2)); root = u8(records[1].substr(2));
+    if (stdfs::path(root.string() + ".commit") != marker || work.parent_path() != root.parent_path()) return -1;
+    const auto prefix = root.filename().string() + ".work.";
+    const auto name = work.filename().string();
+    if (name.rfind(prefix, 0) || name.size() == prefix.size() ||
+        name.find_first_not_of("0123456789", prefix.size()) != std::string::npos) return -1;
+    if (!safe_components(root) || !safe_components(work)) return -1;
+    for (size_t i = 2; i < records.size(); ++i) {
+        const auto& record = records[i];
+        if (record.size() < 3 || record[1] != ' ' || std::string("DMF").find(record[0]) == std::string::npos) return -1;
+        const auto raw = "/" + record.substr(2); std::string normalized; uint32_t error = 0;
+        if (!normalize_path(raw.c_str(), raw.size() + 1, &normalized, &error) || normalized != raw || raw == "/") return -1;
+        if (!safe_components(root, u8(record.substr(2))) || !safe_components(work, u8(record.substr(2)))) return -1;
+    }
+    in.clear(); in.seekg(0);
     while (std::getline(in, line)) {
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
         if (line.size() < 3) continue;
@@ -167,33 +225,58 @@ int apply_marker(const stdfs::path& marker, int stop_after = 0) {
         else if (line[0] == 'R') root = u8(arg);
         else if (work.empty() || root.empty()) continue;
         else if (line[0] == 'D') {
-            stdfs::remove_all(root / u8(arg), ec);
+            remove_tree(root / u8(arg), ec);
+            if (ec) return -1;
+            if (stdfs::exists((root / u8(arg)).parent_path(), ec) && !sync_parent(root / u8(arg))) return -1;
             n++;
         } else if (line[0] == 'M') {
             stdfs::create_directories(root / u8(arg), ec);
+            if (ec) return -1;
+            if (!sync_parent(root / u8(arg))) return -1;
             n++;
         } else if (line[0] == 'F') {
             const stdfs::path a = work / u8(arg), b = root / u8(arg);
             if (stdfs::exists(a, ec)) {
                 stdfs::create_directories(b.parent_path(), ec);
+                if (ec) return -1;
                 stdfs::rename(a, b, ec);
                 if (ec) {
                     NXLOG_E("fs", "commit: moving %s failed: %s", arg.c_str(), ec.message().c_str());
                     return -1;
                 }
             }
+            if (!sync_parent(b)) return -1;
             n++;
         } else {
             continue;
         }
         if (stop_after > 0 && n >= stop_after) return n;
     }
+    if (in.bad()) return -1;
     in.close();
+    if (!sync_directory(root)) return -1;
     stdfs::remove(marker, ec);
-    return n;
+    return ec || !sync_parent(marker) ? -1 : n;
 }
 
 }  // namespace
+
+bool available_storage(const std::string& directory, uint64_t* bytes) {
+    if (!bytes) return false;
+    *bytes = 0;
+#ifdef NXRT_TARGET_PS5
+    const int fd = open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return false;
+    struct statfs info{};
+    const int result = _fstatfs(fd, &info); close(fd);
+    if (result || info.f_bavail < 0 || !info.f_bsize || uint64_t(info.f_bavail) > UINT64_MAX / info.f_bsize) return false;
+    *bytes = uint64_t(info.f_bavail) * info.f_bsize; return true;
+#else
+    std::error_code ec; const auto info = stdfs::space(directory, ec);
+    if (ec) return false;
+    *bytes = info.available; return true;
+#endif
+}
 
 // ---- path hygiene ----------------------------------------------------------------------------------------------------------------
 
@@ -271,6 +354,7 @@ struct Volume::Impl {
     };
     Found lookup(const std::string& path) const {
         Found f;
+        if (!safe_components(root, u8(rel_of(path))) || !safe_components(journal ? work : root, u8(rel_of(path)))) return f;
         std::error_code ec;
         if (path == "/") {
             f.exists = f.is_dir = f.in_work = true;
@@ -335,8 +419,10 @@ struct Volume::Impl {
         if (!f.exists || !f.is_dir) return rc::kPathNotFound;
         std::map<std::string, DirItem> m;
         std::error_code ec;
+        bool failed = false;
         auto scan = [&](const stdfs::path& dir, bool committed) {
             for (stdfs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+                if (!safe_components(it->path())) { failed = true; break; }
                 DirItem d;
                 d.name = to_u8(it->path().filename());
                 const std::string child = (path == "/" ? "" : path) + "/" + d.name;
@@ -344,12 +430,15 @@ struct Volume::Impl {
                 std::error_code e2;
                 d.is_dir = it->is_directory(e2);
                 d.size = d.is_dir ? 0 : static_cast<int64_t>(it->file_size(e2));
+                if (e2) { failed = true; break; }
                 if (committed && m.count(d.name)) continue;
                 m[d.name] = d;
             }
+            if (ec) failed = true;
         };
         if (stdfs::exists(wpath(path), ec)) scan(wpath(path), false);
         if (journal && committed_visible(path)) scan(cpath(path), true);
+        if (failed) return rc::kGenericFailure;
         out->clear();
         for (auto& kv : m) out->push_back(kv.second);
         std::sort(out->begin(), out->end(), [](const DirItem& a, const DirItem& b) { return a.name < b.name; });
@@ -358,11 +447,13 @@ struct Volume::Impl {
 
     uint64_t used(const std::string& path) {
         std::vector<DirItem> items;
-        if (list(path, &items)) return 0;
+        if (list(path, &items)) return UINT64_MAX;
         uint64_t total = 0;
         for (const DirItem& it : items) {
             const std::string child = (path == "/" ? "" : path) + "/" + it.name;
-            total += it.is_dir ? used(child) : static_cast<uint64_t>(it.size);
+            const auto bytes = it.is_dir ? used(child) : static_cast<uint64_t>(it.size);
+            if (bytes > UINT64_MAX - total) return UINT64_MAX;
+            total += bytes;
         }
         return total;
     }
@@ -374,14 +465,16 @@ Volume::Volume(const std::string& root, bool journal, bool read_only, uint64_t c
     s.root = u8(root);
     s.journal = journal;
     s.ro = read_only;
+    if (!safe_components(s.root)) return;
     std::error_code ec;
     if (journal) {
         stdfs::create_directories(s.root, ec);
         recover(root);
         s.marker = stdfs::path(s.root.string() + ".commit");
-        s.work = stdfs::path(s.root.string() + ".work." + std::to_string(GetCurrentProcessId()));
-        s.journal_file = stdfs::path(s.root.string() + ".journal." + std::to_string(GetCurrentProcessId()));
-        stdfs::remove_all(s.work, ec);   // a second open in this process starts from the committed state
+        if (stdfs::exists(stdfs::path(s.root.string() + ".commit"), ec)) return;
+        s.work = stdfs::path(s.root.string() + ".work." + std::to_string(host_pid()));
+        s.journal_file = stdfs::path(s.root.string() + ".journal." + std::to_string(host_pid()));
+        remove_tree(s.work, ec);   // a second open in this process starts from the committed state
         stdfs::create_directories(s.work, ec);
         s.ok = stdfs::is_directory(s.root, ec) && stdfs::is_directory(s.work, ec);
     } else {
@@ -394,11 +487,11 @@ Volume::Volume(const std::string& root, bool journal, bool read_only, uint64_t c
 }
 
 Volume::~Volume() {
-    if (!p_ || !p_->journal) return;
+    if (!p_ || !p_->journal || p_->work.empty()) return;
     std::error_code ec;
     // A decided commit that was not finished keeps its work folder: the next open rolls it forward. Otherwise the uncommitted
     // changes are dropped, as they are when a save is unmounted on the console without Commit.
-    if (!stdfs::exists(p_->marker, ec)) stdfs::remove_all(p_->work, ec);
+    if (!stdfs::exists(p_->marker, ec)) remove_tree(p_->work, ec);
 }
 
 bool Volume::ok() const { return p_->ok; }
@@ -408,10 +501,12 @@ void Volume::set_crash_point_for_tests(int point) { g_crash_point = point; }
 void Volume::recover(const std::string& root_s) {
     const stdfs::path root = u8(root_s);
     RootLock lock(root_s);
+    if (!lock.ok()) return;
     std::error_code ec;
     const stdfs::path marker(root.string() + ".commit");
     if (stdfs::exists(marker, ec)) {
         const int n = apply_marker(marker);
+        if (n < 0) return; // Preserve the work tree needed for a retry.
         NXLOG_W("fs", "a commit of %s was interrupted after it was decided: finished now (%d changes)", root_s.c_str(), n);
     }
     // Work folders and journals of processes that no longer run.
@@ -423,10 +518,10 @@ void Volume::recover(const std::string& root_s) {
         const std::string tail = name.substr(stem.size());
         const bool is_work = tail.rfind(".work.", 0) == 0, is_journal = tail.rfind(".journal.", 0) == 0;
         if (!is_work && !is_journal) continue;
-        const DWORD pid = static_cast<DWORD>(std::strtoul(tail.c_str() + (is_work ? 6 : 9), nullptr, 10));
-        if (!pid || pid == GetCurrentProcessId() || pid_alive(pid)) continue;
+        const uint64_t pid = std::strtoull(tail.c_str() + (is_work ? 6 : 9), nullptr, 10);
+        if (!pid || pid == host_pid() || pid_alive(pid)) continue;
         std::error_code e2;
-        stdfs::remove_all(it->path(), e2);
+        remove_tree(it->path(), e2);
         NXLOG_I("fs", "uncommitted %s of process %lu discarded (%s)", is_work ? "work folder" : "journal", static_cast<unsigned long>(pid), name.c_str());
     }
 }
@@ -438,15 +533,10 @@ uint32_t Volume::create_file(const std::string& path, int64_t size) {
     if (path == "/") return rc::kPathAlreadyExists;
     if (p_->lookup(path).exists) return rc::kPathAlreadyExists;
     if (const uint32_t r = p_->ensure_parents(path)) return r;
-    HANDLE h = open_host(p_->wpath(path), true, CREATE_NEW);
-    if (h == INVALID_HANDLE_VALUE) return rc::kGenericFailure;
-    uint32_t r = 0;
-    if (size) {
-        LARGE_INTEGER li;
-        li.QuadPart = size;
-        if (!SetFilePointerEx(h, li, nullptr, FILE_BEGIN) || !SetEndOfFile(h)) r = rc::kGenericFailure;
-    }
-    CloseHandle(h);
+    HostHandle h = open_host(p_->wpath(path), true, create_new);
+    if (h == invalid_host) return rc::kGenericFailure;
+    HostFile file(h, kModeWrite);
+    const uint32_t r = size ? file.set_size(size) : 0;
     p_->tomb.erase(path);   // harmless when absent; a re-created path is served from the work layer
     return r;
 }
@@ -478,7 +568,7 @@ uint32_t Volume::delete_dir(const std::string& path) {
     const Impl::Found f = p_->lookup(path);
     if (path == "/" || !f.exists || !f.is_dir) return rc::kPathNotFound;
     std::vector<DirItem> items;
-    p_->list(path, &items);
+    if (const auto rc = p_->list(path, &items)) return rc;
     if (!items.empty()) return rc::kDirectoryNotEmpty;
     std::error_code ec;
     stdfs::remove(p_->wpath(path), ec);
@@ -492,7 +582,7 @@ uint32_t Volume::delete_dir_recursive(const std::string& path) {
     const Impl::Found f = p_->lookup(path);
     if (path == "/" || !f.exists || !f.is_dir) return rc::kPathNotFound;
     std::error_code ec;
-    stdfs::remove_all(p_->wpath(path), ec);
+    remove_tree(p_->wpath(path), ec);
     if (p_->committed_visible(path)) p_->tomb.insert(path);
     // work-layer tombstones below a re-created directory no longer apply
     for (auto it = p_->tomb.begin(); it != p_->tomb.end();)
@@ -567,8 +657,8 @@ uint32_t Volume::open_file(const std::string& path, uint32_t mode, std::shared_p
         if (const uint32_t r = p_->materialize_file(path)) return r;
         host = p_->wpath(path);
     }
-    HANDLE h = open_host(host, write, OPEN_EXISTING);
-    if (h == INVALID_HANDLE_VALUE) return rc::kPathNotFound;
+    HostHandle h = open_host(host, write, open_existing);
+    if (h == invalid_host) return rc::kPathNotFound;
     *out = std::make_shared<HostFile>(h, mode);
     return 0;
 }
@@ -582,6 +672,7 @@ uint32_t Volume::file_times(const std::string& path, FileTimes* out) {
     std::lock_guard<std::mutex> lk(p_->mu);
     const Impl::Found f = p_->lookup(path);
     if (!f.exists) return rc::kPathNotFound;
+#ifdef _WIN32
     WIN32_FILE_ATTRIBUTE_DATA d;
     if (!GetFileAttributesExW(f.host.c_str(), GetFileExInfoStandard, &d)) return rc::kGenericFailure;
     auto posix = [](const FILETIME& ft) {
@@ -591,6 +682,14 @@ uint32_t Volume::file_times(const std::string& path, FileTimes* out) {
     out->created = posix(d.ftCreationTime);
     out->modified = posix(d.ftLastWriteTime);
     out->accessed = posix(d.ftLastAccessTime);
+#else
+    struct stat st{};
+    const int fd = open(f.host.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return rc::kGenericFailure;
+    const int status = fstat(fd, &st); close(fd);
+    if (status) return rc::kGenericFailure;
+    out->created = st.st_ctime; out->modified = st.st_mtime; out->accessed = st.st_atime;
+#endif
     out->valid = true;
     return 0;
 }
@@ -606,6 +705,7 @@ uint32_t Volume::commit() {
     Impl& s = *p_;
     std::lock_guard<std::mutex> lk(s.mu);
     RootLock lock(to_u8(s.root));
+    if (!lock.ok()) return rc::kGenericFailure;
     std::error_code ec;
     if (s.tomb.empty() && !stdfs::exists(s.work, ec)) return 0;
 
@@ -615,21 +715,22 @@ uint32_t Volume::commit() {
     int changes = static_cast<int>(s.tomb.size());
     std::vector<std::string> files, dirs;
     for (stdfs::recursive_directory_iterator it(s.work, ec), end; !ec && it != end; it.increment(ec)) {
-        const std::string rel = to_u8(stdfs::relative(it->path(), s.work, ec));
+        const std::string rel = to_u8(it->path().lexically_relative(s.work));
         std::string g = rel;
         std::replace(g.begin(), g.end(), '\\', '/');
         if (it->is_directory(ec)) {
             dirs.push_back(g);
         } else {
             files.push_back(g);
-            HANDLE h = CreateFileW(it->path().c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
-            if (h != INVALID_HANDLE_VALUE) {
-                FlushFileBuffers(h);
-                CloseHandle(h);
-            }
+            if (!sync_host(it->path())) return rc::kGenericFailure;
         }
     }
-    for (const std::string& d : dirs) body += "M " + d + "\n";
+    if (ec) return rc::kGenericFailure;
+    for (const std::string& d : dirs) {
+        body += "M " + d + "\n";
+        if (!sync_directory(s.work / u8(d))) return rc::kGenericFailure;
+    }
+    if (!sync_directory(s.work)) return rc::kGenericFailure;
     for (const std::string& f : files) body += "F " + f + "\n";
     changes += static_cast<int>(dirs.size() + files.size());
     {
@@ -638,14 +739,7 @@ uint32_t Volume::commit() {
         j.flush();
         if (!j) return rc::kGenericFailure;
     }
-    {
-        HANDLE h = CreateFileW(s.journal_file.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
-        if (h != INVALID_HANDLE_VALUE) {
-            FlushFileBuffers(h);
-            CloseHandle(h);
-        }
-    }
-    if (!MoveFileExW(s.journal_file.c_str(), s.marker.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return rc::kGenericFailure;
+    if (!sync_host(s.journal_file) || !publish_marker(s.journal_file, s.marker)) return rc::kGenericFailure;
     if (g_crash_point == 1) return rc::kGenericFailure;   // decided, nothing applied
 
     // Phase 2: apply. A crash in here is repaired by the next recover().
@@ -653,7 +747,7 @@ uint32_t Volume::commit() {
     if (g_crash_point == 2) return rc::kGenericFailure;
     if (applied < 0) return rc::kGenericFailure;
     s.tomb.clear();
-    stdfs::remove_all(s.work, ec);
+    remove_tree(s.work, ec);
     stdfs::create_directories(s.work, ec);
     NXLOG_D("fs", "commit %s: %d changes", to_u8(s.root).c_str(), changes);
     return 0;

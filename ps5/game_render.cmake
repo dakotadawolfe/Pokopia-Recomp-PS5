@@ -42,6 +42,7 @@ add_custom_command(OUTPUT "${startup_expectations}/private_startup_inputs.h" "${
         "${root}/ps5/prepare_startup_trace.py" "${root}/ps5/check_modules.py" "${root}/ps5/validate_input.py"
     COMMENT "Verifying private game and renderer integration inputs" VERBATIM)
 target_sources(${target} PRIVATE "${startup_expectations}/private_startup_inputs.h"
+    "${root}/ps5/tests/test_native_save_storage.cpp"
     "${root}/ps5/tests/game_trace_guards.cpp" "${root}/ps5/gfx/game_renderer.cpp"
     "${root}/ps5/tests/test_host_jumps.cpp"
     "${root}/ps5/app/startup_checkpoint.cpp"

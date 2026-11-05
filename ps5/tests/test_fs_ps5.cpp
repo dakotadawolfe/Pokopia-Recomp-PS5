@@ -171,7 +171,7 @@ NXTEST(fsp_writes_and_unported_commands_never_report_success) {
     for (auto command : {6u, 999u}) {
         req.cmd = command; CHECK_EQ(storage->handle(req, rsp), fs::rc::kNotImplemented);
     }
-    for (auto command : {2u, 22u, 23u, 51u, 201u, 202u, 203u, 999u}) {
+    for (auto command : {2u, 22u, 23u, 201u, 202u, 203u, 999u}) {
         req.cmd = command; CHECK_EQ(f.fsp->handle(req, rsp), fs::rc::kNotImplemented);
     }
     CHECK(rsp.out.empty() && rsp.out_objects.empty() && rsp.out_move.empty() && rsp.out_copy.empty());
@@ -204,10 +204,11 @@ NXTEST(fsp_bootstrap_reports_disabled_logging_and_the_actual_program_count) {
     CHECK_EQ(programs[0], 0u); CHECK_EQ(programs[1], 1u);
     rsp = {}; req.cmd = 1003; CHECK_EQ(f.fsp->handle(req, rsp), 0u);
     CHECK(rsp.out.empty() && rsp.out_objects.empty());
-    // Disabling automatic creation must not make save operations writable.
-    for (auto command : {22u, 23u, 51u}) {
+    // Explicit creation remains restricted to the current offline account.
+    for (auto command : {22u, 23u}) {
         req.cmd = command; CHECK_EQ(f.fsp->handle(req, rsp), fs::rc::kNotImplemented);
     }
+    req.cmd = 51; CHECK_EQ(f.fsp->handle(req, rsp), fs::rc::kInvalidArgument);
 }
 
 NXTEST(fsp_logging_policy_rejects_unbacked_destinations_and_foreign_resources) {

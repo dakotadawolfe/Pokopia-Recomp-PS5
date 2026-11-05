@@ -63,6 +63,8 @@ int main() {
     constexpr const char* prefix = "romfs-runtime";
 #elif defined(NXRT_TEST_FS)
     constexpr const char* prefix = "fs-runtime";
+#elif defined(NXRT_TEST_VOLUME)
+    constexpr const char* prefix = "volume-runtime";
 #elif defined(NXRT_TEST_EH)
     constexpr const char* prefix = "eh-runtime";
 #elif defined(NXRT_TEST_IPC)

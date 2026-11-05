@@ -2,6 +2,8 @@
 // PS5 application bootstrap. Command layouts follow am.cpp and libnx applet.c.
 // Services are added as their state and backing are ported; unknown calls fail.
 #include "services_internal.h"
+#include "fs_save_ps5.h"
+#include "fs_volume.h"
 #include "gsv_ps5.h"
 #include "nxrt/am_ps5.h"
 #include "nxrt/acc_ps5.h"
@@ -247,6 +249,29 @@ Ptr application(const std::shared_ptr<State>& state) {
             rsp.push_object(std::make_shared<AppletStorage>(data));
             state->user_channel.pop_back(); state->user_channel_bytes -= data->bytes.size();
             return 0;
+        });
+        s.add_cmd(20, "EnsureSaveData", [](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 16)) return rc;
+            if (const auto rc = fsapi::ensure_account_save(req.arg<uint64_t>(0), req.arg<uint64_t>(8), nullptr)) return rc;
+            rsp.push<int64_t>(0); return 0;
+        });
+        s.add_cmd(25, "ExtendSaveData", [](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 40)) return rc;
+            if (req.arg<uint8_t>(0) != 1) return fs::rc::kNotImplemented;
+            if (const auto rc = ps5save::extend(req.arg<uint64_t>(8), req.arg<uint64_t>(16),
+                req.arg<int64_t>(24), req.arg<int64_t>(32))) return rc;
+            rsp.push<int64_t>(0); return 0;
+        });
+        s.add_cmd(26, "GetSaveDataSize", [](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 24)) return rc;
+            if (req.arg<uint8_t>(0) != 1) return fs::rc::kNotImplemented;
+            int64_t size = 0, journal = 0;
+            if (const auto rc = fsapi::account_save_size(req.arg<uint64_t>(8), req.arg<uint64_t>(16), &size, &journal)) return rc;
+            rsp.push(size); rsp.push(journal); return 0;
+        });
+        s.add_cmd(28, "GetSaveDataSizeMax", [](Request& req, Response& rsp) -> uint32_t {
+            if (const auto rc = scalar_request(req, 0)) return rc;
+            rsp.push(ps5save::maximum_size); rsp.push(ps5save::maximum_size); return 0;
         });
         s.add_cmd(21, "GetDesiredLanguage", [](Request& req, Response& rsp) -> uint32_t {
             if (const auto rc = scalar_request(req, 0)) return rc;

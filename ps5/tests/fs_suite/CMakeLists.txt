@@ -13,6 +13,7 @@ if(NOT TARGET nxrt_ps5_romfs)
     include("${root}/ps5/romfs.cmake")
 endif()
 add_executable(ps5_fs_tests "${root}/ps5/tests/sync_main.cpp" "${root}/ps5/tests/test_fs_ps5.cpp"
+    "${root}/ps5/tests/test_save_ps5.cpp" "${root}/runtime/tests/test_svc_fs_volume.cpp"
     "${root}/ps5/app/thread_exit.cpp")
 target_include_directories(ps5_fs_tests PRIVATE "${root}/runtime/tests")
 target_compile_definitions(ps5_fs_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_FS=1)

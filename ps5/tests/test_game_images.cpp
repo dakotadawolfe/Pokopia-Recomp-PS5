@@ -872,6 +872,11 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
         profile.program_id = startup_program_id;
         profile.name = "Pokémon Pokopia";
         profile.display_version = startup_version;
+        // Development quota when extracted inputs omit control.nacp. This is
+        // an explicit port policy, not a recovered title metadata value.
+        // Two 64 MiB data generations fit in the title's 256 MiB download area.
+        profile.account_save_size = 64ull << 20;
+        profile.account_save_journal = 64ull << 20;
         // The verified build label also includes the update number for logs.
         const auto suffix = profile.display_version.find(" (");
         if (suffix != std::string::npos) profile.display_version.resize(suffix);

@@ -52,6 +52,14 @@ inline bool stop_on_reply(const IpcReplyResult& reply, std::string_view service,
         (reply.result == ((16u << 9) | 203u) || reply.result == ((32u << 9) | 203u) || reply.result == ((65u << 9) | 203u))) return false;
     if (service.starts_with("nn::ntc::") &&
         (reply.result == ((1000u << 9) | 116u) || reply.result == ((1003u << 9) | 116u))) return false;
+    // A first boot probes files that do not exist yet. Deliver these specific
+    // filesystem results to the SDK; malformed requests and I/O failures stop.
+    if (service == "nn::fssrv::sf::IFileSystem") {
+        if (reply.result == 0x202 && ((command >= 1 && command <= 9) || command == 13 || command == 14)) return false;
+        if (reply.result == 0x402 && (command == 0 || command == 2)) return false;
+    }
+    if (reply.result == 0x202 && ((service == "fsp-srv" && (command == 51 || command == 53)) ||
+        (service == "IApplicationFunctions" && command == 26))) return false;
     // These ported queue operations deliberately return an empty-queue result.
     // Pass it through unchanged so the SDK can finish polling. All other
     // failures, including missing game data and unported operations, still stop.

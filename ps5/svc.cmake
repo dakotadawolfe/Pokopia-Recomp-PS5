@@ -2,6 +2,7 @@
 set(svc_root "${CMAKE_CURRENT_LIST_DIR}/../runtime")
 include("${CMAKE_CURRENT_LIST_DIR}/romfs.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/time.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/volume.cmake")
 add_library(nxrt_ps5_svc STATIC
     "${svc_root}/src/kernel/svc.cpp" "${svc_root}/src/kernel/svc_thread.cpp"
     "${svc_root}/src/kernel/svc_memory.cpp" "${svc_root}/src/kernel/svc_memory_budget.cpp"
@@ -11,6 +12,7 @@ add_library(nxrt_ps5_svc STATIC
     "${svc_root}/src/services/registry.cpp" "${svc_root}/src/services/logfault.cpp"
     "${svc_root}/src/services/am_ps5.cpp" "${svc_root}/src/services/gsv_ps5.cpp" "${svc_root}/src/services/aoc_ps5.cpp"
     "${svc_root}/src/services/pctl_ps5.cpp" "${svc_root}/src/services/fs_ps5.cpp"
+    "${svc_root}/src/services/fs_save_ps5.cpp"
     "${svc_root}/src/services/time_ps5.cpp" "${svc_root}/src/services/acc_ps5.cpp"
     "${svc_root}/src/services/locale_ps5.cpp" "${svc_root}/src/services/streamplay_ps5.cpp")
 include("${CMAKE_CURRENT_LIST_DIR}/audio.cmake")
@@ -19,7 +21,7 @@ target_link_libraries(nxrt_ps5_svc PUBLIC nxrt_ps5_audio nxrt_ps5_input_services
 target_compile_definitions(nxrt_ps5_svc PRIVATE
     NXRT_DISABLE_FRAME_TRACE=1 NXRT_DISABLE_TEST_TOOLING=1)
 target_compile_options(nxrt_ps5_svc PRIVATE -Wall -Wextra -Werror -mcx16)
-target_link_libraries(nxrt_ps5_svc PUBLIC nxrt_ps5_kernel nxrt_ps5_romfs nxrt_ps5_time_support)
+target_link_libraries(nxrt_ps5_svc PUBLIC nxrt_ps5_kernel nxrt_ps5_romfs nxrt_ps5_volume nxrt_ps5_time_support)
 # PS5 memory handlers currently cover heap size, protection, attributes and
 # queries, exclusive stack mapping, shared aliases and transfer-memory leases.
 # Unported calls keep the dispatcher's explicit not-implemented result.

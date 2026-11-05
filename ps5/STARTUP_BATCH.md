@@ -313,6 +313,16 @@ verification. Its matching symbols and the previous executable are retained
 privately alongside the crash evidence. The transfer helper and diagnostic
 payload slots were removed afterward; no automatic game launch was performed.
 
+## Account-save startup batch
+
+The next manual run passes the offline display bridge and deliberately stops
+at the game's save-data setup request, then exits normally to Home. The next
+batch adds persistent account-save storage, filesystem operations, quota and
+size handling, commit recovery and expected first-boot error handling. All 36
+filesystem/service cases pass on PS5. Native storage and the next game startup
+remain pending the manual integration run. See [save storage](SAVE_STORAGE.md)
+for the development policy, evidence and remaining Saved Data integration.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:

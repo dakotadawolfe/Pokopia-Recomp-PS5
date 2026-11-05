@@ -2,7 +2,12 @@
 // Host-folder volumes (fs_volume.h): plain file operations, the journalled save semantics (copy on write, tombstones, two-phase commit,
 // recovery after a crash between the phases) and path hygiene.
 #define _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <unistd.h>
+#include <cstdlib>
+#endif
 
 #include <cstring>
 #include <filesystem>
@@ -17,11 +22,26 @@ namespace stdfs = std::filesystem;
 using namespace nxrt::services::fs;
 
 namespace {
+uint64_t process_id() {
+#ifdef _WIN32
+    return GetCurrentProcessId();
+#else
+    return getpid();
+#endif
+}
 
 struct TempDir {
     stdfs::path p;
     explicit TempDir(const char* tag) {
+#ifdef _WIN32
         p = stdfs::temp_directory_path() / (std::string("nxrt_fsv_") + tag + "_" + std::to_string(GetCurrentProcessId()));
+#else
+        const char* configured = std::getenv("NXRT_TEST_TEMP");
+        const auto base = configured ? stdfs::path(configured) : stdfs::temp_directory_path();
+        std::string name = (base / (std::string("nxrt_fsv_") + tag + "_XXXXXX")).string();
+        if (!mkdtemp(name.data())) throw std::runtime_error("cannot create save volume fixture");
+        p = name;
+#endif
         std::error_code ec;
         stdfs::remove_all(p, ec);
         stdfs::create_directories(p, ec);
@@ -300,9 +320,9 @@ NXTEST(journal_crash_before_decision_changes_nothing) {
         CHECK_EQ(v.commit(), 0u);
         CHECK(put(v, "/f", "wip", false));
         // process killed with only a half written journal and no marker
-        std::ofstream(t.p / ("save.journal." + std::to_string(GetCurrentProcessId()))) << "W x\nR y\nD f\n";
+        std::ofstream(t.p / ("save.journal." + std::to_string(process_id()))) << "W x\nR y\nD f\n";
     }
-    stdfs::remove(t.p / ("save.journal." + std::to_string(GetCurrentProcessId())));
+    stdfs::remove(t.p / ("save.journal." + std::to_string(process_id())));
     Volume v(t.root("save"), true, false, 0);
     CHECK_EQ(read_all(v, "/f"), std::string("base"));
 }
@@ -327,4 +347,18 @@ NXTEST(journal_space_accounting) {
     CHECK_EQ(v.used_bytes(), 300u);
     CHECK_EQ(v.delete_file("/f"), 0u);
     CHECK_EQ(v.used_bytes(), 0u);
+}
+
+NXTEST(journal_recovery_rejects_redirected_roots_and_parent_paths) {
+    TempDir t("invalid_marker");
+    stdfs::create_directories(t.p / "save"); stdfs::create_directories(t.p / "outside");
+    std::ofstream(t.p / "outside" / "keep") << "original";
+    const auto work = t.root("save") + ".work." + std::to_string(process_id());
+    stdfs::create_directories(work);
+    std::ofstream(t.p / "save.commit") << "W " << work << "\nR " << t.root("outside") << "\nD keep\n";
+    { Volume v(t.root("save"), true, false, 0); CHECK(!v.ok()); }
+    CHECK(stdfs::exists(t.p / "outside" / "keep")); CHECK(stdfs::exists(t.p / "save.commit"));
+    std::ofstream(t.p / "save.commit") << "W " << work << "\nR " << t.root("save") << "\nD ../outside/keep\n";
+    { Volume v(t.root("save"), true, false, 0); CHECK(!v.ok()); }
+    CHECK(stdfs::exists(t.p / "outside" / "keep")); CHECK(stdfs::exists(t.p / "save.commit"));
 }
