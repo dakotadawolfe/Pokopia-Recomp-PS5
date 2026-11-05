@@ -170,6 +170,13 @@ This batch retains the existing development asset/cache locations. The final
 title-contained installation, console-side preparation and native save-data
 requirements remain outstanding; see [RELEASE_REQUIREMENTS.md](RELEASE_REQUIREMENTS.md).
 
+The app built locally from `67d7a5d` is installed on the test console. Full
+SHA-256 readbacks verified both the executable and the Opus license. The
+previous executable and matching compressed symbols are retained privately.
+The transfer helper and its payload slots were closed after installation.
+The native game was not launched automatically; the next manual game run is
+still required to verify progress beyond the codec startup boundary.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
