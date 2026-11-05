@@ -2,6 +2,7 @@
 // Adapt the upstream Switch 2 graphics handoff to the actual PS5 NVN renderer.
 #include "game_renderer.h"
 #include "sdk_graphics_decode.h"
+#include "offline_guest_displays.h"
 #include "picker_draw.h"
 #include "../app/folder_picker.h"
 #include "../../runtime/src/gfx/nvn/nvn_shaders.h"
@@ -42,6 +43,7 @@ std::mutex mutex;
 uint64_t flag_address = 0, pointer_address = 0, driver = 0, display = 0, layer = 0, window = 0;
 std::atomic<bool> initialized{false};
 bool vi_initialized = false;
+OfflineGuestDisplays guest_displays;
 std::atomic<uint64_t> presents{0};
 std::string selected_folder;
 std::chrono::steady_clock::time_point loading_started;
@@ -130,12 +132,39 @@ void create_layer(Ctx* c) {
 void destroy_layer(Ctx* c) {
     std::lock_guard lock(mutex);
     if (!layer || c->x[0] != layer) fail("invalid layer destruction");
+    guest_displays.destroy();
     layer = window = 0;
 }
 void native_window(Ctx* c) {
     std::lock_guard lock(mutex);
     if (!ready() || !layer || c->x[1] != layer) fail("invalid native-window request");
     write<uint64_t>(c->x[0], window); c->x[0] = 0;
+}
+void create_guest_displays(Ctx* c) {
+    std::lock_guard lock(mutex);
+    if (!ready() || !initialized || !layer ||
+        !guest_displays.create(static_cast<int32_t>(c->x[0]), window))
+        fail("invalid offline guest-display creation");
+    std::printf("GAME_GUEST_DISPLAYS count=%u backend=PS5-NVN streaming=false\n", static_cast<uint32_t>(c->x[0]));
+    c->x[0] = 0;
+}
+void destroy_guest_displays(Ctx* c) {
+    std::lock_guard lock(mutex);
+    guest_displays.destroy(); c->x[0] = 0;
+}
+void guest_native_window(Ctx* c) {
+    std::lock_guard lock(mutex);
+    const auto result = guest_displays.window(static_cast<uint32_t>(c->x[0]));
+    if (!ready() || !layer || !result || result != window) fail("invalid offline guest-window request");
+    c->x[0] = result;
+}
+void guest_luminance(Ctx* c) {
+    std::lock_guard lock(mutex);
+    if (!ready() || !layer || !guest_displays.window(static_cast<uint32_t>(c->x[0])))
+        fail("invalid offline guest-display metadata");
+    // No remote display is connected. Guest HDR metadata must not change the
+    // primary display's presentation settings.
+    c->x[0] = 0;
 }
 void vrr_capability(Ctx* c) {
     std::lock_guard lock(mutex);
@@ -231,6 +260,11 @@ bool install_game_bridge() {
         {"_ZN2nn2vi23SetDisplayVrrCapabilityEPNS0_7DisplayEb", vrr_capability},
         {"_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt", luminance<true>},
         {"_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt", luminance<false>},
+        {"_ZN2nn10streamplay24CreateIndividualDisplaysEi", create_guest_displays},
+        {"_ZN2nn10streamplay25DestroyIndividualDisplaysEv", destroy_guest_displays},
+        {"_ZN2nn10streamplay21GetNativeWindowHandleENS0_7GuestIdE", guest_native_window},
+        {"_ZN2nn10streamplay52SetLayerNextHdrStandardContentLuminanceRangeMetadataENS0_7GuestIdEtt", guest_luminance},
+        {"_ZN2nn10streamplay52SetLayerNextHdrExtendedContentLuminanceRangeMetadataENS0_7GuestIdEtt", guest_luminance},
     };
     // Preflight every export before mutating the import routing.
     for (const auto& f : functions)
@@ -284,6 +318,7 @@ void report() {
 }
 void shutdown() {
     diag_set_frame_listener(nullptr);
+    guest_displays.destroy();
     nvn::shutdown_backend(); renderer.reset(); device.reset(); platform::shutdown();
     flag_address = pointer_address = driver = display = layer = window = 0;
     initialized = vi_initialized = false;

@@ -283,6 +283,31 @@ matching symbols are retained privately. The owned transfer helper and test
 payload slots were removed after installation. No automatic game launch was
 performed; the offline service integration still needs a manual game run.
 
+## Offline guest-display crash
+
+The subsequent manual run reached the GameShare service queries and then
+crashed after about 648 seconds. The kernel report identified a null read in
+the guest SDK while creating individual GameShare displays. Matching private
+symbols and the generated call chain traced it through VI2 initialization to
+an absent GraphicsSupervisor session. The PS5 NVN bridge deliberately owns
+graphics instead of starting that guest driver; the missing piece was the
+GameShare display handoff already present in `runtime/src/core/switch2.cpp`.
+The asset-read counters recorded no failures and about two seconds of host
+read time; this crash is not evidence of slow USB reads.
+
+The PS5 bridge now handles individual-display creation, native-window lookup,
+destruction and both guest HDR metadata calls. Offline guests borrow the
+existing native window identity, with bounds and lifecycle validation. They
+do not create remote displays or network connections. Guest metadata leaves
+the primary display settings alone, and destroying the primary layer clears
+the borrowed identities. The SDK export preflight still rejects missing
+symbols before changing routing. Unknown streaming operations still fail.
+
+The focused payload passed all seven cases on PS5: the five service cases
+plus native-window lifetime and invalid-setup coverage. The native app also
+builds locally. These checks do not execute the game's startup path or prove
+menu/gameplay; the corrected app still needs a manual integration run.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
@@ -300,8 +325,9 @@ Use `console_probe.py` to run it and retain its `audio-runtime` report; close
 the owned transfer session after installation/collection. The sink test is
 silent and does not start the game.
 
-The same PS5 build also provides `ps5_streamplay_tests`, containing the five
-offline GameShare cases without the audio-device test. Collect its
+The same PS5 build also provides `ps5_streamplay_tests`, containing five
+offline GameShare service cases and two offline guest-display cases without
+the audio-device test. Collect its
 `streamplay-runtime` report with `console_probe.py`.
 
 For private shader regeneration, use `prepare_startup_shader_corpus.py` with

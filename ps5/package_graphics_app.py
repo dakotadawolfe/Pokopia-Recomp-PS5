@@ -47,6 +47,7 @@ def main():
             "opus_source_sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
             "startup_idle_loading_view": True,
             "offline_streamplay_startup": True,
+            "offline_streamplay_display_bridge": True,
             "streamplay_network_sessions": False,
             "startup_thread_cpu_clock": "CLOCK_THREAD_CPUTIME_ID; sampled on the owning worker",
             "startup_stack_measurement": "owner-only point samples and painted-stack touch watermarks; scans at most once per 10 seconds",
