@@ -10,7 +10,7 @@ namespace nxrt::host_thread {
 struct CurrentSample {
     uint64_t cpu_ns = 0;
     int cpu_error = 0;
-    size_t stack_bytes = 0, stack_used = 0;
+    size_t stack_bytes = 0, stack_used = 0, touched_stack_bytes = 0;
 };
 // Owns one POSIX worker. Creation leaves it behind a start gate, so a guest
 // thread's registers, handle and scheduling can be published before execution.
@@ -21,7 +21,7 @@ struct CurrentSample {
 class Thread {
 public:
     using Entry = void (*)(void*);
-    static std::unique_ptr<Thread> create(Entry entry, void* argument, size_t stack_bytes = 0);
+    static std::unique_ptr<Thread> create(Entry entry, void* argument, size_t stack_bytes = 0, bool measure_stack = false);
     ~Thread();
     Thread(const Thread&) = delete;
     Thread& operator=(const Thread&) = delete;
@@ -35,7 +35,8 @@ public:
     size_t stack_size() const;
     std::exception_ptr failure() const; // Inspect after wait_for or join.
     // Samples only the calling thread. Stack usage is a point sample of owned
-    // PS5 stacks, not a complete high-water mark or a safe smaller stack size.
+    // PS5 stacks. Opt-in paint scans also detect returned deep frames; their
+    // watermark measures touched bytes, not every possible stack-pointer value.
     static CurrentSample sample_current();
     [[noreturn]] static void exit();
 private:

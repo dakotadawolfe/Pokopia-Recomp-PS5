@@ -137,6 +137,8 @@ int main() {
 #endif
 #ifdef NXRT_GAME_RENDER_NATIVE
     nxrt::log_init({.path = "", .level = nxrt::LogLevel::Info, .stderr_all = true});
+#elif defined(NXRT_TEST_AUDIO)
+    nxrt::log_init({.path = "", .level = nxrt::LogLevel::Info, .stderr_all = true});
 #else
     nxrt::log_init({.path = "", .level = nxrt::LogLevel::Error, .to_stderr = false});
 #endif

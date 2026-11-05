@@ -19,6 +19,7 @@ if(PS5)
     target_sources(ps5_audio_tests PRIVATE "${root}/ps5/tests/test_audio_service.cpp"
         "${root}/ps5/tests/test_transfer_memory.cpp"
         "${root}/ps5/tests/test_opus_service.cpp"
+        "${root}/ps5/tests/test_stack_budget.cpp"
         "${root}/ps5/tests/test_startup_dependencies.cpp" "${root}/runtime/tests/test_nxmodule.cpp" "${root}/ps5/app/thread_exit.cpp")
     target_compile_definitions(ps5_audio_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_AUDIO=1)
     target_link_libraries(ps5_audio_tests PRIVATE nxrt_ps5_svc)

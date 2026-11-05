@@ -177,6 +177,53 @@ The transfer helper and its payload slots were closed after installation.
 The native game was not launched automatically; the next manual game run is
 still required to verify progress beyond the codec startup boundary.
 
+## Worker-stack memory batch
+
+The subsequent manual run reached `hwopus` and completed two manager size
+queries. At 588,593 ms, allocation of the 35th 64 MiB host worker stack failed
+with errno 35. `StartThread` returned `0xce01`, the guest called `Break`, and
+the native wrapper exited with status 2. This was an allocation failure before
+the 600-second deadline, not verified game decoding, a menu or gameplay.
+
+The 34 successfully started worker stacks alone accounted for 2,176 MiB.
+The final largest free direct-memory block was 27,754,496 bytes; that value
+is not total free memory. This compact native build now uses guarded 32 MiB
+worker stacks, saving 1,088 MiB at the same worker count. The generic runtime
+default and guest heap budget are unchanged. The game still needs to establish
+that the reduced stack capacity is sufficient for its deeper call paths.
+
+Opt-in stack painting adds owner-only touched-byte watermarks, scanned at most
+once every ten seconds. These detect returned deep frames that SVC stack-pointer
+samples miss. They do not prove every possible stack-pointer position or the
+maximum future stack requirement. On PS5, two concurrent 32 MiB workers each
+successfully touched and checked a 24 MiB local frame, detected it after return,
+retained inaccessible guard pages, and released their backing after join.
+
+The combined dependency payload completed 73 cases with one failure: the
+AudioOut device could not open after the game run. All other cases, including
+the new stack case and Opus tests, passed. A diagnostic rerun stalled inside
+`sceAudioOutInit`; both stalled diagnostic processes were explicitly stopped
+and their reports retained. Audio phase/error reporting now identifies init,
+open and volume failures. A console restart and fresh audio-device check are
+required before treating the next game run as comparable. Host audio,
+shader-control and platform/thread checks passed; these do not replace that
+device check.
+
+The game run completed 1,422 host file reads totaling 105,899,418 bytes in
+2,063 ms, with zero read failures. Shader lookup time was 10,624 ms, with
+3,735 shaders loaded and zero missing entries. Rendering stayed at seven
+submissions, one draw and one presentation. The native loading view updated
+587 times, counted separately from game frames. Main-thread CPU samples
+reached roughly 498 seconds; storage timings do not explain the long startup.
+The yield-loop and native CPU cost remain investigations, not fixed bottlenecks.
+
+The startup deadline is now 900 seconds so the next run can exercise stages
+beyond the observed 589-second allocation stop. Extending that diagnostic
+limit is not a startup-speed improvement. The native app built and packaged
+locally with exception-linkage and FSELF checks. Game-derived artifacts and
+all reports remain private. Installation and a subsequent manual game run
+must still be verified separately.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:

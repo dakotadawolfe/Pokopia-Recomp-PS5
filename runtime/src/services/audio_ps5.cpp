@@ -80,12 +80,23 @@ public:
         stop_locked();
         static std::once_flag once;
         static int init = -1;
+        NXLOG_I("audio", "PS5 output initializing");
         std::call_once(once, [] { init = sceAudioOutInit(); });
-        if (init < 0 && init != static_cast<int>(0x8026000e)) return false;
+        if (init < 0 && init != static_cast<int>(0x8026000e)) {
+            NXLOG_E("audio", "PS5 output initialization failed: rc=%08x", static_cast<unsigned>(init)); return false;
+        }
+        NXLOG_I("audio", "PS5 output opening: init_rc=%08x", static_cast<unsigned>(init));
         port_ = sceAudioOutOpen(0xff, 0, 0, grain, 48000, 1);
-        if (port_ < 0) return false;
+        if (port_ < 0) {
+            NXLOG_E("audio", "PS5 output open failed: rc=%08x", static_cast<unsigned>(port_)); return false;
+        }
         const std::array<int, 8> volume = {0x8000, 0x8000};
-        if (sceAudioOutSetVolume(port_, 3, volume.data()) < 0) { stop_locked(); return false; }
+        NXLOG_I("audio", "PS5 output setting volume: port=%d", port_);
+        const int volume_rc = sceAudioOutSetVolume(port_, 3, volume.data());
+        if (volume_rc < 0) {
+            NXLOG_E("audio", "PS5 output volume failed: rc=%08x", static_cast<unsigned>(volume_rc));
+            stop_locked(); return false;
+        }
         { std::lock_guard lock(mutex_); channels_ = channels; stopping_ = failed_ = false; stats_.sample_rate = rate; }
         try { thread_ = std::thread([this] { consume(); }); }
         catch (...) { stop_locked(); throw; }

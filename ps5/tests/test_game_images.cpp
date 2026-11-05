@@ -234,7 +234,7 @@ struct StartupSvcStats {
 std::array<StartupSvcStats, nxrt::kSvcCount> startup_svc_stats;
 std::atomic<uint64_t> startup_started_ns{0};
 struct alignas(64) StartupThreadStats {
-    std::atomic<uint64_t> id{0}, svc{0}, cpu_ns{0}, sample_ns{0}, fn{0}, lr{0}, x0{0}, stack_bytes{0}, stack_peak{0};
+    std::atomic<uint64_t> id{0}, svc{0}, cpu_ns{0}, sample_ns{0}, fn{0}, lr{0}, x0{0}, stack_bytes{0}, stack_peak{0}, stack_touched{0};
     std::atomic<int> cpu_error{0};
 };
 std::array<StartupThreadStats, 128> startup_thread_stats;
@@ -259,6 +259,7 @@ void sample_startup_thread(size_t number, const Ctx* c, uint64_t now) {
     out.fn.store(c->fn, std::memory_order_relaxed); out.lr.store(c->x[30], std::memory_order_relaxed);
     out.x0.store(c->x[0], std::memory_order_relaxed); out.stack_bytes.store(sample.stack_bytes, std::memory_order_relaxed);
     if (sample.stack_used > out.stack_peak.load(std::memory_order_relaxed)) out.stack_peak.store(sample.stack_used, std::memory_order_relaxed);
+    out.stack_touched.store(sample.touched_stack_bytes, std::memory_order_relaxed);
     out.id.store(thread->id, std::memory_order_release);
 }
 struct StartupSvcScope {
@@ -313,12 +314,12 @@ void report_startup_profile(bool detailed) {
         const auto id = t.id.load(std::memory_order_acquire);
         if (!id) continue;
         const auto at = t.sample_ns.load(std::memory_order_relaxed);
-        std::printf("GAME_THREAD_SAMPLE id=%llu cpu_ms=%llu cpu_error=%d age_ms=%llu svc=%02llx fn=%llx lr=%llx x0=%llx stack_bytes=%llu sampled_stack_peak=%llu\n",
+        std::printf("GAME_THREAD_SAMPLE id=%llu cpu_ms=%llu cpu_error=%d age_ms=%llu svc=%02llx fn=%llx lr=%llx x0=%llx stack_bytes=%llu sampled_stack_peak=%llu touched_stack_bytes=%llu\n",
             static_cast<unsigned long long>(id), static_cast<unsigned long long>(t.cpu_ns.load()/1000000), t.cpu_error.load(),
             static_cast<unsigned long long>(now > at ? (now-at)/1000000 : 0), static_cast<unsigned long long>(t.svc.load()),
             static_cast<unsigned long long>(t.fn.load()), static_cast<unsigned long long>(t.lr.load()),
             static_cast<unsigned long long>(t.x0.load()), static_cast<unsigned long long>(t.stack_bytes.load()),
-            static_cast<unsigned long long>(t.stack_peak.load()));
+            static_cast<unsigned long long>(t.stack_peak.load()), static_cast<unsigned long long>(t.stack_touched.load()));
     }
     uint64_t completed = 0, active = 0, elapsed = 0, handler = 0, timed = 0;
     for (size_t n = 0; n < startup_svc_stats.size(); ++n) {
@@ -779,7 +780,7 @@ struct RtldDeadline {
     std::thread worker{[this] {
         std::unique_lock lock(mutex);
 #ifdef NXRT_GAME_RENDER_NATIVE
-        constexpr int seconds = 600;
+        constexpr int seconds = 900;
         const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
         for (;;) {
             const auto next = std::min(end, std::chrono::steady_clock::now() + std::chrono::seconds(10));
@@ -885,8 +886,13 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     // do not truncate SetHeapSize or report successful backing we cannot supply.
     const auto native_budget = std::to_string(PKP_NATIVE_GAME_MEMORY_MIB);
     nxrt::config_set("memory", "app_memory_mb", native_budget.c_str());
+    // The compact build exhausted direct memory starting its 35th 64 MiB
+    // worker. Use a guarded 32 MiB budget and measure touched stack memory;
+    // the earlier SVC point samples alone did not capture returned deep calls.
+    nxrt::config_set("threads", "host_stack_mb", "32");
+    nxrt::config_set("threads", "measure_host_stack", "true");
     REQUIRE(nxrt::svc_total_memory() == (uint64_t{PKP_NATIVE_GAME_MEMORY_MIB} << 20));
-    std::printf("GAME_MEMORY_PROFILE guest_application_mib=%u minimum_host_free_mib=1024\n",
+    std::printf("GAME_MEMORY_PROFILE guest_application_mib=%u minimum_host_free_mib=1024 worker_stack_mib=32 stack_watermarks=true\n",
         unsigned(PKP_NATIVE_GAME_MEMORY_MIB));
 #endif
 #ifdef NXRT_GAME_STARTUP_TRACE

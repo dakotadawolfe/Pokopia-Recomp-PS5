@@ -137,7 +137,8 @@ uint32_t thread_start(uint32_t handle) {
         bytes = static_cast<uint64_t>(mb) << 20;
     }
     if (bytes > std::numeric_limits<size_t>::max()) return kOutOfResource;
-    try { t->worker = host_thread::Thread::create(run, t.get(), static_cast<size_t>(bytes)); }
+    try { t->worker = host_thread::Thread::create(run, t.get(), static_cast<size_t>(bytes),
+        config_get_bool("threads", "measure_host_stack", false)); }
     catch (const std::bad_alloc&) { return kOutOfMemory; }
     if (!t->worker) {
         NXLOG_E("kernel", "host thread creation failed: handle=%x entry=%llx stack=%llu errno=%d",

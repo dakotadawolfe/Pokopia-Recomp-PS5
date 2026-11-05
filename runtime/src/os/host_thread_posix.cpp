@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <pthread.h>
@@ -26,6 +27,9 @@ struct Thread::State {
     Entry entry;
     void* argument;
     size_t stack_size = 0;
+    bool measure_stack = false;
+    size_t touched_stack_bytes = 0;
+    std::chrono::steady_clock::time_point next_stack_scan{};
     pthread_t worker{};
     std::mutex mutex, join_mutex;
     std::condition_variable changed;
@@ -51,14 +55,29 @@ CurrentSample Thread::sample_current() {
         const auto high = low + current_->stack_size;
         const auto at = reinterpret_cast<uintptr_t>(&result);
         result.stack_bytes = current_->stack_size;
-        if (at >= low && at < high) result.stack_used = high - at;
+        if (at >= low && at < high) {
+            result.stack_used = high - at;
+            const auto now = std::chrono::steady_clock::now();
+            if (current_->measure_stack && now >= current_->next_stack_scan) {
+                // Only the owner reads below its current stack position. A
+                // monitor thread must never race a worker's stack writes.
+                const auto* first = reinterpret_cast<const unsigned char*>(low);
+                const auto* end = reinterpret_cast<const unsigned char*>(at);
+                while (first < end && *first == 0xa5) ++first;
+                const size_t touched = high - reinterpret_cast<uintptr_t>(first);
+                current_->touched_stack_bytes = std::max(current_->touched_stack_bytes, touched);
+                current_->next_stack_scan = now + std::chrono::seconds(10);
+            }
+            result.touched_stack_bytes = current_->touched_stack_bytes;
+        }
     }
 #endif
     return result;
 }
-std::unique_ptr<Thread> Thread::create(Entry entry, void* argument, size_t stack_bytes) {
+std::unique_ptr<Thread> Thread::create(Entry entry, void* argument, size_t stack_bytes, bool measure_stack) {
     if (!entry) { errno = EINVAL; return {}; }
     auto state = std::make_unique<State>(entry, argument);
+    state->measure_stack = measure_stack;
     pthread_attr_t attributes;
     int error = pthread_attr_init(&attributes);
     if (error) { errno = error; return {}; }
@@ -88,6 +107,7 @@ std::unique_ptr<Thread> Thread::create(Entry entry, void* argument, size_t stack
                     else {
                         state->stack = std::make_unique<ps5_vm::Reservation>(std::move(mapping));
                         state->stack_size = bytes;
+                        if (measure_stack) std::memset(static_cast<unsigned char*>(state->stack->data()) + page, 0xa5, bytes);
                         stage = "stack-attributes";
                         error = pthread_attr_setstack(&attributes,
                             static_cast<unsigned char*>(state->stack->data()) + page, bytes);
