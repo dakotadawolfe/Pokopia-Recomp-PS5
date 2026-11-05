@@ -32,7 +32,7 @@ def verify_remote(ftp, directory, files):
         ftp.cwd(previous_directory)
     if set(entries) != set(files) or any(f.get("type") != "file" for f in entries.values()):
         raise ValueError(f"Unexpected contents in {directory}; preserving them")
-    for name, expected in files.items():
+    for index, (name, expected) in enumerate(files.items(), 1):
         digest, size = hashlib.sha256(), 0
         def receive(data):
             nonlocal size
@@ -41,6 +41,8 @@ def verify_remote(ftp, directory, files):
         ftp.retrbinary("RETR " + directory + "/" + checked_name(name), receive, blocksize=1024*1024)
         if {"bytes": size, "sha256": digest.hexdigest()} != expected:
             raise ValueError(f"Remote cache identity differs: {directory}/{name}")
+        if index % 250 == 0 or index == len(files):
+            print(f"Readback verified {index}/{len(files)} files in {directory}", flush=True)
 
 
 def activate(ftp, staging, backup):

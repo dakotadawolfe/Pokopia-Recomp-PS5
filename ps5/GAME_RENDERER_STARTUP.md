@@ -865,15 +865,29 @@ FSELF: 278,475,169 bytes, SHA-256
 `1ef938bac821936dc5ee9531dc9d55cd2acb2e06790c078e5626ea956296dc7e`.
 Native ELF: 284,267,452 bytes, SHA-256
 `bf466e0f45e583e0b47f27a4b78f3f59fb7acdad7ba4368110c837f9d2296daa`.
-Console services became unreachable after report collection. No installation
-of this candidate has been attempted; its startup behavior remains unverified.
+Console services became unreachable after report collection, initially
+preventing installation. The candidate's startup behavior remains unverified.
 The cache is 839,314,530 bytes before its file manifest; that manifest's SHA-256
 is `c0cc765711f7e943a0cbc709b76296ea41dcd72be317fad8cdeb12d9a52d9983`.
-Package identities and the pending deployment are recorded in
-`game-renderer-startup-bank-deployment-status.json`. The collection helper
-session (recorded PID 93 and its one payload slot) still needs reconciliation
-and cleanup when services return; its receipt is
-`game-renderer-first-frame-result-console.json`. No new app launch was initiated.
+Package identities and deployment status are recorded in
+`game-renderer-startup-bank-deployment-status.json`.
+
+After services returned, the cache and executable were installed with the
+owned title stopped and unmounted. All 3,630 cache files passed complete
+staged and final SHA-256 readbacks; the previous cache directory is preserved.
+The executable also passed both full readbacks, with its predecessor backed
+up locally. Receipts are `game-renderer-startup-bank-shaders-install.json` and
+`game-renderer-startup-bank-install.json`. Future cache installations report
+readback progress every 250 files as well as upload progress.
+
+The earlier collection helper was gone, and its PID 93 now belonged to
+Payload Manager. Cleanup preserved that process and removed only the recorded
+transfer payload slot after confirming the FTP port was closed. Three host
+checks cover reused PIDs, unrelated FTP servers and pending diagnostics.
+The prior receipt is `game-renderer-first-frame-result-console.json`.
+The new transfer helper (PID 101) and its one owned payload slot were also
+removed, and port 2121 is closed; its receipt is
+`game-renderer-startup-bank-console.json`. No app launch was initiated.
 
 ## Interpreting a run
 
