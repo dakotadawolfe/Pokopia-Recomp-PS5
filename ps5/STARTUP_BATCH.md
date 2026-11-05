@@ -366,6 +366,15 @@ builds locally; installation and another native run are tracked separately.
 Normal Saved Data integration, title-contained import and on-console shader
 compilation remain release work. All game-derived artifacts stay private.
 
+The combined iteration is installed with the title stopped. Full readback
+verifies all 6,704 cache records and the app from source `c336496`:
+279,846,105 bytes, SHA-256
+`9b5d7ffccf975b13477a0a1647320112d8307bfb51f7409084338ebba2bec548`.
+The previous cache/executable, matching symbols and private provenance are
+retained. The owned helper and diagnostic slots were removed afterward.
+No automatic game launch was performed. The next manual run must establish
+whether this reaches a game frame and whether native shader capture works.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
