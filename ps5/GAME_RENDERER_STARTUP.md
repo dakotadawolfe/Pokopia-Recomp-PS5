@@ -621,9 +621,18 @@ RADV/platform libraries, native libc, provenance and startup shaders are unchang
 The first installation attempt lost its FTP connection while reading the old
 executable backup, before upload or rename. The 228,943,192-byte incomplete
 local backup was hashed in `game-renderer-locale-deployment-status.json` and
-removed. Ports 8084, 10101 and 2121 then timed out. The candidate is not installed
-by that attempt; the previous account build remains the installed executable.
-The owned helper/diagnostic slots require cleanup when console services return.
+removed. Ports 8084, 10101 and 2121 then timed out. That attempt did not install
+the candidate or change the previous account executable.
+
+After console services returned, the prior helper was absent and its two owned
+payload slots were removed. The replacement completed with the title stopped
+and unmounted, a verified backup of the prior account executable, and full
+matching staged/final SHA-256 readbacks. Installation is recorded in
+`game-renderer-locale-retry-install.json`. The new helper (PID 103) and its
+temporary payload slot were removed; port 2121 is closed. The two cleanup
+receipts are `game-renderer-account-result-console.json` and
+`game-renderer-locale-install-console.json`. The combined build is installed;
+game startup beyond the add-on status query remains unverified.
 
 ## Interpreting a run
 
