@@ -75,6 +75,13 @@ bool sync_directory(const std::string& path) {
     if (fd < 0) return false;
     const bool okay = fsync(fd) == 0; close(fd); return okay;
 }
+uint32_t check_space(const std::string& path, uint64_t required) {
+    const auto space = fs::available_storage(path);
+    if (space.status == fs::SpaceStatus::Error) return fs::rc::kGenericFailure;
+    if (space.status == fs::SpaceStatus::Measured) return space.bytes < required ? full : 0;
+    NXLOG_I("fs", "Free-space query unavailable (errno=%d); enforcing save quota and actual I/O results", space.error);
+    return 0;
+}
 bool store_metadata(const std::string& path, const Metadata& m) {
     const auto temp = path + "/metadata.pending", target = path + "/metadata";
     const int fd = open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
@@ -114,9 +121,7 @@ uint32_t get_account(uint64_t hi, uint64_t lo, bool create, std::shared_ptr<Acco
         std::error_code ec;
         disk::create_directories(path, ec);
         if (ec) return fs::rc::kGenericFailure;
-        uint64_t available = 0;
-        if (!fs::available_storage(path, &available)) return fs::rc::kGenericFailure;
-        if (available < uint64_t(a->metadata.size + std::max(a->metadata.size, a->metadata.journal))) return full;
+        if (const auto rc = check_space(path, a->metadata.size + std::max(a->metadata.size, a->metadata.journal))) return rc;
         // Publish metadata only after the real data directory and journal recover successfully.
         a->volume = std::make_shared<fs::Volume>(path + "/data", true, false, a->metadata.size);
         if (!a->volume->ok() || !store_metadata(path, a->metadata)) return fs::rc::kGenericFailure;
@@ -284,9 +289,7 @@ uint32_t extend(uint64_t hi, uint64_t lo, int64_t size, int64_t journal) {
     std::shared_ptr<Account> a; if (const auto rc = get_account(hi, lo, false, a)) return rc;
     std::lock_guard lock(a->mu);
     if (size < a->metadata.size || journal < a->metadata.journal) return fs::rc::kInvalidArgument;
-    uint64_t available = 0;
-    if (!fs::available_storage(a->path, &available)) return fs::rc::kGenericFailure;
-    if (available < uint64_t(size - a->metadata.size) * 2 + uint64_t(journal - a->metadata.journal)) return full;
+    if (const auto rc = check_space(a->path, uint64_t(size - a->metadata.size) * 2 + uint64_t(journal - a->metadata.journal))) return rc;
     Metadata next; next.size = size; next.journal = journal;
     if (!store_metadata(a->path, next)) return fs::rc::kGenericFailure;
     a->metadata = next; a->volume->set_capacity(size); return 0;

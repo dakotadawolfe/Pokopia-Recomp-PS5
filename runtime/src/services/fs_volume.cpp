@@ -261,20 +261,23 @@ int apply_marker(const stdfs::path& marker, int stop_after = 0) {
 
 }  // namespace
 
-bool available_storage(const std::string& directory, uint64_t* bytes) {
-    if (!bytes) return false;
-    *bytes = 0;
+StorageSpace available_storage(const std::string& directory) {
 #ifdef NXRT_TARGET_PS5
     const int fd = open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) return false;
+    if (fd < 0) return {SpaceStatus::Error, 0, errno};
     struct statfs info{};
-    const int result = _fstatfs(fd, &info); close(fd);
-    if (result || info.f_bavail < 0 || !info.f_bsize || uint64_t(info.f_bavail) > UINT64_MAX / info.f_bsize) return false;
-    *bytes = uint64_t(info.f_bavail) * info.f_bsize; return true;
+    const int result = _fstatfs(fd, &info), error = result ? errno : 0;
+    close(fd);
+    // The native sandbox permits writes to /download0 but denies this
+    // advisory query. Do not confuse an unknown capacity with a full disk.
+    if (result) return {error == EPERM || error == EACCES || error == ENOSYS ? SpaceStatus::Unavailable : SpaceStatus::Error, 0, error};
+    if (info.f_bavail < 0 || !info.f_bsize || uint64_t(info.f_bavail) > UINT64_MAX / info.f_bsize)
+        return {SpaceStatus::Error, 0, EIO};
+    return {SpaceStatus::Measured, uint64_t(info.f_bavail) * info.f_bsize, 0};
 #else
     std::error_code ec; const auto info = stdfs::space(directory, ec);
-    if (ec) return false;
-    *bytes = info.available; return true;
+    if (ec) return {SpaceStatus::Error, 0, ec.value()};
+    return {SpaceStatus::Measured, info.available, 0};
 #endif
 }
 

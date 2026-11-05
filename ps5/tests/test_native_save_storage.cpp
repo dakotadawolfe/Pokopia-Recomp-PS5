@@ -27,9 +27,11 @@ NXTEST(native_title_storage_commits_recovers_and_rolls_back) {
             CHECK_EQ(rmdir(directory.c_str()), 0);
         }
     } cleanup{directory};
-    uint64_t available = 0; const bool measured = fs::available_storage(directory, &available);
-    std::printf("SAVE_STORAGE_CHECK available=%llu measured=%d errno=%d\n", static_cast<unsigned long long>(available), measured, errno);
-    REQUIRE(measured); REQUIRE(available >= (128ull << 20));
+    const auto space = fs::available_storage(directory);
+    std::printf("SAVE_STORAGE_CHECK available=%llu measured=%d errno=%d\n", static_cast<unsigned long long>(space.bytes),
+        space.status == fs::SpaceStatus::Measured, space.error);
+    REQUIRE(space.status != fs::SpaceStatus::Error);
+    if (space.status == fs::SpaceStatus::Measured) REQUIRE(space.bytes >= (128ull << 20));
     const auto root = directory + "/save";
     const auto put = [](fs::Volume& v, const char* text) {
         std::shared_ptr<fs::VFile> f; if (v.open_file("/progress", 7, &f)) return false;
@@ -42,16 +44,19 @@ NXTEST(native_title_storage_commits_recovers_and_rolls_back) {
         return std::string(bytes, count);
     };
     {
+        std::printf("SAVE_STORAGE_CHECK stage=commit\n");
         fs::Volume v(root, true, false, 4096); REQUIRE(v.ok());
         REQUIRE(v.create_file("/progress", 0) == 0); REQUIRE(put(v, "committed")); REQUIRE(v.commit() == 0);
         REQUIRE(put(v, "discarded"));
     }
     {
+        std::printf("SAVE_STORAGE_CHECK stage=rollback-and-interruption\n");
         fs::Volume v(root, true, false, 4096); REQUIRE(v.ok()); REQUIRE(read(v) == "committed");
         REQUIRE(put(v, "recovered")); fs::Volume::set_crash_point_for_tests(1);
         REQUIRE(v.commit() != 0); fs::Volume::set_crash_point_for_tests(0);
     }
     {
+        std::printf("SAVE_STORAGE_CHECK stage=recovery\n");
         fs::Volume v(root, true, false, 4096); REQUIRE(v.ok()); REQUIRE(read(v) == "recovered");
         fs::FileTimes times; REQUIRE(v.file_times("/progress", &times) == 0); REQUIRE(times.valid);
     }

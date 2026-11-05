@@ -19,4 +19,5 @@ target_include_directories(ps5_fs_tests PRIVATE "${root}/runtime/tests")
 target_compile_definitions(ps5_fs_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_FS=1)
 target_compile_options(ps5_fs_tests PRIVATE -Wall -Wextra -Werror -mcx16)
 target_link_libraries(ps5_fs_tests PRIVATE nxrt_ps5_svc nxrt_ps5_romfs)
-target_link_options(ps5_fs_tests PRIVATE "LINKER:--wrap,pthread_create")
+target_link_options(ps5_fs_tests PRIVATE "LINKER:--wrap,pthread_create"
+    "LINKER:--wrap,_fstatfs" "LINKER:--wrap,lstat" "LINKER:--wrap,pwrite")

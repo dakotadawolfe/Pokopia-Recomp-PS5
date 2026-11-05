@@ -12,10 +12,37 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sys/mount.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 NXTEST_GROUP(save_ps5)
 namespace nxrt::services { void register_am(); void am_reset(); }
+namespace {
+int space_query_error = 0;
+bool deny_lstat = false, fail_writes = false, report_no_space = false;
+struct NativeRestrictions {
+    NativeRestrictions() { space_query_error = EPERM; deny_lstat = true; }
+    ~NativeRestrictions() { space_query_error = 0; deny_lstat = fail_writes = report_no_space = false; }
+};
+}
+extern "C" int __real__fstatfs(int, struct statfs*);
+extern "C" int __wrap__fstatfs(int fd, struct statfs* out) {
+    if (space_query_error) { errno = space_query_error; return -1; }
+    const int rc = __real__fstatfs(fd, out);
+    if (!rc && report_no_space) out->f_bavail = 0;
+    return rc;
+}
+extern "C" int __real_lstat(const char*, struct stat*);
+extern "C" int __wrap_lstat(const char* path, struct stat* out) {
+    if (deny_lstat) { errno = EPERM; return -1; }
+    return __real_lstat(path, out);
+}
+extern "C" ssize_t __real_pwrite(int, const void*, size_t, off_t);
+extern "C" ssize_t __wrap_pwrite(int fd, const void* bytes, size_t count, off_t offset) {
+    if (fail_writes) { errno = ENOSPC; return -1; }
+    return __real_pwrite(fd, bytes, count, offset);
+}
 namespace {
 namespace svc = nxrt::services; namespace fs = svc::fs; namespace ipc = nxrt::ipc; namespace k = nxrt::kernel;
 using Ptr = std::shared_ptr<ipc::Service>;
@@ -188,4 +215,38 @@ NXTEST(save_missing_data_does_not_silently_replace_existing_metadata) {
     CHECK_EQ(f.ensure(), fs::rc::kGenericFailure);
     CHECK(std::filesystem::exists(account + "/metadata"));
     CHECK(!std::filesystem::exists(account + "/data"));
+}
+NXTEST(save_native_query_restrictions_allow_real_commit_recovery_and_extension) {
+    Fixture f; NativeRestrictions restrictions;
+    const auto space = fs::available_storage(f.root);
+    CHECK(space.status == fs::SpaceStatus::Unavailable); CHECK_EQ(space.bytes, 0u); CHECK_EQ(space.error, EPERM);
+    REQUIRE(f.ensure() == 0); auto volume = f.mount(); REQUIRE(volume);
+    REQUIRE(f.create(volume, "/progress").rc == 0); auto file = f.open(volume, "/progress", 7); REQUIRE(file);
+    REQUIRE(f.write(file, "before").rc == 0); file.reset(); REQUIRE(call(volume, 10).rc == 0);
+    file = f.open(volume, "/progress", 7); REQUIRE(file); REQUIRE(f.write(file, "recovered").rc == 0); file.reset();
+    fs::Volume::set_crash_point_for_tests(1); const auto interrupted = call(volume, 10).rc;
+    fs::Volume::set_crash_point_for_tests(0); REQUIRE(interrupted != 0);
+    volume.reset(); svc::ps5save::reset(); volume = f.mount(); REQUIRE(volume);
+    file = f.open(volume, "/progress", 1); REQUIRE(file); CHECK_EQ(f.read(file), std::string("recovered")); file.reset();
+    REQUIRE(svc::ps5save::extend(uid[0], uid[1], 8192, 8192) == 0);
+}
+NXTEST(save_denied_space_query_does_not_hide_write_failures_or_quota_limits) {
+    Fixture f; NativeRestrictions restrictions; REQUIRE(f.ensure() == 0); auto volume = f.mount(); REQUIRE(volume);
+    REQUIRE(f.create(volume, "/progress").rc == 0); auto file = f.open(volume, "/progress", 7); REQUIRE(file);
+    REQUIRE(f.write(file, "original").rc == 0); file.reset(); REQUIRE(call(volume, 10).rc == 0);
+    file = f.open(volume, "/progress", 7); REQUIRE(file); fail_writes = true;
+    CHECK(f.write(file, "broken").rc != 0); fail_writes = false;
+    CHECK(f.write(file, "x", 4096).rc != 0); file.reset(); volume.reset(); svc::ps5save::reset();
+    volume = f.mount(); REQUIRE(volume); file = f.open(volume, "/progress", 1); REQUIRE(file);
+    CHECK_EQ(f.read(file), std::string("original"));
+}
+NXTEST(save_space_measurement_errors_and_real_full_disk_still_fail_creation) {
+    Fixture f; NativeRestrictions restrictions;
+    space_query_error = EIO; CHECK(fs::available_storage(f.root).status == fs::SpaceStatus::Error);
+    CHECK_EQ(f.ensure(), fs::rc::kGenericFailure);
+    space_query_error = 0; report_no_space = true;
+    CHECK_EQ(f.ensure(), (30u << 9) | 2u);
+    report_no_space = false; space_query_error = EACCES;
+    CHECK(fs::available_storage(f.root + "/missing").status == fs::SpaceStatus::Error);
+    REQUIRE(f.ensure() == 0);
 }

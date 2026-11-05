@@ -24,8 +24,11 @@ The supplied extracted folder contains ExeFS and RomFS but no control NACP.
 The private startup target therefore declares a **development policy** of
 64 MiB data and 64 MiB journal, with extension limited to 96 MiB each. These
 are not recovered game metadata values. Growth checks use actual visible file
-sizes; disk availability uses the kernel `_fstatfs` query because the native
-platform's `statvfs` compatibility implementation reports synthetic capacity.
+sizes. Disk availability is advisory: `_fstatfs` supplies a measurement where
+permitted, but the native sandbox denies it with `EPERM`. That denial is
+reported as unknown space, while actual create/write/flush/commit failures
+still fail. A measured full disk and other query errors still stop creation
+or extension. The native platform's synthetic `statvfs` capacity is not used.
 The 256 MiB download allocation can hold two maximum-size data generations
 plus metadata; no additional journal-sized file is allocated.
 
@@ -55,7 +58,25 @@ I/O failures and unported commands.
   from starting. These native checks still need the next manual launch;
   payload results do not prove the app's filesystem permissions.
 
-The private app built from `dfa80f1` is installed with full executable readback
+### Native free-space query correction
+
+The next manual launches exited before game startup. Private report
+`game-native-1793902536-107.log` identifies the new preflight as the cause:
+the temporary `/download0` directory was created, but `_fstatfs` returned
+`EPERM`. The check incorrectly treated an unavailable advisory measurement
+as a failed storage operation. The native 20 ms sleep test passed at 20,091 us;
+positive sleeps are not returning immediately in this app.
+
+The corrected preflight permits an explicitly unavailable capacity query and
+continues to the actual write, commit and recovery checks. Save creation and
+extension follow the same policy. No disk capacity is invented and no actual
+I/O failure is ignored. Thirty-nine component cases pass on PS5 in private
+report `fs-runtime-1793902774-112.log`, including injected `_fstatfs`/`lstat`
+permission errors, commit recovery, extension, quota limits, write failures,
+and genuine zero-space/I/O-error replies. The fourteen host volume cases pass.
+The native save round trip and game startup still require a manual run.
+
+The prior private app built from `dfa80f1` was installed with full executable readback
 verification. Its native executable is 279,846,745 bytes, SHA-256
 `5aea9402d735de036d06964706d3a7db5aca994fffba08c8e8205d45472255b8`.
 The install receipt, previous executable and verified matching symbol archive

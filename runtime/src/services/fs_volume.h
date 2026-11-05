@@ -98,6 +98,8 @@ private:
 bool normalize_path(const char* raw, size_t max_len, std::string* out, uint32_t* err);
 // Native app statvfs is a compatibility shim with synthetic capacity. Use the
 // kernel's descriptor query on PS5 instead of reporting that as free space.
-bool available_storage(const std::string& directory, uint64_t* bytes);
+enum class SpaceStatus { Measured, Unavailable, Error };
+struct StorageSpace { SpaceStatus status = SpaceStatus::Error; uint64_t bytes = 0; int error = 0; };
+StorageSpace available_storage(const std::string& directory);
 
 }  // namespace nxrt::services::fs
