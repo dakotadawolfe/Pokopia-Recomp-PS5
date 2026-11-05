@@ -184,6 +184,13 @@ constexpr bool startup_trace = false;
 void report_startup_profile(bool detailed);
 #endif
 [[noreturn]] void stop_probe() {
+#ifdef NXRT_GAME_STARTUP_NATIVE
+    // Several guest workers may reach the same stop together. One owns the
+    // final report and shell exit; the others retain their state until closure.
+    static std::atomic_flag stopping = ATOMIC_FLAG_INIT;
+    if (stopping.test_and_set(std::memory_order_relaxed))
+        for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
+#endif
 #ifdef NXRT_GAME_RENDER_NATIVE
     report_startup_profile(true);
     nxrt::ps5_graphics::report();
@@ -399,7 +406,11 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
 #else
     const bool trace_call = startup_trace || call_number <= 100;
 #endif
+#ifndef NXRT_GAME_RENDER_NATIVE
     if (call_number > (game_startup_trace ? 10000u : startup_trace ? 1000u : 10000u)) { std::puts("RTLD_STOP system-call limit"); stop_probe(); }
+#endif
+    // Native rendering is bounded by the independent wall-clock watchdog.
+    // Normal worker sleeps/wakes can consume 10,000 calls before startup ends.
     const uint64_t a = c->x[0], b = c->x[1], d = c->x[2];
 #ifdef NXRT_GAME_STARTUP_NATIVE
     if constexpr (Number == 0x01) {
@@ -660,7 +671,10 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
     }
 #endif
 #ifdef NXRT_GAME_RENDER_NATIVE
-    const bool trace_result = trace_call || (Number != 0x1e && c->x[0]);
+    // SleepThread and SignalProcessWideKey return void; GetSystemTick returns
+    // a counter. Their nonzero x0 values are not error Results.
+    constexpr bool returns_result = Number != 0x0b && Number != 0x1d && Number != 0x1e;
+    const bool trace_result = trace_call || (returns_result && c->x[0]);
 #else
     const bool trace_result = trace_call || c->x[0];
 #endif

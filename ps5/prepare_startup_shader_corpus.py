@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Select embedded-main shaders from the existing private Ampere corpus.
+"""Select startup or observed missing shaders from the private Ampere corpus.
 
 This is startup coverage only, not the complete game shader set. The source
 corpus is read-only; the destination must be new and stays outside Git.
@@ -14,19 +14,34 @@ import re
 import shutil
 
 
-def prepare(source, output):
+def prepare(source, output, runtime_log=None):
     source, output = source.resolve(strict=True), output.resolve()
     if output.exists() or source in output.parents or output in source.parents:
         raise ValueError("Use a new, separate directory for the private startup corpus")
     with (source / "manifest.tsv").open() as stream:
-        selected = {row["code_sha1_16"] for row in csv.DictReader(stream, delimiter="\t")
-                    if row["container"] == "main"}
+        occurrences = list(csv.DictReader(stream, delimiter="\t"))
     with (source / "unique.tsv").open() as stream:
         reader = csv.DictReader(stream, delimiter="\t")
         fields = reader.fieldnames
-        rows = [row for row in reader if row["code_sha1_16"] in selected]
+        unique = list(reader)
+    observed = set()
+    if runtime_log:
+        observed = set(re.findall(r"no usable [^\r\n]*/([0-9a-f]{16})\.spv", runtime_log.read_text()))
+        indexed = {row["code_sha1_16"] for row in unique}
+        if not observed or observed - indexed:
+            raise ValueError("Runtime misses are empty or include shaders absent from the verified corpus")
+        # Include the complete source entries of the observed blocks' first
+        # occurrences. Expanding every shared occurrence would pull unrelated
+        # level materials into a startup batch through common vertex shaders.
+        entries = {(row["first_source"], row["entry_off"]) for row in unique
+                   if row["code_sha1_16"] in observed}
+        selected = observed | {row["code_sha1_16"] for row in occurrences
+                               if (row["source"], row["entry_off"]) in entries}
+    else:
+        selected = {row["code_sha1_16"] for row in occurrences if row["container"] == "main"}
+    rows = [row for row in unique if row["code_sha1_16"] in selected]
     if not selected or len(rows) != len(selected):
-        raise ValueError("The corpus has no embedded-main shaders or its index is inconsistent")
+        raise ValueError("The shader selection is empty or its corpus index is inconsistent")
     files = {}
     for row in rows:
         for folder, column in (("code", "code_sha1_16"), ("ctrl", "first_ctrl"), ("glslc", "first_glslc")):
@@ -51,15 +66,19 @@ def prepare(source, output):
         writer.writerows(rows)
     with (source / "manifest.tsv").open("rb") as stream:
         source_hash = hashlib.file_digest(stream, "sha256").hexdigest()
-    stamp = {"scope": "embedded-main-startup-only", "full_game_coverage": False,
+    stamp = {"scope": "runtime-misses-and-source-entries" if runtime_log else "embedded-main-startup-only", "full_game_coverage": False,
              "unique_shaders": len(rows), "corpus_manifest_sha256": source_hash}
+    if runtime_log:
+        stamp.update(runtime_log_sha256=hashlib.sha256(runtime_log.read_bytes()).hexdigest(),
+                     observed_missing_shaders=len(observed), source_entries=len(entries))
     (output / "selection.json").write_text(json.dumps(stamp, indent=2) + "\n")
-    print(f"Verified and selected {len(rows)} embedded-main shaders; full-game coverage remains incomplete")
+    print(f"Verified and selected {len(rows)} shaders ({stamp['scope']}); full-game coverage remains incomplete")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("corpus", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--runtime-log", type=Path, help="Cover logged cache misses and their source entries")
     args = parser.parse_args()
-    prepare(args.corpus, args.output)
+    prepare(args.corpus, args.output, args.runtime_log)

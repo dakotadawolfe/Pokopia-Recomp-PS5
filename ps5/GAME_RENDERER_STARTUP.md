@@ -115,7 +115,48 @@ validation: 76 compute, 72 fragment, two geometry and three vertex shaders.
 This approximately 18 MiB cache covers built-in startup shaders only. Full
 translation was interrupted; its incomplete output was removed and is not
 counted as validated coverage. The complete extracted corpus is retained for
-the subsequent full translation. No game shader has been exercised on PS5 yet.
+further translation. At this initial preparation stage, no game shader had
+been exercised on PS5. The later first-presentation report is recorded below.
+
+To extend coverage from a native report, select its missing hashes and the
+other shaders in their first-source material entries, then translate that
+batch with the same harness command above. The selector verifies each source
+blob against its content key before copying. Expanding every occurrence of
+shared shaders would unnecessarily include thousands of unrelated materials.
+
+```sh
+python ps5/prepare_startup_shader_corpus.py \
+  work/ps5/shader-corpus work/ps5/observed-corpus \
+  --runtime-log work/ps5/game-native-report.log
+dotnet tools/shaders/build/bin/Release/net10.0/spirv_harness.dll \
+  --batch work/ps5/observed-corpus --out work/ps5/observed-spirv \
+  --jobs 8 --target-env vulkan1.3 --spirv-val /path/to/spirv-val
+python ps5/prepare_shader_cache.py \
+  work/ps5/startup-spirv work/ps5/startup-shader-manifest.json \
+  work/ps5/observed-spirv work/ps5/observed-corpus/selection.json \
+  work/ps5/combined-spirv --spirv-val /path/to/spirv-val
+python -B -m unittest discover -s ps5 -p test_shader_cache.py -v
+```
+
+The merge requires the previous cache's file manifest, checks every translation
+result, reruns SPIR-V validation, preserves binding metadata and rejects
+conflicting duplicate hashes. Its output includes a new file manifest and
+selection provenance. With the transfer helper open and the title stopped,
+install it using the receipt from the prior successful cache installation:
+
+```sh
+python ps5/install_shader_cache.py --host CONSOLE_IP \
+  --cache work/ps5/combined-spirv \
+  --previous-receipt work/ps5/previous-shaders-install.json \
+  --receipt work/ps5/new-shaders-install.json
+```
+
+The installer checks title ownership and ShadowMountPlus state, verifies all
+existing files against that receipt, stages the complete cache and reads it
+back before switching directories. It retains the prior directory as a named
+backup, restores it if publication fails, and verifies every installed file.
+It refuses unknown existing files instead of deleting or silently dropping
+them. Keep installation receipts and backups for later updates or rollback.
 
 Local qualification also includes 23 instruction-decoder checks under Address
 and Undefined Behavior Sanitizers, preflight of all fifteen required SDK
@@ -711,6 +752,55 @@ The transfer helper (PID 122) and all seven owned payload slots were removed;
 port 2121 is closed. The receipt is `game-renderer-thread-stacks-console.json`.
 The previous helper had already disappeared in the console restart and its
 remaining slot was also removed. No app launch was initiated during this batch.
+
+## First presentation and startup bounds
+
+Report `game-native-1793839656-152.log` starts all 23 guest workers with their
+64 MiB direct-memory stacks. This exercises the previous allocation fix in
+the real native app. The renderer reports seven submissions, one draw and one
+presentation. The user saw a black screen, then Home; correct game imagery,
+a menu and gameplay remain unverified.
+
+This return is the diagnostic's old 10,000-SVC ceiling, reached after 7,150 ms
+of guest execution. Three workers reached it together and duplicated the final
+report. The native renderer build now relies on its independent 180-second
+watchdog instead of that count ceiling. One worker owns final reporting and
+shell exit; concurrent stop requests wait for process closure. Other probe
+builds retain their count ceilings and fatal dependencies still stop startup.
+
+The observer also treated the preserved argument registers from SleepThread
+and SignalProcessWideKey as error Results. The report contains 5,090 sleeps
+and 1,426 signals, with substantial observer time spent on those log writes.
+These void SVCs now log the first call without logging every nonzero argument
+as an error. Their runtime behavior is unchanged.
+
+The report requests 461 missing shader hashes. All exist in the verified
+private corpus. Selecting their first-source entries yields 480 shaders from
+16 entries: 397 fragment and 83 vertex. All translate successfully and pass
+Vulkan 1.3 validation. Merging them with the original 153 shaders yields 633
+validated blocks, preserving the old SPIR-V bytes and each resource-binding
+row. This covers every observed miss, not the entire game. Unimplemented NVN
+name lookups in the report do not establish that those functions were called.
+
+Four host cache checks pass: observed-entry selection without unrelated shared
+occurrences, source-content corruption and unknown-key rejection, readback and
+filename validation, and backup restoration after publication failure. The
+native build, exception linkage and FSELF integrity checks also pass. FSELF:
+278,469,665 bytes, SHA-256
+`ce0c09af765fc0be592900dd0c680a4cfe37e1d265d5313b80e652c7789a557a`.
+Native ELF: 284,279,676 bytes, SHA-256
+`2a36b17265f2d2d784688f97d4782c1c077c185e3baa7aa4fdab147695b4249d`.
+Only the executable and separately installed shader cache change; the selected
+game folder, saves, module inputs, RADV/platform libraries and native libc are
+unchanged. The combined candidate still requires a native startup observation.
+
+The prepared cache contains 105,049,465 bytes before its file manifest; that
+manifest has SHA-256
+`55c7eb6fad4375ca480efcc4c4a0547f7397f2a4ba4b11842a46c91a878cd2f5`.
+At preparation completion, the console had restarted and ShadowMountPlus was
+offline, so no replacement was attempted. The log-collection helper was gone
+and its remaining owned payload slot was removed. The candidate and pending
+installation state are recorded in `game-renderer-first-frame-deployment-status.json`.
 
 ## Interpreting a run
 
