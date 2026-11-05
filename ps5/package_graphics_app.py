@@ -44,6 +44,11 @@ def main():
             "startup_trace_mode": "first-svc-and-ipc-requests",
             "startup_profile_interval_seconds": 10,
             "report_buffering": "line",
+            "shader_words": "disk-backed; pinned immutable handles during pipeline use",
+            "shader_word_resident_budget_bytes": 134217728,
+            "shader_boot_preload": False,
+            "memory_progress_interval_seconds": 10,
+            "distribution": "private development artifact containing game-derived code",
         }
     app = args.build / "package" / TITLE
     copies = {

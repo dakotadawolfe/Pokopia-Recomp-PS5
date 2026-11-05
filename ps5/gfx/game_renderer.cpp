@@ -25,8 +25,11 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <ps5platform/heap.h>
 
 extern "C" int sceSystemServiceHideSplashScreen();
+extern "C" int64_t sceKernelGetDirectMemorySize();
+extern "C" int sceKernelAvailableDirectMemorySize(int64_t, int64_t, size_t, int64_t*, size_t*);
 extern "C" [[noreturn]] void nxrt_game_startup_stop();
 
 namespace nxrt::ps5_graphics {
@@ -239,6 +242,19 @@ void report() {
             cache.loaded(), cache.missing(), static_cast<unsigned long long>(timing.calls),
             static_cast<unsigned long long>(timing.total_ns / 1000000),
             static_cast<unsigned long long>(timing.max_ns / 1000000));
+        const auto words = nvn::be::shader_word_stats();
+        struct ps5_heap_stats heap{};
+        ps5_heap_stats(&heap);
+        int64_t free_at = 0;
+        size_t largest_free = 0;
+        const int available = sceKernelAvailableDirectMemorySize(0, sceKernelGetDirectMemorySize(),
+            16384, &free_at, &largest_free);
+        std::printf("GAME_MEMORY_PROGRESS shader_words=%zu shader_word_entries=%zu word_reads=%llu word_hits=%llu "
+                    "host_heap_mapped=%zu host_heap_peak=%zu host_heap_segments=%u libc_fallbacks=%llu "
+                    "largest_direct_free=%zu direct_query_rc=%08x\n",
+            words.resident_bytes, words.entries, static_cast<unsigned long long>(words.reads),
+            static_cast<unsigned long long>(words.hits), heap.mapped_bytes, heap.peak_bytes,
+            heap.segments, heap.libc_fallbacks, largest_free, static_cast<unsigned>(available));
     }
 }
 void shutdown() {

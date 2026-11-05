@@ -447,7 +447,11 @@ void predict_int_attributes(GraphicsKey& k) {
     {
         std::lock_guard<std::mutex> lk(g_pred_mu);
         auto it = g_pred_cache.find(k.stage[0]);
-        if (it == g_pred_cache.end()) it = g_pred_cache.emplace(k.stage[0], spirv_predict_int_inputs(k.stage[0]->spirv)).first;
+        if (it == g_pred_cache.end()) {
+            const auto words = shader_spirv(k.stage[0]);
+            if (!words) return;
+            it = g_pred_cache.emplace(k.stage[0], spirv_predict_int_inputs(*words)).first;
+        }
         slots = it->second;
     }
     const bool sg = g_pred_signed.load(std::memory_order_relaxed);

@@ -236,7 +236,9 @@ VkShaderModule shader_module(const ShaderInfo* s) {
     std::lock_guard<std::recursive_mutex> lk(g_module_mu);
     auto it = g_modules.find(s);
     if (it != g_modules.end()) return it->second;
-    VkShaderModule m = create_module(s->spirv, s->hash.c_str());
+    const auto words = shader_spirv(s);
+    if (!words) return VK_NULL_HANDLE;
+    VkShaderModule m = create_module(*words, s->hash.c_str());
     g_modules[s] = m;
     return m;
 }
@@ -249,7 +251,8 @@ static const std::pair<VkShaderModule, uint32_t>& xfb_variant(const ShaderInfo* 
     std::vector<SpvXfbOutput> lay;
     uint32_t stride = 0;
     VkShaderModule m = VK_NULL_HANDLE;
-    if (spirv_add_xfb(vs->spirv, patched, &lay, &stride)) {
+    const auto words = shader_spirv(vs);
+    if (words && spirv_add_xfb(*words, patched, &lay, &stride)) {
         m = create_module(patched, vs->hash.c_str());
         std::string desc;
         for (const SpvXfbOutput& o : lay) desc += " loc" + std::to_string(o.location) + "x" + std::to_string(o.components) + "@" + std::to_string(o.offset);
@@ -268,7 +271,8 @@ static VkShaderModule no_output_module(const ShaderInfo* fs) {
     if (it != g_no_out.end()) return it->second.first;
     std::vector<uint32_t> patched;
     std::pair<VkShaderModule, bool> e = {VK_NULL_HANDLE, false};
-    if (spirv_outputs_to_private(fs->spirv, patched)) e = {create_module(patched, fs->hash.c_str()), true};
+    const auto words = shader_spirv(fs);
+    if (words && spirv_outputs_to_private(*words, patched)) e = {create_module(patched, fs->hash.c_str()), true};
     else e = {shader_module(fs), false};
     g_no_out[fs] = e;
     return e.first;
@@ -297,7 +301,8 @@ static VkShaderModule dual_source_module(const ShaderInfo* fs) {
     if (it != g_dual_src.end()) return it->second;
     VkShaderModule m = VK_NULL_HANDLE;
     std::vector<uint32_t> patched;
-    if (spirv_dual_source_output(fs->spirv, patched)) {
+    const auto words = shader_spirv(fs);
+    if (words && spirv_dual_source_output(*words, patched)) {
         m = create_module(patched, fs->hash.c_str());
     } else {
         NXLOG_W(kTag, "%s: dual-source blending is on but the fragment shader has no second output; the unpatched module is used", fs->hash.c_str());
@@ -342,10 +347,12 @@ static VkShaderModule producer_module(const ShaderInfo* producer, const ShaderIn
     if (it != g_variants.end()) return it->second;
     VkShaderModule m = VK_NULL_HANDLE;
     std::vector<uint32_t> base_words;
-    const std::vector<uint32_t>* words = &producer->spirv;
+    const auto original = shader_spirv(producer);
+    if (!original) return VK_NULL_HANDLE;
+    const std::vector<uint32_t>* words = original.get();
     if (!ints.empty()) {
         // integer vertex attributes: the shader gets the raw bits the console delivers (nvn_spirv_patch.h)
-        if (!spirv_int_attributes(producer->spirv, ints, base_words)) {
+        if (!spirv_int_attributes(*original, ints, base_words)) {
             NXLOG_E(kTag, "%s: the integer vertex attributes could not be patched in; draws with this shader are skipped", producer->hash.c_str());
             g_variants[{producer, id}] = VK_NULL_HANDLE;
             return VK_NULL_HANDLE;

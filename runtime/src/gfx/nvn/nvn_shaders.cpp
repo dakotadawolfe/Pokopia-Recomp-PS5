@@ -841,6 +841,21 @@ const char* source_name(NvnSource s) {
 
 namespace {
 
+ShaderWordStore& word_store() {
+    static ShaderWordStore store(128u << 20);
+    return store;
+}
+
+void retain_shader_file(ShaderInfo& info, const std::string& path) {
+#if defined(NXRT_TARGET_PS5)
+    info.spirv_file = path;
+    std::vector<uint32_t>().swap(info.spirv);
+#else
+    (void)info;
+    (void)path;
+#endif
+}
+
 bool read_file(const std::string& path, std::string& out) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
@@ -863,6 +878,20 @@ std::string column_text(std::string_view line, int col) {
 }
 
 }  // namespace
+
+ShaderWordStore::Handle shader_spirv(const ShaderInfo* shader) {
+    if (!shader) return {};
+    if (shader->spirv_file.empty()) {
+        // Program bindings already keep ShaderInfo alive. No allocation or
+        // copy is needed for Windows and synthesized in-memory shaders.
+        return ShaderWordStore::Handle(ShaderWordStore::Handle{}, &shader->spirv);
+    }
+    auto words = word_store().acquire(shader->spirv_file);
+    if (!words) NXLOG_E("nvn", "cannot reload shader words for %s", shader->hash.c_str());
+    return words;
+}
+
+ShaderWordStore::Stats shader_word_stats() { return word_store().stats(); }
 
 bool ShaderCache::open(const std::string& dir) {
     std::lock_guard lk(lock_);
@@ -916,6 +945,12 @@ bool ShaderCache::open(const std::string& dir) {
 
 // Called from open() with lock_ held: reads the order file and starts the workers (they take lock_ only to read results_).
 void ShaderCache::start_preload() {
+#if defined(NXRT_TARGET_PS5)
+    // Registration reflects each shader, but does not need to retain its
+    // words. Avoid the desktop's additional 1 GiB prepared-shader queue.
+    order_path_.clear();
+    return;
+#endif
     order_path_ = nxrt::config_get_str("nvn", "shader_order", "shader_order.txt");
     if (order_path_.empty()) return;
     std::string text;
@@ -969,12 +1004,10 @@ std::unique_ptr<ShaderCache::Preloaded> ShaderCache::preload_one(const std::stri
         std::lock_guard lk(lock_);
         if (by_hash_.count(hash)) return nullptr;   // the game got there first
     }
-    std::string bytes;
-    if (!read_file(dir_ + "/" + hash + ".spv", bytes) || bytes.empty() || bytes.size() % 4) return nullptr;
+    auto words = ShaderWordStore::read(dir_ + "/" + hash + ".spv");
+    if (!words) return nullptr;
     auto p = std::make_unique<Preloaded>();
-    p->words.resize(bytes.size() / 4);
-    std::memcpy(p->words.data(), bytes.data(), bytes.size());
-    bytes = std::string();
+    p->words = std::move(*words);
     if (!reflect_spirv(p->words.data(), p->words.size(), p->refl, nullptr)) return nullptr;
     std::string record;
     bool have_record = false;
@@ -1149,18 +1182,18 @@ const ShaderInfo* ShaderCache::load(const std::string& hash, const uint8_t* code
     if (pre) {
         words = std::move(pre->words);
     } else {
-        std::string bytes;
-        if (!read_file(dir_ + "/" + hash + ".spv", bytes) || bytes.empty() || bytes.size() % 4) {
+        auto loaded = ShaderWordStore::read(dir_ + "/" + hash + ".spv");
+        if (!loaded) {
             dump_missing_block(hash, code, control, code_size);
             return miss("no usable " + dir_ + "/" + hash + ".spv");
         }
-        words.resize(bytes.size() / 4);
-        std::memcpy(words.data(), bytes.data(), bytes.size());
+        words = std::move(*loaded);
     }
 
     auto info = std::make_unique<ShaderInfo>();
     std::string error;
     if (!make_shader_info(code, control, std::move(words), record_ptr, *info, &error, pre ? &pre->refl : nullptr)) return miss(error);
+    retain_shader_file(*info, dir_ + "/" + hash + ".spv");
     std::string flush;
     const ShaderInfo* out;
     {
@@ -1187,23 +1220,22 @@ const ShaderInfo* ShaderCache::load_stub(const std::string& hash) {
         if (it != stubs_.end()) {
             if (!it->second) return nullptr;
             existing = it->second.get();
-            if (!existing->spirv.empty()) return existing;        // checked under the lock: another thread may be putting the words back
+            if (!existing->spirv.empty() || !existing->spirv_file.empty()) return existing;
         } else if (auto ln = lines_.find(hash); ln != lines_.end()) {
             record = column_text(std::string_view(results_.data() + ln->second.first, ln->second.second), resources_col_);
             have_record = true;
         }
         dir = dir_;
     }
-    std::string bytes;
-    if (!read_file(dir + "/" + hash + ".spv", bytes) || bytes.empty() || bytes.size() % 4) {
+    auto loaded = ShaderWordStore::read(dir + "/" + hash + ".spv");
+    if (!loaded) {
         if (!existing) {
             std::lock_guard lk(lock_);
             stubs_.emplace(hash, nullptr);
         }
         return nullptr;
     }
-    std::vector<uint32_t> words(bytes.size() / 4);
-    std::memcpy(words.data(), bytes.data(), bytes.size());
+    std::vector<uint32_t> words = std::move(*loaded);
     if (existing) {                         // the words were dropped: put them back (the reflection is kept)
         std::lock_guard lk(lock_);
         if (existing->spirv.empty()) existing->spirv = std::move(words);
@@ -1220,6 +1252,7 @@ const ShaderInfo* ShaderCache::load_stub(const std::string& hash) {
     if (info) {
         info->stage = info->refl.stage;
         info->spirv = std::move(words);
+        retain_shader_file(*info, dir + "/" + hash + ".spv");
     }
     std::lock_guard lk(lock_);
     if (auto it = stubs_.find(hash); it != stubs_.end()) {
@@ -1236,6 +1269,7 @@ void ShaderCache::release_stub_spirv(const ShaderInfo* s) {
     std::lock_guard lk(lock_);
     auto it = stubs_.find(s->hash);
     if (it == stubs_.end() || it->second.get() != s) return;
+    if (!it->second->spirv_file.empty()) word_store().release(it->second->spirv_file);
     std::vector<uint32_t>().swap(it->second->spirv);
 }
 

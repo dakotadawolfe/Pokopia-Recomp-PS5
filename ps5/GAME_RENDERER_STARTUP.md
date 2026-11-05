@@ -892,6 +892,67 @@ The new transfer helper (PID 101) and its one owned payload slot were also
 removed, and port 2121 is closed; its receipt is
 `game-renderer-startup-bank-console.json`. No app launch was initiated.
 
+## Shader residency and allocation failure
+
+Report `game-native-1793846622-88.log` ends shortly after 400,123 ms of guest
+execution with a system internal-memory warning. This was a native crash before
+the 600-second watchdog, not a controlled return. The kernel recorded SIGILL;
+symbolication against the matching unconverted executable places the fault at
+the allocation runtime's `operator new` failure trap. Its callers are the
+shader-cache file reader, `ShaderCache::load/find`, and program registration.
+The last progress record had 2,936 loaded shaders, zero missing requests,
+3,672 lookups taking a summed 10,161 ms, seven submissions, one draw and one
+presentation. There was still no verified game image. The warning does not by
+itself establish a thread leak or identify the exhausted allocator pool.
+
+The PS5 shader cache now keeps reflection, controls and copied constants in
+stable `ShaderInfo` objects, then releases the raw SPIR-V after registration.
+Pipeline creation and variants acquire immutable handles from a 128 MiB LRU
+word store. Eviction drops the cache's ownership, while active readers retain
+theirs. Synthesized shaders retain their in-memory words. The limit covers
+idle raw shader words, not metadata, Vulkan modules, active-reader pins or the
+entire graphics working set. The desktop preload queue is disabled on PS5.
+
+Shader reads now allocate the final word vector directly, avoiding a growing
+string stream and copied string. Files with an invalid header, unaligned size
+or size over 64 MiB are rejected before reflection. The startup report includes
+word residency/read counts, platform-heap mapped/peak bytes, segment count,
+libc fallbacks and the largest available direct-memory block. This measures
+whether another pool or allocation pattern remains a problem.
+
+The standalone synthetic reader/eviction suite passes **4,116 checks** on the
+host and PS5, including 4,096 repeated reads under a two-entry budget, pinned
+handle survival, eight concurrent readers, oversized entries and malformed
+files. Console report: `shader-words-1793847886-94.log`. It removes only its own
+generated test directory. The payload test does not establish native game
+startup or pipeline correctness; the rebuilt native app still needs a run.
+
+The host checks require no game files:
+
+```sh
+cmake -S ps5/tests/shader_words_suite -B work/ps5/shader-words-host -G Ninja
+cmake --build work/ps5/shader-words-host
+ctest --test-dir work/ps5/shader-words-host --output-on-failure
+```
+
+For a PS5 payload build, use the pinned SDK toolchain as with the other suites.
+Private shader files and recompiled executables remain excluded from public
+distribution. The release still requires on-console generation from the
+user's files; this change bounds runtime residency of those local outputs.
+
+The native app rebuilt, passed exception-linkage and FSELF checks, and was
+installed with the owned title stopped and unmounted. Its complete staged and
+final readbacks match SHA-256
+`2b8bdc96330d80c147aed88b32a72a70c6c44dbf77fa6db849b45c8a4badfe45`
+(278,476,721 bytes). The corresponding converted ELF is 284,267,732 bytes,
+SHA-256 `4a7eabdf9ce7a068d94bd0cc875f28ade17c75cb75b6b0f84785036fd103dc4e`.
+The previous executable is backed up locally; the installed shader files are
+unchanged. Receipt: `game-renderer-shader-memory-install.json`. The diagnostic
+payload exited, the owned transfer helper and payload slots were removed,
+and port 2121 was verified closed. No native app launch was initiated.
+This establishes installation and synthetic cache behavior, not a fix verified
+against the game's startup or a rendered menu.
+
 ## Interpreting a run
 
 Reports are `/data/pokopia-recomp/tests/game-native-<time>-<pid>.log`.

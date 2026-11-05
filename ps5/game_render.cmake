@@ -46,7 +46,12 @@ target_sources(${target} PRIVATE "${startup_expectations}/private_startup_inputs
     "${root}/ps5/tests/test_host_jumps.cpp"
     "${root}/ps5/app/startup_checkpoint.cpp"
     "${root}/runtime/tests/test_eh.cpp" "${root}/runtime/tests/test_eh_abi3.cpp" "${root}/runtime/tests/test_eh_typeinfo.cpp")
-target_include_directories(${target} PRIVATE "${root}/runtime/tests" "${game_expectations}" "${startup_expectations}")
+# Import only the platform statistics declaration, without placing another
+# SDK's C headers before the compiler's own C++/sysroot headers.
+configure_file("${PKP_RADV_SDK_ROOT}/target/include/ps5platform/heap.h"
+    "${CMAKE_CURRENT_BINARY_DIR}/platform-headers/ps5platform/heap.h" COPYONLY)
+target_include_directories(${target} PRIVATE "${root}/runtime/tests" "${game_expectations}" "${startup_expectations}"
+    "${CMAKE_CURRENT_BINARY_DIR}/platform-headers")
 target_compile_definitions(${target} PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_GAME_IMAGES=1 NXRT_TEST_RTLD=1
     NXRT_TEST_SDK=1 NXRT_SDK_STARTUP_TRACE=1 NXRT_GAME_STARTUP_TRACE=1 NXRT_GAME_STARTUP_NATIVE=1
     NXRT_GAME_RENDER_NATIVE=1 NXRT_GAME_EH=1 PKP_NATIVE_STARTUP_HEAP_LIMIT_MIB=11264

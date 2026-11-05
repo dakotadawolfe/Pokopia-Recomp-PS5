@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <atomic>
+#include <nxrt/shader_words.h>
 #include <memory>
 #include <condition_variable>
 #include <mutex>
@@ -227,6 +228,9 @@ struct ShaderInfo {
     std::string hash;
     ShaderStage stage = ShaderStage::Unknown;  // from the SPIR-V execution model
     std::vector<uint32_t> spirv;
+    // PS5 reloads words through a bounded store when a pipeline needs them.
+    // Empty for in-memory shaders, including generated tessellation stages.
+    std::string spirv_file;
     ShaderReflection refl;
     ShaderControl control;
     // c[1]: the constant data at code block + control.const_offset. Copied because the game may reuse the pool. The
@@ -253,6 +257,11 @@ bool make_shader_info(const uint8_t* code, const uint8_t* control, std::vector<u
 const char* stage_name(ShaderStage s);
 const char* source_name(NvnSource s);
 
+// Keep the returned handle alive for the entire read/patch/module creation.
+// ShaderInfo itself must outlive the caller (as required for program bindings).
+ShaderWordStore::Handle shader_spirv(const ShaderInfo* shader);
+ShaderWordStore::Stats shader_word_stats();
+
 // ---- the runtime cache ----------------------------------------------------------------------------------------------
 
 // A directory holding <hash>.spv files and results.tsv. Lookups are keyed by the hash of the code block.
@@ -267,7 +276,8 @@ public:
     // cannot be read or has no "resources" column. A cache opens once: a second open() returns false.
     bool open(const std::string& dir);
     // The stage whose code block is at `code` (guest = host memory) with control section `control`. Hashes the block,
-    // loads <hash>.spv on first use and keeps the ShaderInfo for the life of the process (the pointer stays valid).
+    // loads <hash>.spv on first use and keeps metadata for the life of the process (the pointer stays valid).
+    // PS5 releases the raw words after reflection; use shader_spirv() to pin them for pipeline work.
     // Null if there is no usable .spv (logged once per hash) or the control section is malformed.
     // Hashing costs a pass over the block: call it when the program is set, not per draw.
     const ShaderInfo* find(const uint8_t* code, const uint8_t* control);
@@ -278,7 +288,7 @@ public:
     // A ShaderInfo for pipeline building only (S24, the shader preparation): SPIR-V, stage and reflection from <hash>.spv and its results.tsv line,
     // no code block, no control section, no constant data. Kept apart from find(): the game's own ShaderInfos never come from here. The
     // pointer stays valid for the life of the cache; only the SPIR-V words can be dropped (release_stub_spirv) and are read again by
-    // load_stub. Null if the hash has no usable .spv. Any thread.
+    // load_stub. PS5 stubs use shader_spirv()'s bounded store instead. Null if the hash has no usable .spv. Any thread.
     const ShaderInfo* load_stub(const std::string& hash);
     void release_stub_spirv(const ShaderInfo* s);   // frees the words; the caller guarantees nobody is using them (single threaded point)
     size_t loaded() const;   // ShaderInfos built so far
