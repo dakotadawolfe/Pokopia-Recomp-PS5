@@ -308,6 +308,11 @@ plus native-window lifetime and invalid-setup coverage. The native app also
 builds locally. These checks do not execute the game's startup path or prove
 menu/gameplay; the corrected app still needs a manual integration run.
 
+The app from `5e263a3` is installed with complete executable readback
+verification. Its matching symbols and the previous executable are retained
+privately alongside the crash evidence. The transfer helper and diagnostic
+payload slots were removed afterward; no automatic game launch was performed.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
