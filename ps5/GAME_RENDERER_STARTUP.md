@@ -158,6 +158,13 @@ backup, restores it if publication fails, and verifies every installed file.
 It refuses unknown existing files instead of deleting or silently dropping
 them. Keep installation receipts and backups for later updates or rollback.
 
+If the report shows successive entries from the same archive still loading,
+add `--expand-source-files` to the selection command. This selects all shader
+occurrences from the first-source files of the observed misses. It remains
+bounded to those source files and does not claim full-game coverage. The same
+translation and merge commands apply; use the currently installed cache's
+manifest and the preceding successful installation receipt as the baseline.
+
 Local qualification also includes 23 instruction-decoder checks under Address
 and Undefined Behavior Sanitizers, preflight of all fifteen required SDK
 exports, full native linking, FSELF inspection, and verified host jump aliases.
@@ -816,10 +823,62 @@ port 2121 is closed. Cleanup is recorded in `game-renderer-first-frame-console.j
 The combined build is installed, but it was not launched automatically and
 its game imagery remains unverified.
 
+## Active shader loading and wait-loop profiling
+
+Report `game-native-1793842568-92.log` recognizes all 633 installed records and
+continues loading for the full three-minute window. The first new missing
+shader appears around log time 47.7 seconds, and new shader programs and
+filesystem reads continue until the watchdog expires at 180,017 ms of guest
+execution. The final counts remain seven submissions, one draw and one
+presentation, with no raised guest exceptions. The user saw black throughout
+and then Home. This is active startup loading with incomplete shader coverage,
+not evidence of a rendered game image or a crash at the final stop.
+
+All 571 new missing hashes are in `0x05d525ae.fdata`. The next selection covers
+that entire source archive: 3,354 unique shaders (3,166 fragment, 188 vertex).
+All translate with status `ok` and pass Vulkan 1.3 validation. The combined
+cache contains 3,627 shaders, retaining every old shader and its resource-binding
+metadata. Coverage is still incomplete outside the selected archives.
+
+The final profile records 24,001,412 SleepThread calls. The reported caller
+`main+0x1ff69b8` is a job-wait loop calling the SDK's YieldThread import. The
+full observer accumulated 43,633 ms around those handlers across workers;
+that is neither a CPU percentage nor a measurement of shader loading itself.
+No scheduling behavior is changed on that evidence alone. The native observer
+now times one in 1,024 SleepThread calls while preserving exact call counts.
+Reports label these as sampled durations, include the timed-call count and
+last sampled argument, and do not extrapolate totals.
+
+The native shader cache now measures complete lookups, including hashing,
+file access and reflection. Every ten seconds the watchdog reports loaded and
+missing shader counts, completed lookups, summed lookup time and the longest
+lookup, alongside draw/present counters. This will distinguish time spent in
+the host shader path from other game startup work. The startup window is now
+600 seconds so another active archive load is not automatically cut at three
+minutes. Fatal dependencies still stop immediately. The memory profile,
+controller behavior, original game files and saves are unchanged.
+
+The four host cache checks pass, including complete-source selection and
+rejection of source expansion without an observed log. The native build,
+exception linkage, ten-minute manifest and FSELF integrity checks pass.
+FSELF: 278,475,169 bytes, SHA-256
+`1ef938bac821936dc5ee9531dc9d55cd2acb2e06790c078e5626ea956296dc7e`.
+Native ELF: 284,267,452 bytes, SHA-256
+`bf466e0f45e583e0b47f27a4b78f3f59fb7acdad7ba4368110c837f9d2296daa`.
+Console services became unreachable after report collection. No installation
+of this candidate has been attempted; its startup behavior remains unverified.
+The cache is 839,314,530 bytes before its file manifest; that manifest's SHA-256
+is `c0cc765711f7e943a0cbc709b76296ea41dcd72be317fad8cdeb12d9a52d9983`.
+Package identities and the pending deployment are recorded in
+`game-renderer-startup-bank-deployment-status.json`. The collection helper
+session (recorded PID 93 and its one payload slot) still needs reconciliation
+and cleanup when services return; its receipt is
+`game-renderer-first-frame-result-console.json`. No new app launch was initiated.
+
 ## Interpreting a run
 
 Reports are `/data/pokopia-recomp/tests/game-native-<time>-<pid>.log`.
-The 180-second deadline starts at guest dispatch, after folder selection and
+The 600-second deadline starts at guest dispatch, after folder selection and
 input checks. `GAME_GRAPHICS_BRIDGE` confirms host routing is installed;
 `GAME_GRAPHICS_READY` confirms the title called it. `GAME_NVN_PRESENT` records
 presentation, while `GAME_RENDER_REPORT` records submissions and draws. Those

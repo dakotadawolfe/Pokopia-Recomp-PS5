@@ -221,10 +221,11 @@ std::array<nxrt::SvcHandler, nxrt::kSvcCount> rtld_handlers{};
 std::atomic<unsigned> rtld_calls{0};
 #ifdef NXRT_GAME_RENDER_NATIVE
 // Fixed storage keeps the measurements independent of the guest and renderer
-// allocators. Times are summed across workers, so they are not CPU percentages.
+// allocators. Sampled times are summed across workers, not CPU percentages or
+// extrapolated totals. Call counts remain exact even for sampled yield loops.
 struct StartupSvcStats {
     std::atomic<uint64_t> entered{0}, completed{0}, active{0}, total_ns{0}, handler_ns{0}, max_ns{0};
-    std::atomic<uint64_t> last_fn{0}, last_lr{0};
+    std::atomic<uint64_t> timed{0}, last_fn{0}, last_lr{0}, last_x0{0};
 };
 std::array<StartupSvcStats, nxrt::kSvcCount> startup_svc_stats;
 std::atomic<uint64_t> startup_started_ns{0};
@@ -234,34 +235,46 @@ uint64_t startup_now_ns() {
 }
 struct StartupSvcScope {
     StartupSvcStats& stats;
-    const uint64_t started = startup_now_ns();
+    uint64_t started = 0;
     uint64_t handler_started = 0, handler_elapsed = 0;
-    bool first;
-    StartupSvcScope(size_t number, const Ctx* c) : stats(startup_svc_stats[number]),
-        first(stats.entered.fetch_add(1, std::memory_order_relaxed) == 0) {
+    bool first, sampled;
+    StartupSvcScope(size_t number, const Ctx* c) : stats(startup_svc_stats[number]) {
+        const auto index = stats.entered.fetch_add(1, std::memory_order_relaxed);
+        first = index == 0;
+        // Yield loops can run millions of times. Keep exact call counts while
+        // avoiding four clock reads and timing updates on every iteration.
+        sampled = number != 0x0b || index % 1024 == 0;
         stats.active.fetch_add(1, std::memory_order_relaxed);
-        stats.last_fn.store(c->fn, std::memory_order_relaxed);
-        stats.last_lr.store(c->x[30], std::memory_order_relaxed);
+        if (sampled) {
+            started = startup_now_ns();
+            stats.last_fn.store(c->fn, std::memory_order_relaxed);
+            stats.last_lr.store(c->x[30], std::memory_order_relaxed);
+            stats.last_x0.store(c->x[0], std::memory_order_relaxed);
+        }
     }
-    void begin_handler() { handler_started = startup_now_ns(); }
+    void begin_handler() { if (sampled) handler_started = startup_now_ns(); }
     void end_handler() {
+        if (!sampled) return;
         handler_elapsed += startup_now_ns() - handler_started;
         handler_started = 0;
     }
     ~StartupSvcScope() {
-        const auto now = startup_now_ns();
-        const auto elapsed = now - started;
-        if (handler_started) handler_elapsed += now - handler_started;
-        stats.total_ns.fetch_add(elapsed, std::memory_order_relaxed);
-        stats.handler_ns.fetch_add(handler_elapsed, std::memory_order_relaxed);
-        auto maximum = stats.max_ns.load(std::memory_order_relaxed);
-        while (maximum < elapsed && !stats.max_ns.compare_exchange_weak(maximum, elapsed, std::memory_order_relaxed)) {}
+        if (sampled) {
+            const auto now = startup_now_ns();
+            const auto elapsed = now - started;
+            if (handler_started) handler_elapsed += now - handler_started;
+            stats.total_ns.fetch_add(elapsed, std::memory_order_relaxed);
+            stats.handler_ns.fetch_add(handler_elapsed, std::memory_order_relaxed);
+            stats.timed.fetch_add(1, std::memory_order_relaxed);
+            auto maximum = stats.max_ns.load(std::memory_order_relaxed);
+            while (maximum < elapsed && !stats.max_ns.compare_exchange_weak(maximum, elapsed, std::memory_order_relaxed)) {}
+        }
         stats.completed.fetch_add(1, std::memory_order_relaxed);
         stats.active.fetch_sub(1, std::memory_order_relaxed);
     }
 };
 void report_startup_profile(bool detailed) {
-    uint64_t completed = 0, active = 0, elapsed = 0, handler = 0;
+    uint64_t completed = 0, active = 0, elapsed = 0, handler = 0, timed = 0;
     for (size_t n = 0; n < startup_svc_stats.size(); ++n) {
         auto& s = startup_svc_stats[n];
         const auto count = s.completed.load(std::memory_order_relaxed);
@@ -269,21 +282,25 @@ void report_startup_profile(bool detailed) {
         const auto total = s.total_ns.load(std::memory_order_relaxed);
         const auto service = s.handler_ns.load(std::memory_order_relaxed);
         completed += count; active += running; elapsed += total; handler += service;
+        timed += s.timed.load(std::memory_order_relaxed);
         if (detailed && s.entered.load(std::memory_order_relaxed))
-            std::printf("GAME_SVC_PROFILE svc=%02zx completed=%llu active=%llu handler_ms=%llu observer_ms=%llu max_ms=%llu last_fn=%llx last_lr=%llx\n",
+            std::printf("GAME_SVC_PROFILE svc=%02zx completed=%llu active=%llu sampled_handler_ms=%llu sampled_observer_ms=%llu sampled_max_ms=%llu last_fn=%llx last_lr=%llx timed=%llu last_x0=%llx\n",
                 n, static_cast<unsigned long long>(count), static_cast<unsigned long long>(running),
                 static_cast<unsigned long long>(service / 1000000),
                 static_cast<unsigned long long>((total > service ? total - service : 0) / 1000000),
                 static_cast<unsigned long long>(s.max_ns.load(std::memory_order_relaxed) / 1000000),
                 static_cast<unsigned long long>(s.last_fn.load(std::memory_order_relaxed)),
-                static_cast<unsigned long long>(s.last_lr.load(std::memory_order_relaxed)));
+                static_cast<unsigned long long>(s.last_lr.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(s.timed.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(s.last_x0.load(std::memory_order_relaxed)));
     }
     const auto began = startup_started_ns.load(std::memory_order_relaxed);
-    std::printf("GAME_STARTUP_PROGRESS elapsed_ms=%llu calls=%u completed=%llu active=%llu handler_ms=%llu observer_ms=%llu\n",
+    std::printf("GAME_STARTUP_PROGRESS elapsed_ms=%llu calls=%u completed=%llu active=%llu sampled_handler_ms=%llu sampled_observer_ms=%llu timed=%llu\n",
         static_cast<unsigned long long>(began ? (startup_now_ns() - began) / 1000000 : 0), rtld_calls.load(),
         static_cast<unsigned long long>(completed), static_cast<unsigned long long>(active),
         static_cast<unsigned long long>(handler / 1000000),
-        static_cast<unsigned long long>((elapsed > handler ? elapsed - handler : 0) / 1000000));
+        static_cast<unsigned long long>((elapsed > handler ? elapsed - handler : 0) / 1000000),
+        static_cast<unsigned long long>(timed));
 }
 #endif
 uint64_t rtld_handoff_handle = 0;
@@ -715,7 +732,7 @@ struct RtldDeadline {
     std::thread worker{[this] {
         std::unique_lock lock(mutex);
 #ifdef NXRT_GAME_RENDER_NATIVE
-        constexpr int seconds = 180;
+        constexpr int seconds = 600;
         const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
         for (;;) {
             const auto next = std::min(end, std::chrono::steady_clock::now() + std::chrono::seconds(10));
@@ -726,6 +743,7 @@ struct RtldDeadline {
                 stop_probe();
             }
             report_startup_profile(false);
+            nxrt::ps5_graphics::report();
             lock.lock();
         }
 #else

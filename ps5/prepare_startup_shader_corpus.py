@@ -14,7 +14,7 @@ import re
 import shutil
 
 
-def prepare(source, output, runtime_log=None):
+def prepare(source, output, runtime_log=None, expand_source_files=False):
     source, output = source.resolve(strict=True), output.resolve()
     if output.exists() or source in output.parents or output in source.parents:
         raise ValueError("Use a new, separate directory for the private startup corpus")
@@ -25,6 +25,8 @@ def prepare(source, output, runtime_log=None):
         fields = reader.fieldnames
         unique = list(reader)
     observed = set()
+    if expand_source_files and not runtime_log:
+        raise ValueError("Source-file expansion requires an observed runtime log")
     if runtime_log:
         observed = set(re.findall(r"no usable [^\r\n]*/([0-9a-f]{16})\.spv", runtime_log.read_text()))
         indexed = {row["code_sha1_16"] for row in unique}
@@ -35,8 +37,10 @@ def prepare(source, output, runtime_log=None):
         # level materials into a startup batch through common vertex shaders.
         entries = {(row["first_source"], row["entry_off"]) for row in unique
                    if row["code_sha1_16"] in observed}
+        sources = {filename for filename, _ in entries}
         selected = observed | {row["code_sha1_16"] for row in occurrences
-                               if (row["source"], row["entry_off"]) in entries}
+                               if (row["source"] in sources if expand_source_files else
+                                   (row["source"], row["entry_off"]) in entries)}
     else:
         selected = {row["code_sha1_16"] for row in occurrences if row["container"] == "main"}
     rows = [row for row in unique if row["code_sha1_16"] in selected]
@@ -66,11 +70,15 @@ def prepare(source, output, runtime_log=None):
         writer.writerows(rows)
     with (source / "manifest.tsv").open("rb") as stream:
         source_hash = hashlib.file_digest(stream, "sha256").hexdigest()
-    stamp = {"scope": "runtime-misses-and-source-entries" if runtime_log else "embedded-main-startup-only", "full_game_coverage": False,
+    scope = ("runtime-misses-and-source-files" if expand_source_files else
+             "runtime-misses-and-source-entries" if runtime_log else "embedded-main-startup-only")
+    stamp = {"scope": scope, "full_game_coverage": False,
              "unique_shaders": len(rows), "corpus_manifest_sha256": source_hash}
     if runtime_log:
         stamp.update(runtime_log_sha256=hashlib.sha256(runtime_log.read_bytes()).hexdigest(),
                      observed_missing_shaders=len(observed), source_entries=len(entries))
+        if expand_source_files:
+            stamp["source_files"] = sorted(sources)
     (output / "selection.json").write_text(json.dumps(stamp, indent=2) + "\n")
     print(f"Verified and selected {len(rows)} shaders ({stamp['scope']}); full-game coverage remains incomplete")
 
@@ -80,5 +88,7 @@ if __name__ == "__main__":
     parser.add_argument("corpus", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--runtime-log", type=Path, help="Cover logged cache misses and their source entries")
+    parser.add_argument("--expand-source-files", action="store_true",
+                        help="Include all shaders in the first-source files of observed misses")
     args = parser.parse_args()
-    prepare(args.corpus, args.output, args.runtime_log)
+    prepare(args.corpus, args.output, args.runtime_log, args.expand_source_files)

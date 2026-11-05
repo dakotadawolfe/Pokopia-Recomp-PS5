@@ -16,6 +16,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -1043,6 +1044,24 @@ void dump_missing_block(const std::string& hash, const uint8_t* code, const uint
 }
 
 const ShaderInfo* ShaderCache::find(const uint8_t* code, const uint8_t* control) {
+#if defined(NXRT_TARGET_PS5)
+    // Measure hashing, file loading and reflection together. This is once per
+    // program setup, so it avoids instrumenting individual shader operations.
+    struct LookupTimer {
+        std::atomic<uint64_t>& calls;
+        std::atomic<uint64_t>& total;
+        std::atomic<uint64_t>& maximum;
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~LookupTimer() {
+            const uint64_t elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - start).count();
+            calls.fetch_add(1, std::memory_order_relaxed);
+            total.fetch_add(elapsed, std::memory_order_relaxed);
+            auto previous = maximum.load(std::memory_order_relaxed);
+            while (previous < elapsed && !maximum.compare_exchange_weak(previous, elapsed, std::memory_order_relaxed)) {}
+        }
+    } timer{lookup_calls_, lookup_ns_, lookup_max_ns_};
+#endif
     if (!code || !control) return nullptr;
     ShaderControl c = read_control(control);
     if (!c.valid || c.code_size == 0 || c.code_size > 16u << 20) {
@@ -1235,6 +1254,12 @@ size_t ShaderCache::missing() const {
     std::lock_guard lk(lock_);
     return missing_;
 }
+#if defined(NXRT_TARGET_PS5)
+ShaderCache::LookupStats ShaderCache::lookup_stats() const {
+    return {lookup_calls_.load(std::memory_order_relaxed), lookup_ns_.load(std::memory_order_relaxed),
+            lookup_max_ns_.load(std::memory_order_relaxed)};
+}
+#endif
 
 bool ShaderCache::is_open() const {
     std::lock_guard lk(lock_);

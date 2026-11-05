@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <condition_variable>
 #include <mutex>
@@ -282,6 +283,10 @@ public:
     void release_stub_spirv(const ShaderInfo* s);   // frees the words; the caller guarantees nobody is using them (single threaded point)
     size_t loaded() const;   // ShaderInfos built so far
     size_t missing() const;  // hashes asked for that have no usable .spv (or do not reflect)
+#if defined(NXRT_TARGET_PS5)
+    struct LookupStats { uint64_t calls, total_ns, max_ns; };
+    LookupStats lookup_stats() const;
+#endif
     bool is_open() const;
     const std::string& dir() const;
 
@@ -331,6 +336,9 @@ private:
     std::unordered_set<uintptr_t> bad_controls_;                           // malformed control pointers (logged once)
     std::unordered_map<std::string, std::unique_ptr<ShaderInfo>> stubs_;   // load_stub (see there); null: no usable .spv
     size_t loaded_ = 0, missing_ = 0;
+#if defined(NXRT_TARGET_PS5)
+    std::atomic<uint64_t> lookup_calls_{0}, lookup_ns_{0}, lookup_max_ns_{0};
+#endif
 };
 
 // The process-wide cache. Opens itself on first use from config [nvn] shader_cache (environment NXRT_NVN_SHADER_CACHE);

@@ -34,12 +34,17 @@ class SelectionTests(unittest.TestCase):
                 writer.writerow(("code_sha1_16", "source", "entry_off", "container"))
                 writer.writerows(((hashes[0], "material", "0", "romfs"),
                                  (hashes[1], "material", "0", "romfs"),
+                                 (hashes[2], "material", "100", "romfs"),
                                  (hashes[0], "other", "100", "romfs"),
                                  (hashes[2], "other", "100", "romfs")))
             log = root / "runtime.log"
             log.write_text(f"shader: no usable /cache/{hashes[0]}.spv\n")
             prepare(corpus, root / "selected", log)
             self.assertEqual({p.stem for p in (root / "selected" / "code").iterdir()}, set(hashes[:2]))
+            prepare(corpus, root / "full-source", log, expand_source_files=True)
+            self.assertEqual({p.stem for p in (root / "full-source" / "code").iterdir()}, set(hashes))
+            with self.assertRaises(ValueError):
+                prepare(corpus, root / "no-log", expand_source_files=True)
             with self.assertRaises(ValueError):
                 prepare(corpus, root / "selected", log)
             (corpus / "code" / (hashes[1] + ".bin")).write_bytes(b"corrupt")

@@ -4,6 +4,7 @@
 #include "sdk_graphics_decode.h"
 #include "picker_draw.h"
 #include "../app/folder_picker.h"
+#include "../../runtime/src/gfx/nvn/nvn_shaders.h"
 #include "nxrt/diag.h"
 #include "nxrt/am_ps5.h"
 #include "nxrt/config.h"
@@ -231,6 +232,14 @@ void report() {
     std::printf("GAME_RENDER_REPORT backend=%d initialized=%d submits=%llu draws=%llu presents=%llu\n",
         nvn::backend_installed(), initialized.load(), static_cast<unsigned long long>(s.submits),
         static_cast<unsigned long long>(s.draws), static_cast<unsigned long long>(s.presents));
+    if (initialized.load()) {
+        auto& cache = nvn::be::shader_cache();
+        const auto timing = cache.lookup_stats();
+        std::printf("GAME_SHADER_PROGRESS loaded=%zu missing=%zu lookups=%llu lookup_ms=%llu max_lookup_ms=%llu\n",
+            cache.loaded(), cache.missing(), static_cast<unsigned long long>(timing.calls),
+            static_cast<unsigned long long>(timing.total_ns / 1000000),
+            static_cast<unsigned long long>(timing.max_ns / 1000000));
+    }
 }
 void shutdown() {
     diag_set_frame_listener(nullptr);
