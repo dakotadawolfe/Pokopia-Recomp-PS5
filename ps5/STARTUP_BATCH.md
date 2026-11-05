@@ -82,11 +82,49 @@ executable, licensed fallback font and every cache file after activation.
 The previous executable and cache are preserved. Matching diagnostic symbols
 are archived privately with a decompressed hash check.
 
-The next manual test is to launch **Pokopia Graphics Test**, select the
-existing decrypted game folder and choose **Use Folder**. Allow the combined
-startup to run while collecting its report. Menu, game audio, controller
-response and gameplay are still unverified with this batch; the component
-checks do not substitute for that run.
+## First combined game run
+
+The manual run reached the audio-device interfaces and opened AudioOut at
+48 kHz stereo, then stopped deliberately at the missing `hwopus` service.
+The native wrapper returned status 2 and the app process exited. This was
+not a passing game run or an observed GPU crash. No audible game output,
+interactive menu or gameplay was verified.
+
+The measured guest startup interval was 551,462 ms, compared with 557,740 ms
+before this batch. It loaded 3,735 shaders with zero missing entries, compared
+with 3,596 loaded and 139 missing previously. Rendering remained at seven
+submissions, one draw and one presentation. The private report is retained as
+`game-native-1793853210-106.log` alongside its install/build receipts.
+
+The selected assets were on USB; the shader cache was internal. All 1,554
+completed synchronous IPC calls were timed: their handlers summed to 2,101 ms
+and their diagnostic overhead to 1,330 ms. Shader lookups summed to 10,246 ms.
+Those measured operations do not explain most of the nine-minute startup.
+They are not a complete CPU or storage profile, and moving assets locally is
+not yet a measured speed improvement. The 127,754,788 completed SleepThread
+calls warrant investigation; their sampled timings must not be extrapolated
+or treated as CPU utilization. Wait times sum across multiple guest workers.
+
+The tracked host heap stayed at 192 MiB. The largest free direct-memory block
+fell from about 690 MiB during loading to about 94 MiB at exit. This is not
+total free memory, but warrants checking worker-stack and audio allocations
+before extending startup. The existing worker path allocates 64 MiB stacks;
+reducing them requires stack-use evidence rather than an arbitrary new size.
+
+Next work, in order:
+
+1. Implement real Opus decoding and audit the remaining codec startup calls.
+   The upstream `misc.cpp` decoder currently outputs silence; registering
+   that service alone does not provide working game audio.
+2. Add per-stage CPU/wait and asset-read measurements, examine the yield loop
+   and memory headroom, and display loading progress while the game loads.
+3. Implement and validate the title-contained first-run install, USB-free
+   subsequent launch, uninstall cleanup and native save-data requirements in
+   [RELEASE_REQUIREMENTS.md](RELEASE_REQUIREMENTS.md).
+
+Keep these changes in a combined iteration before requesting another manual
+game launch. The current executable remains installed; it was not replaced
+or relaunched during monitoring.
 
 ## Reproducing component checks
 

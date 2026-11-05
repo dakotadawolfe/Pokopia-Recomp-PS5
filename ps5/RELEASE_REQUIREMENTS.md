@@ -28,18 +28,42 @@ and their applicable licenses. A filename check does not establish ownership.
 1. Let the user choose an existing decrypted game folder on USB or internal
    storage. Validate the supported version and required inputs locally without
    altering the original files or saves. Do not request keys or firmware.
-2. Derive the native modules and required shaders on PS5 using the supplied
-   files. A developer-generated executable or cache must not be a prerequisite.
-3. Store generated modules and caches in private writable application data,
-   separate from the public runtime and original game files. Identify outputs
-   by input content, tool version and relevant target/driver version so stale
-   results are never silently reused.
+2. Copy the validated game content into the installed title's own directory
+   on internal storage. The user chooses the source once; after successful
+   installation, launch and play must work with the USB device disconnected.
+   Keep the source intact, verify the copy and support interrupted installation.
+3. Derive the native modules and required shaders on PS5 using the local copy.
+   A developer-generated executable or cache must not be a prerequisite.
+   Keep generated code, shaders, textures, pipeline caches and preparation
+   state inside the installed title's own directory. Do not use a separate
+   `/data/` tree for release content. Identify outputs by input content, tool
+   version and relevant target/driver version so stale results are never
+   silently reused.
 4. Show preparation progress and errors. Support cancellation and restart;
    activate a completed output atomically so interrupted work does not replace
    the last valid output. Check available space before starting.
-5. Load the private native modules and use the original assets in place. A
-   runtime update must retain user saves/preferences and regenerate only
-   incompatible outputs. Never upload or share the derived cache.
+5. Load the private native modules and assets from the completed internal
+   installation. A runtime update must retain user saves/preferences and
+   regenerate only incompatible outputs. Never upload or share the cache.
+6. Show useful preparation/loading progress instead of an unexplained black
+   screen. Measure file reads, decompression, shader preparation and runtime
+   startup separately; a local copy alone is not proof of a faster launch.
+
+## Installed-title lifecycle and saves
+
+Normal game deletion must remove the installed assets, generated modules,
+caches, temporary installation files and other app-owned content. Verify the
+actual writable title location and ShadowMountPlus/native uninstall behavior
+before choosing a path. Placing files in a directory named after the title is
+not sufficient evidence that the system will remove them with the game.
+Release acceptance includes checking for leftover app-owned files after
+deletion; development paths under `/data/pokopia-recomp` do not satisfy this.
+
+Use native PS5 save-data integration associated with the active local user,
+so saves appear in the console's normal Saved Data management. A plain save
+directory does not satisfy this requirement. Save deletion/retention must be
+explicitly specified separately from installed-content cleanup; never infer
+permission to erase an existing save during installation, update or testing.
 
 ## Current development limitation
 
@@ -50,6 +74,9 @@ console. These are private development artifacts, not release candidates.
 The PS5-hosted code generator, compiler/linker, shader translator and resumable
 preparation flow still need to be ported and integrated. The private-module
 loading/package boundary also needs implementation and console validation.
+So do title-contained installation/uninstallation and native PS5 save-data
+management. The current test reads the selected assets in place and uses
+separate development cache/report paths under `/data/`.
 Existing runtime and shader tests do not establish that these tools can run
 within the PS5's memory, storage and process constraints. Menu, gameplay and
 the 60 FPS target remain unverified.
