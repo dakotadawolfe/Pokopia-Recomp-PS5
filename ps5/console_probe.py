@@ -243,6 +243,15 @@ class Console:
             raise RuntimeError(f"Diagnostic PID {pending['pid']} is still running; inspect before closing its transfer helper")
         if self.state.get("pending_launch"):
             raise RuntimeError("A diagnostic launch has no verified completion; inspect its process/report before cleanup")
+        reused_pid = pid in current and current[pid]["name"] != "ftpsrv.elf"
+        if reused_pid:
+            if self.ftp_listening():
+                raise RuntimeError("Helper PID was reused and another FTP server is present; refusing to close it")
+            # After a reboot the old helper can be gone while its PID belongs
+            # to a different program. Preserve that process and clean only the
+            # payload slots recorded as ours, with the transfer port closed.
+            self.state["helper_pid_reused"] = {"pid": pid, "current_name": current[pid]["name"]}
+            self.save()
         pending_upload = self.state.get("pending_upload")
         if pending_upload:
             found = [item for item in self.slots() if item["filename"] == pending_upload["filename"]]
@@ -273,9 +282,7 @@ class Console:
             self.state["owned_directories"] = []
             self.state["owned_files"] = []
             self.save()
-        if pid in current:
-            if current[pid]["name"] != "ftpsrv.elf":
-                raise RuntimeError("Recorded helper PID has another name; refusing to close it")
+        if pid in current and not reused_pid:
             with self.ftp_open() as ftp:
                 try:
                     ftp.sendcmd("KILL")
@@ -285,7 +292,8 @@ class Console:
                 if pid not in {process["pid"] for process in self.processes()}:
                     break
                 time.sleep(0.3)
-        if pid in {process["pid"] for process in self.processes()} or self.ftp_listening():
+        current = {process["pid"]: process for process in self.processes()}
+        if (pid in current and current[pid]["name"] == "ftpsrv.elf") or self.ftp_listening():
             raise RuntimeError("Transfer helper cleanup remains incomplete")
         failures = []
         for slot in self.state["owned_slots"]:
