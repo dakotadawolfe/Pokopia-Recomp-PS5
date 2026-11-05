@@ -953,6 +953,25 @@ and port 2121 was verified closed. No native app launch was initiated.
 This establishes installation and synthetic cache behavior, not a fix verified
 against the game's startup or a rendered menu.
 
+The subsequent monitored run, `game-native-1793848371-95.log`, passed the old
+allocation-failure point and reached 3,596 loaded shaders. The host heap stayed
+at 201,326,592 mapped/peak bytes with zero libc fallbacks; the shader-word store
+held 12,236 bytes in two entries. These are host allocator/cache measurements,
+not the game's total memory usage. The last direct-memory query reported a
+168,263,680-byte largest free block after additional guest workers started.
+
+At 557,740 ms the diagnostic stopped on `SDK_STOP unported service=aud:u`, then
+returned status 2 through the normal native exit path. It did not reach the
+600-second deadline or repeat the observed allocation crash. It also logged
+139 distinct missing shaders, with seven submissions, one draw and one present
+still recorded. No game menu or gameplay was established. The missing audio
+service is the immediate stop; the shader misses are a separate rendering gap.
+
+The monitoring helper and its owned payload slot were removed and port 2121
+was verified closed. The full report, kernel log and time series remain private
+under `work/ps5`; no app relaunch or executable replacement was performed.
+The source review for the next batch is [UPSTREAM_REVIEW.md](UPSTREAM_REVIEW.md).
+
 ## Interpreting a run
 
 Reports are `/data/pokopia-recomp/tests/game-native-<time>-<pid>.log`.
