@@ -60,13 +60,21 @@ class CacheTests(unittest.TestCase):
     def test_full_readback_and_unexpected_files(self):
         class FTP:
             data = {"results.tsv": b"bindings"}
-            def mlsd(self, _):
+            directory = "/"
+            def pwd(self):
+                return self.directory
+            def cwd(self, directory):
+                self.directory = directory
+            def mlsd(self):
+                if self.directory != DESTINATION:
+                    raise AssertionError("Listing the wrong directory")
                 return [(name, {"type": "file"}) for name in self.data]
             def retrbinary(self, command, receive, **_):
                 receive(self.data[command.rsplit("/", 1)[1]])
         ftp = FTP()
         files = {"results.tsv": {"bytes": 8, "sha256": hashlib.sha256(b"bindings").hexdigest()}}
         verify_remote(ftp, DESTINATION, files)
+        self.assertEqual(ftp.directory, "/")
         ftp.data["results.tsv"] = b"tampered"
         with self.assertRaises(ValueError):
             verify_remote(ftp, DESTINATION, files)

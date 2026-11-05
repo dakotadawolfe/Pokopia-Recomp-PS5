@@ -802,6 +802,20 @@ offline, so no replacement was attempted. The log-collection helper was gone
 and its remaining owned payload slot was removed. The candidate and pending
 installation state are recorded in `game-renderer-first-frame-deployment-status.json`.
 
+After services returned, both replacements completed with the title stopped
+and unmounted. `game-renderer-first-frame-shaders-install.json` records all
+636 cache files, matching staged/final SHA-256 readbacks, and the preserved
+previous-cache directory. `game-renderer-first-frame-install.json` records the
+verified old executable backup and matching staged/final readbacks of the new
+FSELF. The installer now changes directory before MLSD because this PS5 helper
+ignores MLSD's path argument; the first preflight stopped before any write.
+The four host cache checks pass with this behavior covered.
+
+The transfer helper (PID 105) and its one owned payload slot were removed;
+port 2121 is closed. Cleanup is recorded in `game-renderer-first-frame-console.json`.
+The combined build is installed, but it was not launched automatically and
+its game imagery remains unverified.
+
 ## Interpreting a run
 
 Reports are `/data/pokopia-recomp/tests/game-native-<time>-<pid>.log`.

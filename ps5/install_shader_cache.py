@@ -22,7 +22,14 @@ TITLE = "/data/homebrew/PPSA98732"
 
 
 def verify_remote(ftp, directory, files):
-    entries = {name: facts for name, facts in ftp.mlsd(directory) if name not in (".", "..")}
+    # The PS5 helper ignores MLSD's path argument. Enter the directory first,
+    # then restore the original location before any rename or publication.
+    previous_directory = ftp.pwd()
+    ftp.cwd(directory)
+    try:
+        entries = {name: facts for name, facts in ftp.mlsd() if name not in (".", "..")}
+    finally:
+        ftp.cwd(previous_directory)
     if set(entries) != set(files) or any(f.get("type") != "file" for f in entries.values()):
         raise ValueError(f"Unexpected contents in {directory}; preserving them")
     for name, expected in files.items():
