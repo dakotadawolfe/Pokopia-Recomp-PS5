@@ -224,6 +224,20 @@ locally with exception-linkage and FSELF checks. Game-derived artifacts and
 all reports remain private. Installation and a subsequent manual game run
 must still be verified separately.
 
+After the console restart, the same dependency payload passed all 73 cases
+with zero failures. AudioOut initialized, drained silent PCM and closed
+successfully across three opens. The two guarded 32 MiB workers again passed
+the deep-frame watermark and backing-release checks. This resolves the
+component retest requirement; game audio and the game's maximum stack use
+remain unverified.
+
+The app built locally from `ea8b0db` is installed with the title stopped and
+unmounted. Complete readback verified the executable and Opus license; the
+previous executable and matching diagnostic symbols are retained privately.
+The transfer helper and its diagnostic payload slots were removed. The game
+was not launched automatically. The next manual run must establish whether
+the worker-memory change passes the observed startup allocation failure.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
