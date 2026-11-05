@@ -12,7 +12,7 @@ add_library(nxrt_ps5_svc STATIC
     "${svc_root}/src/services/am_ps5.cpp" "${svc_root}/src/services/gsv_ps5.cpp" "${svc_root}/src/services/aoc_ps5.cpp"
     "${svc_root}/src/services/pctl_ps5.cpp" "${svc_root}/src/services/fs_ps5.cpp"
     "${svc_root}/src/services/time_ps5.cpp" "${svc_root}/src/services/acc_ps5.cpp"
-    "${svc_root}/src/services/locale_ps5.cpp")
+    "${svc_root}/src/services/locale_ps5.cpp" "${svc_root}/src/services/streamplay_ps5.cpp")
 include("${CMAKE_CURRENT_LIST_DIR}/audio.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/input_services.cmake")
 target_link_libraries(nxrt_ps5_svc PUBLIC nxrt_ps5_audio nxrt_ps5_input_services)

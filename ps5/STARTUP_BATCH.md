@@ -238,6 +238,45 @@ The transfer helper and its diagnostic payload slots were removed. The game
 was not launched automatically. The next manual run must establish whether
 the worker-memory change passes the observed startup allocation failure.
 
+## Offline GameShare startup batch
+
+The reduced-stack manual run passed the previous allocation failure and
+started 51 workers. At 637,594 ms it stopped deliberately on the missing
+`stpl:u` service and exited through the native wrapper with status 2.
+There were no worker-stack allocation failures. The final largest free
+direct-memory block was 489,095,168 bytes; this is not total free memory.
+AudioOut initialized successfully and serviced guest PCM buffers, but audible
+game output and Opus decoding were not verified. Rendering remained at seven
+submissions, one draw and one presentation. The run loaded 3,738 shaders with
+zero misses; 1,432 file reads completed with zero failures in 2,080 ms.
+
+`stpl:u` is the GameShare interface. Its offline startup protocol already
+exists in the core's `runtime/src/services/misc.cpp`; the PS5 build did not
+compile that platform-dependent service collection. The PS5 implementation
+now provides the root/user interfaces, consistent offline work-size queries,
+read-only empty guest-HID shared memory, disconnected state and events,
+initialization/finalization, controller options and stored output volumes.
+Repeated HID requests duplicate handles to one process-owned allocation;
+closing one handle does not invalidate another handle or a mapped view.
+Handle exhaustion returns an error with no bogus handle in the response.
+
+This provides offline startup, not GameShare networking. Matchmaking, work
+buffer submission and starting a stream remain explicitly unsupported. The
+small offline work partitions follow the existing core; they are not real
+streaming buffer requirements. Unknown commands still produce a diagnostic
+failure instead of unconditional success.
+
+Five focused service cases passed on PS5 with zero failures. They cover
+real HIPC object/handle replies, shared-memory extent/content/permissions,
+duplicate handle lifetime, bounded work-size inputs, disconnected events,
+shared initialization state and finalization, malformed parameters, handle
+exhaustion/recovery and rejection of streaming commands. This focused payload
+does not reopen AudioOut after a game run. The full dependency payload also
+builds with these cases included; its earlier 73-case device pass remains a
+separate result. The updated app builds and packages locally with the existing
+exception-linkage and FSELF checks. A game run against this service is still
+required; no menu or gameplay is verified.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
@@ -254,6 +293,10 @@ payload SDK toolchain and `PS5_PAYLOAD_SDK`, then build `ps5_audio_tests`.
 Use `console_probe.py` to run it and retain its `audio-runtime` report; close
 the owned transfer session after installation/collection. The sink test is
 silent and does not start the game.
+
+The same PS5 build also provides `ps5_streamplay_tests`, containing the five
+offline GameShare cases without the audio-device test. Collect its
+`streamplay-runtime` report with `console_probe.py`.
 
 For private shader regeneration, use `prepare_startup_shader_corpus.py` with
 `--runtime-log` and `--include-cache` pointing at the previous verified cache

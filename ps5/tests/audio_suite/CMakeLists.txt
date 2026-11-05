@@ -20,10 +20,18 @@ if(PS5)
         "${root}/ps5/tests/test_transfer_memory.cpp"
         "${root}/ps5/tests/test_opus_service.cpp"
         "${root}/ps5/tests/test_stack_budget.cpp"
+        "${root}/ps5/tests/test_streamplay_service.cpp"
         "${root}/ps5/tests/test_startup_dependencies.cpp" "${root}/runtime/tests/test_nxmodule.cpp" "${root}/ps5/app/thread_exit.cpp")
     target_compile_definitions(ps5_audio_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_AUDIO=1)
     target_link_libraries(ps5_audio_tests PRIVATE nxrt_ps5_svc)
     target_link_options(ps5_audio_tests PRIVATE "LINKER:--wrap,pthread_create")
+    # Allow service-only checks after a game run without reopening AudioOut.
+    add_executable(ps5_streamplay_tests "${root}/ps5/tests/sync_main.cpp"
+        "${root}/ps5/tests/test_streamplay_service.cpp" "${root}/ps5/app/thread_exit.cpp")
+    target_include_directories(ps5_streamplay_tests PRIVATE "${root}/runtime/tests")
+    target_compile_definitions(ps5_streamplay_tests PRIVATE NXRT_TEST_PS5=1 NXRT_TEST_STREAMPLAY=1)
+    target_link_libraries(ps5_streamplay_tests PRIVATE nxrt_ps5_svc)
+    target_link_options(ps5_streamplay_tests PRIVATE "LINKER:--wrap,pthread_create")
 else()
     target_compile_definitions(ps5_audio_tests PRIVATE NXRT_AUDIO_POSIX=1 NXRT_AUDIO_TEST_DEVICE=1)
     target_sources(ps5_audio_tests PRIVATE

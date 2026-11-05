@@ -55,6 +55,7 @@ namespace nxrt::services { void register_fs(); void fs_reset(); }
 namespace nxrt::services { void register_time(); void time_reset(); }
 namespace nxrt::services { void register_acc(); void acc_reset(); }
 namespace nxrt::services { void register_audio(); void audio_reset(); void register_opus(); }
+namespace nxrt::services { void register_streamplay(); }
 namespace nxrt::services { void register_hid(); void hid_reset(); void register_power(); void power_reset(); void register_pl(); void pl_reset(); }
 namespace nxrt::services { void register_network(); void network_reset(); }
 namespace nxrt::app { void install_game_input(); }
@@ -909,6 +910,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     nxrt::services::register_locale();
     nxrt::services::register_audio();
     nxrt::services::register_opus();
+    nxrt::services::register_streamplay();
     nxrt::services::register_hid(); nxrt::services::register_power(); nxrt::services::register_pl();
 #ifdef NXRT_GAME_RENDER_NATIVE
     nxrt::app::install_game_input();
