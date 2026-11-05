@@ -1,18 +1,26 @@
 # Pokopia Recomp for PS5
 
 Native PS5 port in development, based on drakolordx7's Pokopia recompilation.
-The current build validates the native runtime, executes SDK startup and its
-first worker, and serves read-only RomFS storage on PS5. A separate native
-graphics diagnostic has passed shader/texture presentation. The full NVN
-backend now links, with a bundled command-replay/conversion diagnostic awaiting
-console validation. Game startup and rendering still need integration.
-There is no playable PS5 build yet.
+The private development build connects game startup, read-only RomFS and the
+native NVN renderer. Console testing has reached a black presentation while
+loading assets and shaders; a game menu and gameplay remain unverified.
+There is no playable PS5 release yet.
 
-See [the PS5 project scope and current status](ps5/README.md). Builds run locally,
-using an existing decrypted game dump. The PS5 application will use a fixed
-graphics profile and expose controller, audio and save options.
+See [the PS5 project scope and current status](ps5/README.md) and
+[release requirements](ps5/RELEASE_REQUIREMENTS.md). A public PS5 package must
+contain only the runtime and redistributable preparation tools. It must derive
+game code and shaders entirely on the console from the user's own decrypted
+files, without a PC for setup or play. That on-console preparation is not
+implemented yet. Current PC-generated game executables and caches are private
+development artifacts and must never be uploaded or distributed.
+
+The PS5 application will use a fixed graphics profile and expose controller,
+audio and save options.
 
 ## Upstream Windows project
+
+The instructions below describe the separate upstream Windows project. Its
+downloads and PC preparation workflow are not the PS5 release workflow.
 
 Pokémon Pokopia (Switch 2) recompiled to run natively on Windows.
 

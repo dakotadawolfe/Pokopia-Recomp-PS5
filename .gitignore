@@ -3,7 +3,14 @@
 /work/
 build/
 shader_cache/
+shader-cache/
 bc7_cache/
+modules-compact/
+*.spv
+*.fdata
+*.glslc
+*.bc
+*.ll
 *.nso
 *.nro
 *.npdm
@@ -15,6 +22,10 @@ exefs/
 romfs/
 *.exe
 *.elf
+*.self
+*.prx
+*.pkg
+eboot.bin
 *.a
 *.o
 *.pdb

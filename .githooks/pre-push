@@ -1,0 +1,2 @@
+#!/bin/sh
+exec python -B ps5/check_public_source.py --pre-push

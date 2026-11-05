@@ -3,6 +3,9 @@
 This opt-in build joins the recompiled game modules to the PS5 Device/Renderer
 and NVN backend qualified by [the native renderer batch](NVN_RUNTIME_PORT.md).
 It is a bounded startup diagnostic, not a gameplay-qualified application.
+Its executable contains game-derived code and its translated shaders are
+private data. Neither is a public release artifact. The final release must
+prepare both on the user's PS5; see [release requirements](RELEASE_REQUIREMENTS.md).
 
 The folder picker runs on the same renderer that NVN will present through.
 It validates and remembers the user's existing decrypted folder. Game images

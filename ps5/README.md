@@ -6,11 +6,12 @@ The initial upstream revision is `2c29515b23a6d78d967775fd7e9f24f50402cca7`.
 
 ## Product scope
 
-- Load decrypted ExeFS and RomFS from `C:/Games/pokopia` during local compilation.
-  An explicit input path can point to an existing dump elsewhere. Do not request
-  keys or firmware; this application consumes extracted game files. At console
-  launch, let the user browse USB or internal storage for their existing game
-  folder, validate it, and remember that choice without copying the assets.
+- Prepare the user's decrypted ExeFS and RomFS entirely on PS5 for release,
+  including native code generation and shader translation. No PC, keys or
+  firmware should be required for setup or play. At console launch, let the
+  user browse USB or internal storage for their existing game folder, validate
+  it, and remember that choice without copying the assets. PC compilation from
+  `C:/Games/pokopia` or another explicit path is private development tooling.
 - Produce a native PS5 application launched through ShadowMountPlus, using
   the existing homebrew SDK, RADV and native presentation work where appropriate.
   Deliver the complete title folder with `eboot.bin`, `sce_sys` metadata and
@@ -28,7 +29,8 @@ The initial upstream revision is `2c29515b23a6d78d967775fd7e9f24f50402cca7`.
   clean exit, clear missing-file errors and useful crash logs. Retain applicable
   game language and accessibility controls.
 - Keep original game files and existing saves intact. Keep all game-derived
-  output and private input manifests outside Git.
+  output and private input manifests outside Git and public release packages.
+  Follow the [on-console release requirements](RELEASE_REQUIREMENTS.md).
 
 60 FPS is the performance target, not a measured result. The port is not complete
 until boot, rendering, controller input, audio, saves and sustained gameplay have
@@ -38,16 +40,20 @@ hardware testing; a base-console run does not establish PS5 Pro behavior.
 
 ## Intended installation layout
 
-Local preparation consumes the user's decrypted dump. The final native
-application will contain the recompiled x86-64 game code and platform runtime,
-packaged as `eboot.bin` and any required modules for ShadowMountPlus. Game assets
-remain separate in the existing USB or internal-storage folder chosen by the
-user; they are not embedded in the ELF or automatically moved. The current
-loader requires the decrypted ExeFS images for their original mapped contents
-and layout as well as the separately compiled code. Earlier diagnostics use
-the already-staged `/data/pokopia-recomp/game/exefs/` images. Current bounded
-startup reads the images and RomFS from the user's selected folder; complete
-in-game asset loading remains unverified.
+The public ShadowMountPlus application will contain the platform runtime,
+folder picker and redistributable preparation tools, with no game code or
+game-derived cache. On first use, it must generate native code and shaders on
+the PS5 from the user's selected decrypted dump. Those private outputs stay
+on that console, separate from the distributable application. Game assets
+remain in the selected USB or internal-storage folder and are not moved.
+
+This on-console preparation pipeline is not implemented. Current development
+builds link PC-generated x86-64 game code into `eboot.bin` and install a
+PC-translated shader cache. Both are private game-derived artifacts, even
+though the assets remain separate, and neither may be published. The current
+loader also reads the original decrypted ExeFS images for their mapped contents
+and layout. Current bounded startup reads those images and RomFS from the
+user's selected folder; complete in-game asset loading remains unverified.
 
 The bounded [game/renderer integration build](GAME_RENDERER_STARTUP.md) now
 connects the selected folder and compiled modules to the native NVN renderer.
@@ -55,8 +61,9 @@ It has not yet established a working game menu or gameplay. The earlier native
 renderer batch, including all 49,981 texture-conversion checks, passed on PS5;
 see [the recorded console evidence](NVN_RUNTIME_PORT.md#recorded-validation).
 
-After installation, playing should not require the PC, keys or firmware.
-USB and internal-storage gameplay both require runtime validation. Save data and
+The release requirement covers first-run preparation as well as playing:
+neither may require a PC, keys or firmware. USB and internal-storage gameplay
+both require runtime validation. Save data and
 controller/audio preferences will live in writable application-data directories,
 separate from game inputs and the app package.
 
@@ -104,6 +111,9 @@ Validated locally on 2026-11-03:
 5. Integrate RADV/VideoOut, shader preparation, audio and controllers.
 6. Validate saves and sustained gameplay, then select the fixed graphics profile
    from console frame-time measurements.
+7. Port the code and shader preparation tools to PS5, separate locally generated
+   modules from the public runtime, and validate setup on a console with no
+   development cache or PC connection. This is a release blocker.
 
 The earlier compiler proof translated an original 34-instruction ARM fixture,
 matched its results on a PC and linked it into a PS5 ELF. It did not execute
@@ -1250,4 +1260,10 @@ loader; this transfers development executables, never game asset folders.
 `origin` is `dakotadawolfe/Pokopia-Recomp-PS5`; `upstream` is the original
 `drakolordx7/pokopia-recomp`. Commit only source, documentation and build tools.
 Use `work/`, `game/` or `build/` for generated and game-derived files, all ignored
-by the inherited `.gitignore`. No GitHub build workflow is required.
+by `.gitignore`. No GitHub build or artifact upload workflow is used.
+Enable the local source checks with `git config core.hooksPath .githooks` and
+run `python ps5/check_public_source.py --all` when auditing reachable history.
+The hooks reject known artifact paths, binary signatures and lifted source
+headers. They are safeguards, not a complete provenance review. See
+[release requirements](RELEASE_REQUIREMENTS.md) before packaging anything
+for distribution.
