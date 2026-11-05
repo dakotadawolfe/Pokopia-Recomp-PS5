@@ -74,6 +74,20 @@ The fallback font has the limitations described in `runtime/src/services/pl.cpp`
 The startup deadline remains 600 seconds. Native libc handlers may reduce
 startup time, but no game timing improvement is claimed before measurement.
 
+## Installed batch
+
+The app from source `501c576` and the 3,802-shader private development cache
+are installed on the test console. Complete SHA-256 readbacks verified the
+executable, licensed fallback font and every cache file after activation.
+The previous executable and cache are preserved. Matching diagnostic symbols
+are archived privately with a decompressed hash check.
+
+The next manual test is to launch **Pokopia Graphics Test**, select the
+existing decrypted game folder and choose **Use Folder**. Allow the combined
+startup to run while collecting its report. Menu, game audio, controller
+response and gameplay are still unverified with this batch; the component
+checks do not substitute for that run.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
