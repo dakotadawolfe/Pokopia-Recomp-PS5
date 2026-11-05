@@ -16,6 +16,9 @@
 #include "nxrt/log.h"
 
 namespace nxrt::audio {
+#if defined(NXRT_AUDIO_POSIX)
+std::shared_ptr<AudioSink> make_ps5_sink();
+#endif
 
 namespace {
 std::mutex g_mu;
@@ -81,7 +84,13 @@ std::shared_ptr<AudioSink> sink() {
         const std::string want = config_get_str("audio", "sink", "auto");
         if (want == "paced") {
             chosen = make_paced_sink(config_get_double("audio", "paced_ppm", 0.0));
-        } else if (want == "xaudio2" || want == "auto") {
+        }
+#if defined(NXRT_AUDIO_POSIX)
+        else if (want == "auto" || want == "ps5") {
+            chosen = make_ps5_sink();
+        }
+#else
+        else if (want == "xaudio2" || want == "auto") {
             chosen = make_xaudio2_sink();
             if (!chosen) {
                 NXLOG_W("audio", "XAudio2 is not available: using the null sink (no sound)");
@@ -91,7 +100,9 @@ std::shared_ptr<AudioSink> sink() {
             } else {
                 chosen->close();
             }
-        } else if (want != "null") {
+        }
+#endif
+        else if (want != "null") {
             NXLOG_W("audio", "[audio] sink = %s is not a sink name (auto, xaudio2, paced, null): using the null sink", want.c_str());
         }
         if (!chosen) chosen = std::make_shared<NullSink>();

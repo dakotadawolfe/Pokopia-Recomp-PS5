@@ -54,6 +54,10 @@ namespace nxrt::services { void register_pctl(); }
 namespace nxrt::services { void register_fs(); void fs_reset(); }
 namespace nxrt::services { void register_time(); void time_reset(); }
 namespace nxrt::services { void register_acc(); void acc_reset(); }
+namespace nxrt::services { void register_audio(); void audio_reset(); }
+namespace nxrt::services { void register_hid(); void hid_reset(); void register_power(); void power_reset(); void register_pl(); void pl_reset(); }
+namespace nxrt::services { void register_network(); void network_reset(); }
+namespace nxrt::app { void install_game_input(); }
 namespace nxrt::services { void register_locale(); }
 #endif
 
@@ -716,6 +720,7 @@ struct RtldCleanup {
         nxrt::eh::set_terminate_handler(nullptr); nxrt::eh::set_abi_autodetect();
 #endif
         if (installed) for (unsigned n = 0; n < rtld_handlers.size(); ++n) nxrt::svc_register(n, rtld_handlers[n]);
+        nxrt::services::hid_reset(); nxrt::services::audio_reset(); nxrt::services::pl_reset(); nxrt::services::power_reset(); nxrt::services::network_reset();
         nxrt::kernel::main_thread_release(); nxrt::kernel::kernel_reset(); nxrt::ipc::registry_reset(); nxrt::services::am_reset();
         nxrt::services::aoc_reset();
         nxrt::services::acc_reset();
@@ -848,11 +853,17 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
 #ifdef NXRT_TEST_SDK
     nxrt::services::logfault_reset(); nxrt::services::register_logfault(); nxrt::services::am_reset(); nxrt::services::register_am();
     nxrt::services::aoc_reset(); nxrt::services::register_aoc();
-    nxrt::services::register_pctl();
+    nxrt::services::register_network();
+    nxrt::services::register_pctl(); // Keep the PS5 account-aware parental-control service.
     nxrt::services::fs_reset(); nxrt::services::register_fs();
     nxrt::services::time_reset(); nxrt::services::register_time();
     nxrt::services::acc_reset(); nxrt::services::register_acc();
     nxrt::services::register_locale();
+    nxrt::services::register_audio();
+    nxrt::services::register_hid(); nxrt::services::register_power(); nxrt::services::register_pl();
+#ifdef NXRT_GAME_RENDER_NATIVE
+    nxrt::app::install_game_input();
+#endif
 #endif
     REQUIRE(mem::init({.heap_reserve = 12ull << 30}));
     nxrt::Module* rtld = nullptr;
@@ -874,6 +885,7 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     REQUIRE(nxrt::ps5_graphics::startup_status("Connecting game modules and native graphics."));
 #endif
     REQUIRE(register_game_modules());
+    nxrt::install_libc_hle();
 #else
     auto registered = nxrt::nxmodule_register(nxrt::module_by_name("sdk"), &nxmod_sdk, nxmod_sdk_abi);
     REQUIRE(registered.ok()); REQUIRE(registered.functions == static_cast<size_t>(nxmod_sdk.nfns));

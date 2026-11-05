@@ -44,6 +44,7 @@ void __wrap_call_indirect(Ctx* context, uint64_t address) {
 }
 void __wrap_host_import(Ctx* context, uint32_t id) {
     const auto address = nxrt::import_resolve(id);
+    if (nxrt::hle_leaf_fn(address)) { __real_host_import(context, id); return; }
     if (!address || (!nxrt::fn_lookup(address) && !nxrt::hle_lookup(nxrt::import_name(id)))) {
         std::printf("GAME_STOP unbacked import id=%x symbol=%s address=%llx fn=%llx\n",
             id, nxrt::import_name(id), static_cast<unsigned long long>(address),

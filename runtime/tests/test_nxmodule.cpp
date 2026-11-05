@@ -109,7 +109,7 @@ NXTEST(abi_mismatch_refused) {
     static const FnEntry fns[] = {{kA + 0x100, fa}};
     static const NxModule nx = {"abi_mod", 0u, kA, kA + kSpan, fns, 1, nullptr, 0, nullptr, 0, nullptr};
 
-    for (uint32_t v : {2u, 4u, 0u}) {
+    for (uint32_t v : {2u, nxrt::kAbiVersion + 1, 0u}) {
         nxrt::RegResult r = nxrt::nxmodule_register(nullptr, &nx, v);
         CHECK_EQ(r.status, RegStatus::AbiMismatch);
         CHECK(!r.ok());

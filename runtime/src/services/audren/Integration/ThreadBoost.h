@@ -4,6 +4,7 @@
 // on the sound card. The threads join the Multimedia Class Scheduler Service task "Pro Audio" (the Windows way for an audio thread to get
 // the CPU on time) and the system timer runs at 1 ms while the renderer is up, so the pacing sleeps are not rounded up to 15 ms.
 #pragma once
+#if defined(_WIN32)
 #include <windows.h>
 #include <avrt.h>
 #include <mmsystem.h>
@@ -68,3 +69,16 @@ class TimerResolutionScope {
 };
 
 }  // namespace nxrt::audren
+#else
+namespace nxrt::audren {
+// POSIX clocks already provide sub-millisecond deadlines. Keep the host's
+// normal scheduling policy until platform priority changes are measured.
+inline void BoostAudioThread() {}
+class ScopedAudioLockBoost { public: ~ScopedAudioLockBoost() {} };
+class TimerResolutionScope {
+public:
+    static void Acquire() {}
+    static void Release() {}
+};
+} // namespace nxrt::audren
+#endif

@@ -27,7 +27,7 @@ def checked_name(name):
     return name
 
 
-def prepare(previous, previous_manifest, addition, selection, output, validator):
+def prepare(previous, previous_manifest, addition, selection, output, validator, replace_existing=False):
     previous, addition = previous.resolve(strict=True), addition.resolve(strict=True)
     output = output.resolve()
     if output.exists() or any(root == output or root in output.parents for root in (previous, addition)):
@@ -36,7 +36,7 @@ def prepare(previous, previous_manifest, addition, selection, output, validator)
     for name, expected in old["files"].items():
         if identity(previous / checked_name(name)) != expected:
             raise ValueError(f"Previous cache differs from its manifest: {name}")
-    rows, files, columns = {}, {}, None
+    rows, files, columns, replaced = {}, {}, None, []
     for root in (previous, addition):
         with (root / "results.tsv").open(newline="") as stream:
             reader = csv.DictReader(stream, delimiter="\t")
@@ -54,7 +54,10 @@ def prepare(previous, previous_manifest, addition, selection, output, validator)
                 if key in rows:
                     semantic = lambda r: {k: v for k, v in r.items() if k != "ms"}
                     if identity(path) != identity(files[key]) or semantic(row) != semantic(rows[key]):
-                        raise ValueError(f"Conflicting shader or binding metadata: {key}")
+                        if not replace_existing:
+                            raise ValueError(f"Conflicting shader or binding metadata: {key}")
+                        replaced.append(key)
+                        rows[key], files[key] = row, path
                 else:
                     rows[key], files[key] = row, path
     if not rows:
@@ -68,7 +71,7 @@ def prepare(previous, previous_manifest, addition, selection, output, validator)
         writer.writerows(rows[key] for key in sorted(rows))
     provenance = {"previous_manifest_sha256": identity(previous_manifest)["sha256"],
                   "addition_results_sha256": identity(addition / "results.tsv")["sha256"],
-                  "selection": json.loads(selection.read_text())}
+                  "selection": json.loads(selection.read_text()), "retranslated_shaders": replaced}
     (output / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     scope = ("startup-and-observed-source-files" if provenance["selection"]["scope"] ==
              "runtime-misses-and-source-files" else "startup-and-observed-source-entries")
@@ -84,6 +87,7 @@ if __name__ == "__main__":
     for name in ("previous_cache", "previous_manifest", "addition", "selection", "output"):
         parser.add_argument(name, type=Path)
     parser.add_argument("--spirv-val", type=Path, required=True)
+    parser.add_argument("--replace-existing", action="store_true", help="Replace changed translations after a compiler correction, recording every replaced key")
     args = parser.parse_args()
     prepare(args.previous_cache, args.previous_manifest, args.addition,
-            args.selection, args.output, args.spirv_val)
+            args.selection, args.output, args.spirv_val, args.replace_existing)

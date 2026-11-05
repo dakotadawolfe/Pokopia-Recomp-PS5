@@ -86,6 +86,8 @@ PickerInput PickerPad::poll(uint64_t now_ms) {
     if (!data.connected) { error_ = "Connect a controller to choose the game folder."; return input; }
     if (data.buttons & 0x80000000u) { error_ = "Return from the PS5 menu to continue choosing a folder."; return input; }
     error_.clear(); input.connected = true;
+    input.native_buttons = data.buttons;
+    input.lx = data.lx; input.ly = data.ly; input.rx = data.rx; input.ry = data.ry;
     input.up = (data.buttons & 0x10) || data.ly < 64;
     input.down = (data.buttons & 0x40) || data.ly > 192;
     input.select = data.buttons & 0x4000;

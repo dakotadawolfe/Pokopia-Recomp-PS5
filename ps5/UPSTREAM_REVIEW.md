@@ -1,5 +1,9 @@
 # Upstream review after the shader-memory run
 
+The subsequent implementation and component checks are recorded in
+[STARTUP_BATCH.md](STARTUP_BATCH.md). The review below describes the baseline
+before that integration.
+
 Reviewed 2026-11-04 (America/Chicago). This is a source comparison and a record
 of the PS5 run, not validation of these upstream changes on PS5.
 

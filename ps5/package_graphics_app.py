@@ -61,6 +61,9 @@ def main():
     }
     for name in ("icon0.png", "pic0.dds", "pic1.dds", "snd0.at9"):
         copies["sce_sys/" + name] = args.template / "sce_sys" / name
+    if game_mode:
+        copies["fonts/DejaVuSans.ttf"] = ROOT / "runtime/assets/fonts/DejaVuSans.ttf"
+        copies["licenses/DejaVu.txt"] = ROOT / "runtime/assets/fonts/LICENSE-DejaVu.txt"
     if runtime_mode:
         for name in ("volk-MIT.txt", "VMA-MIT.txt", "Vulkan-Headers.txt", "Vulkan-Headers-Apache-2.0.txt", "Vulkan-Headers-MIT.txt"):
             copies["licenses/" + name] = args.build / "graphics-licenses" / name

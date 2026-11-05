@@ -205,7 +205,11 @@ WavWriter::~WavWriter() { close(); }
 bool WavWriter::open(const std::string& path, uint32_t sample_rate, uint32_t channels) {
     close();
     if (sample_rate == 0 || channels == 0) return false;
+#if defined(_WIN32)
     file_ = _wfopen(std::filesystem::path(path).c_str(), L"wb+");
+#else
+    file_ = std::fopen(path.c_str(), "wb+");
+#endif
     if (!file_) return false;
 
     sample_rate_ = sample_rate;

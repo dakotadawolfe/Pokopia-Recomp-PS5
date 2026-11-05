@@ -13,6 +13,9 @@ add_library(nxrt_ps5_svc STATIC
     "${svc_root}/src/services/pctl_ps5.cpp" "${svc_root}/src/services/fs_ps5.cpp"
     "${svc_root}/src/services/time_ps5.cpp" "${svc_root}/src/services/acc_ps5.cpp"
     "${svc_root}/src/services/locale_ps5.cpp")
+include("${CMAKE_CURRENT_LIST_DIR}/audio.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/input_services.cmake")
+target_link_libraries(nxrt_ps5_svc PUBLIC nxrt_ps5_audio nxrt_ps5_input_services)
 target_compile_definitions(nxrt_ps5_svc PRIVATE
     NXRT_DISABLE_FRAME_TRACE=1 NXRT_DISABLE_TEST_TOOLING=1)
 target_compile_options(nxrt_ps5_svc PRIVATE -Wall -Wextra -Werror -mcx16)

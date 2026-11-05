@@ -119,6 +119,8 @@ std::filesystem::path exe_dir() {
     const DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) return {};
     return std::filesystem::path(buf).parent_path();
+#elif defined(NXRT_TARGET_PS5)
+    return "/app0";
 #else
     return {};
 #endif

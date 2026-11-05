@@ -99,7 +99,7 @@ class StateUpdater {
     ResultCode UpdateBehaviourInfo() {
         BehaviourParameter parameter = _inputReader.GetRefOrRefToCopy<BehaviourParameter>();
 
-        if (!BehaviourInfo::CheckValidRevision(parameter.user_revision) || parameter.user_revision != _behaviourInfo->UserRevision) {
+        if (!BehaviourInfo::CheckValidRevision(parameter.user_revision) || !BehaviourInfo::SameRevision(parameter.user_revision, _behaviourInfo->UserRevision)) {
             return ResultCode::InvalidUpdateInfo;
         }
 

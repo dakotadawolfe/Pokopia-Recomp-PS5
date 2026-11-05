@@ -14,7 +14,7 @@ import re
 import shutil
 
 
-def prepare(source, output, runtime_log=None, expand_source_files=False):
+def prepare(source, output, runtime_log=None, expand_source_files=False, include_cache=None, max_shaders=10000):
     source, output = source.resolve(strict=True), output.resolve()
     if output.exists() or source in output.parents or output in source.parents:
         raise ValueError("Use a new, separate directory for the private startup corpus")
@@ -43,6 +43,14 @@ def prepare(source, output, runtime_log=None, expand_source_files=False):
                                    (row["source"], row["entry_off"]) in entries)}
     else:
         selected = {row["code_sha1_16"] for row in occurrences if row["container"] == "main"}
+    if include_cache:
+        cache = json.loads(include_cache.read_text())
+        previous = {Path(name).stem for name in cache["files"] if re.fullmatch(r"[0-9a-f]{16}\.spv", name)}
+        if len(previous) != cache["blocks"]:
+            raise ValueError("Cache manifest shader count is inconsistent")
+        selected |= previous
+    if len(selected) > max_shaders:
+        raise ValueError(f"Selection has {len(selected)} shaders, above the explicit limit {max_shaders}; narrow the scope before copying")
     rows = [row for row in unique if row["code_sha1_16"] in selected]
     if not selected or len(rows) != len(selected):
         raise ValueError("The shader selection is empty or its corpus index is inconsistent")
@@ -74,6 +82,9 @@ def prepare(source, output, runtime_log=None, expand_source_files=False):
              "runtime-misses-and-source-entries" if runtime_log else "embedded-main-startup-only")
     stamp = {"scope": scope, "full_game_coverage": False,
              "unique_shaders": len(rows), "corpus_manifest_sha256": source_hash}
+    if include_cache:
+        stamp.update(included_cache_manifest_sha256=hashlib.sha256(include_cache.read_bytes()).hexdigest(),
+                     included_cache_shaders=len(previous))
     if runtime_log:
         stamp.update(runtime_log_sha256=hashlib.sha256(runtime_log.read_bytes()).hexdigest(),
                      observed_missing_shaders=len(observed), source_entries=len(entries))
@@ -90,5 +101,7 @@ if __name__ == "__main__":
     parser.add_argument("--runtime-log", type=Path, help="Cover logged cache misses and their source entries")
     parser.add_argument("--expand-source-files", action="store_true",
                         help="Include all shaders in the first-source files of observed misses")
+    parser.add_argument("--include-cache", type=Path, help="Also regenerate every shader in this previous cache manifest")
+    parser.add_argument("--max-shaders", type=int, default=10000, help="Refuse oversized selections before copying")
     args = parser.parse_args()
-    prepare(args.corpus, args.output, args.runtime_log, args.expand_source_files)
+    prepare(args.corpus, args.output, args.runtime_log, args.expand_source_files, args.include_cache, args.max_shaders)

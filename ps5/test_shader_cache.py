@@ -2,6 +2,7 @@
 """Host checks for private shader selection and verified cache replacement."""
 import csv
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -43,6 +44,13 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual({p.stem for p in (root / "selected" / "code").iterdir()}, set(hashes[:2]))
             prepare(corpus, root / "full-source", log, expand_source_files=True)
             self.assertEqual({p.stem for p in (root / "full-source" / "code").iterdir()}, set(hashes))
+            with self.assertRaises(ValueError):
+                prepare(corpus, root / "oversized", log, expand_source_files=True, max_shaders=2)
+            self.assertFalse((root / "oversized").exists())
+            manifest = root / "cache.json"
+            manifest.write_text(json.dumps({"blocks": 1, "files": {hashes[2] + ".spv": {}}}))
+            prepare(corpus, root / "regenerated", log, include_cache=manifest)
+            self.assertEqual({p.stem for p in (root / "regenerated" / "code").iterdir()}, set(hashes))
             with self.assertRaises(ValueError):
                 prepare(corpus, root / "no-log", expand_source_files=True)
             with self.assertRaises(ValueError):

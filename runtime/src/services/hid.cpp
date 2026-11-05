@@ -36,6 +36,14 @@ using nxrt::hid::NpadInput;
 using nxrt::hid::NpadStyle;
 using nxrt::hid::StickValue;
 
+bool docked_mode() {
+#ifdef _WIN32
+    return profile().docked;
+#else
+    return config_get_bool("title", "docked", title_defaults().docked);
+#endif
+}
+
 constexpr uint32_t kNpadIdOther = 0x10;       // NpadIdType (Switchbrew): players 0..7, other 0x10, handheld 0x20
 constexpr uint32_t kNpadIdHandheld = 0x20;
 constexpr uint32_t kDefaultStyles = kTagFullKey | kTagHandheld | kTagJoyDual | kTagJoyLeft | kTagJoyRight;
@@ -184,12 +192,11 @@ void ring_push(Ring<T>* r, T value) {
     const uint64_t n = r->entries[r->index].sampling / 2 + 1;
     set_sampling(value, n);
     const uint64_t next = (r->index + 1) % kRingEntries;
-    std::atomic_ref<uint64_t> seq(r->entries[next].sampling);
-    seq.store(2 * n - 1, std::memory_order_relaxed);
+    __atomic_store_n(&r->entries[next].sampling, 2 * n - 1, __ATOMIC_RELAXED);
     std::atomic_thread_fence(std::memory_order_release);
     r->entries[next].state = value;
-    seq.store(2 * n, std::memory_order_release);
-    std::atomic_ref<uint64_t>(r->index).store(next, std::memory_order_release);
+    __atomic_store_n(&r->entries[next].sampling, 2 * n, __ATOMIC_RELEASE);
+    __atomic_store_n(&r->index, next, __ATOMIC_RELEASE);
     if (r->count < kRingMaxCount) r->count++;
 }
 
@@ -223,7 +230,13 @@ void init_shm(uint8_t* host) {
 // Creates the shared memory on first use, and again when the kernel region it lived in is gone (tests re-initialise the runtime).
 // Caller holds st().mu.
 bool shm_ready(HidState& s) {
+#ifdef _WIN32
     if (s.shm && s.shm->ok() && mem::is_mapped(s.shm->host(), kSize)) return true;
+#else
+    // POSIX owns a stable service mapping separate from the guest address map.
+    // Its shared backing stays alive until reset, including after handle close.
+    if (s.shm && s.shm->ok()) return true;
+#endif
     s.shm.emplace(kSize, "hid");
     if (!s.shm->ok()) {
         s.shm.reset();
@@ -574,7 +587,7 @@ InputSnapshot read_input() {
     }
     snap.npad[0].connected = true;
     snap.npad[0].style = NpadStyle::FullKey;
-    if (!profile().docked) {
+    if (!docked_mode()) {
         snap.npad[nxrt::hid::kNpadSlotHandheld].connected = true;
         snap.npad[nxrt::hid::kNpadSlotHandheld].style = NpadStyle::Handheld;
     }
@@ -1179,17 +1192,21 @@ void hid_reset() {
     g_jc2_active.store(false);
     s.background.store(true);
     for (auto& e : s.style_event) e = ServiceEvent();
+#ifdef _WIN32
     if (s.shm && s.shm->ok() && mem::is_mapped(s.shm->host(), kSize)) {
         init_shm(reinterpret_cast<uint8_t*>(s.shm->host()));
     } else {
         s.shm.reset();   // created again on first use
     }
+#else
+    s.shm.reset();
+#endif
 }
 
 void hid_sample_once() {
     HidState& s = st();
     const InputSnapshot snap = read_input();
-    const bool docked = profile().docked;
+    const bool docked = docked_mode();
     std::lock_guard<std::mutex> lk(s.mu);
     uint8_t* host = host_of(s);
     if (!host) return;

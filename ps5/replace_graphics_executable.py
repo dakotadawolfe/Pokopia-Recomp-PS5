@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--previous-sha256", required=True)
     parser.add_argument("--libc-sha256", required=True)
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--install-shared-font", action="store_true", help="Install the repository's licensed DejaVu fallback and its license")
     args = parser.parse_args()
     if args.receipt.exists() or digest(args.file) != args.sha256:
         raise ValueError("Receipt exists or replacement hash differs")
@@ -68,6 +69,44 @@ def main():
         ftp.retrbinary("RETR " + remote + "/sce_module/libc.prx", libc_hash.update)
         if libc_hash.hexdigest() != args.libc_sha256:
             raise ValueError("Installed native libc differs from the verified build")
+        if args.install_shared_font:
+            root = Path(__file__).resolve().parents[1]
+            receipt["resources"] = {}
+            for relative, source in (("fonts/DejaVuSans.ttf", root / "runtime/assets/fonts/DejaVuSans.ttf"),
+                                     ("licenses/DejaVu.txt", root / "runtime/assets/fonts/LICENSE-DejaVu.txt")):
+                target = remote + "/" + relative
+                expected = digest(source)
+                directory = target.rsplit("/", 1)[0]
+                try:
+                    ftp.cwd(directory)
+                except ftplib.error_perm as error:
+                    if not str(error).startswith("550"):
+                        raise
+                    ftp.mkd(directory)
+                    ftp.cwd(directory)
+                names = {name for name, _ in ftp.mlsd()}
+                if target.rsplit("/", 1)[1] in names:
+                    actual = hashlib.sha256()
+                    ftp.retrbinary("RETR " + target, actual.update)
+                    if actual.hexdigest() != expected:
+                        raise ValueError(f"Existing resource differs; preserving {target}")
+                else:
+                    stage = target + "." + uuid.uuid4().hex + ".part"
+                    receipt["resources"][relative] = {"sha256": expected, "staging": stage, "installed": False}; save()
+                    with source.open("rb") as stream:
+                        ftp.storbinary("STOR " + stage, stream)
+                    actual = hashlib.sha256()
+                    ftp.retrbinary("RETR " + stage, actual.update)
+                    if actual.hexdigest() != expected:
+                        raise ValueError(f"Resource staging readback differs: {relative}")
+                    stopped()
+                    ftp.rename(stage, target)
+                actual = hashlib.sha256()
+                ftp.retrbinary("RETR " + target, actual.update)
+                if actual.hexdigest() != expected:
+                    raise ValueError(f"Resource readback differs: {relative}")
+                receipt["resources"][relative] = {"sha256": expected, "installed": True}; save()
+            ftp.cwd("/")
         with backup.open("xb") as out:
             ftp.retrbinary("RETR " + remote + "/eboot.bin", out.write, blocksize=1024*1024)
         if digest(backup) != args.previous_sha256:

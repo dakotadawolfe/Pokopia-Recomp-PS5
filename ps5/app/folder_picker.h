@@ -20,6 +20,8 @@ bool save_picker_location(const std::string& config_file, const std::string& pat
 struct PickerInput {
     bool connected = false, up = false, down = false;
     bool select = false, back = false, refresh = false;
+    uint32_t native_buttons = 0;
+    uint8_t lx = 128, ly = 128, rx = 128, ry = 128;
 };
 struct PickerView {
     std::string title = "CHOOSE POKOPIA FOLDER", location, status;

@@ -41,6 +41,17 @@ struct IpcReplyResult { bool valid = false; uint32_t result = 0, magic = 0; };
 inline bool stop_on_reply(const IpcReplyResult& reply, std::string_view service, uint32_t command) {
     if (!reply.valid) return true;
     if (!reply.result) return false;
+    // Implemented offline services must return their real error to the SDK so
+    // it can take the offline path. Unknown commands still stop below and in
+    // the unhandled-command audit; these are specific protocol result codes.
+    if (service.starts_with("nn::nifm::") && reply.result == ((300u << 9) | 110u)) return false;
+    if (service.starts_with("nn::ssl::") &&
+        (reply.result == ((106u << 9) | 123u) || reply.result == ((126u << 9) | 123u))) return false;
+    if (service.starts_with("nn::bcat::") && reply.result == ((1002u << 9) | 2u)) return false;
+    if (service.starts_with("nn::ldn::") &&
+        (reply.result == ((16u << 9) | 203u) || reply.result == ((32u << 9) | 203u) || reply.result == ((65u << 9) | 203u))) return false;
+    if (service.starts_with("nn::ntc::") &&
+        (reply.result == ((1000u << 9) | 116u) || reply.result == ((1003u << 9) | 116u))) return false;
     // These ported queue operations deliberately return an empty-queue result.
     // Pass it through unchanged so the SDK can finish polling. All other
     // failures, including missing game data and unported operations, still stop.

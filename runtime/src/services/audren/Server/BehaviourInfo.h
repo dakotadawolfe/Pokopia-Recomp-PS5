@@ -37,6 +37,15 @@ class BehaviourInfo {
     // Get the revision number from the revision magic.
     static constexpr int32_t GetRevisionNumber(int32_t revision) { return (revision - BaseRevisionMagic) >> 24; }
 
+    // Switch 2 SDKs tag their native renderer with 'REv' (lower-case v) + the revision digit instead of 'REV', and the native revision goes
+    // one past ours (NativeLastRevision, 16; Eglantine NX2_NOTES rows 38-39). GetRevisionNumber already reads such a tag (the case bit sits
+    // below the shifted-out bytes); only the validity check and the update-header comparison need to know about it.
+    static constexpr int32_t NativeCaseBit = 0x20 << 16;   // 'v' - 'V'
+    static constexpr int32_t NativeLastRevision = 16;
+    static constexpr bool IsNativeRevision(int32_t revision) { return (revision & 0x00FFFFFF) == (BaseRevisionMagic & 0x00FFFFFF) + NativeCaseBit; }
+    // True when the two revision tags differ at most in the case of the 'V' (the open call and later update headers may disagree on it).
+    static constexpr bool SameRevision(int32_t a, int32_t b) { return (a ^ b) == 0 || (((a ^ b) & ~NativeCaseBit) == 0 && GetRevisionNumber(a) == GetRevisionNumber(b)); }
+
     // Current active revision (C# `{ get; private set; }`, so it is a plain member set through SetUserRevision).
     int32_t UserRevision = 0;
 
@@ -58,7 +67,10 @@ class BehaviourInfo {
     void UpdateFlags(uint64_t flags) { _flags = flags; }
 
     // Check if a given revision is valid/supported.
-    static bool CheckValidRevision(int32_t revision) { return GetRevisionNumber(revision) <= GetRevisionNumber(ProcessRevision); }
+    static bool CheckValidRevision(int32_t revision) {
+        const int32_t number = GetRevisionNumber(revision);
+        return number <= GetRevisionNumber(ProcessRevision) || (IsNativeRevision(revision) && number <= NativeLastRevision);
+    }
 
     // Check if the given revision is greater than or equal the supported revision.
     static bool CheckFeatureSupported(int32_t revision, int32_t supportedRevision) {

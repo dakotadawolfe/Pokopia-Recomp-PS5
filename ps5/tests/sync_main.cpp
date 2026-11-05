@@ -69,6 +69,8 @@ int main() {
     constexpr const char* prefix = "ipc-runtime";
 #elif defined(NXRT_TEST_TIME)
     constexpr const char* prefix = "time-runtime";
+#elif defined(NXRT_TEST_AUDIO)
+    constexpr const char* prefix = "audio-runtime";
 #elif defined(NXRT_TEST_LOADER)
     constexpr const char* prefix = "loader-runtime";
 #elif defined(NXRT_GAME_STARTUP_TRACE)

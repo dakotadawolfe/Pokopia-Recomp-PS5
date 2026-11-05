@@ -3,7 +3,7 @@
 // the worker thread that drives every open AudioRenderSystem through the AudioProcessor.
 //
 // Deviations from the C#, all forced by the port conventions or by C++ ownership:
-//   * ITickSource is the struct TickSource below (steady_clock scaled to the 19.2 MHz guest tick).
+//   * ITickSource is the struct TickSource below (the registered console's monotonic guest clock).
 //   * OpenAudioRenderer hands the renderer out as std::unique_ptr; the manager keeps raw pointers only (non-owning) in its table, as
 //     the C# keeps references. The renderer unregisters itself when it is destroyed or disposed.
 //   * IVirtualMemoryManager is dropped (guest memory is host memory). The work buffer is a zeroed std::vector of workBufferSize bytes.
@@ -30,12 +30,10 @@
 
 namespace nxrt::audren {
 
-// C# ITickSource: a monotonic clock in guest ticks. Counter() is steady_clock nanoseconds scaled to 19.2 MHz: ns * 192 / 10000.
+// C# ITickSource: counter and frequency both use the registered console's guest clock.
 struct TickSource {
     uint64_t Counter() const {
-        uint64_t ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-
-        return ns * 192 / 10000;
+        return nxrt::kernel::system_tick();
     }
 
     uint64_t Frequency() const { return nxrt::kernel::tick_hz(); }   // the console tick (Constants::TargetTimerFrequency on Switch 1)
@@ -129,12 +127,19 @@ class AudioRendererManager {
     // `workBufferAddress` is the guest address of the work buffer; `workBufferSize` bytes are allocated for the renderer.
     ResultCode OpenAudioRenderer(std::unique_ptr<AudioRenderSystem>& renderer, AudioRendererConfiguration& parameter, uint64_t appletResourceUserId,
                                  uint64_t workBufferAddress, uint64_t workBufferSize, uint32_t processHandle) {
+        renderer.reset();
+        if (!BehaviourInfo::CheckValidRevision(parameter.revision)) return ResultCode::OperationFailed;
+        if (parameter.rendering_device != server::AudioRendererRenderingDevice::Dsp ||
+            parameter.execution_mode != server::AudioRendererExecutionMode::Auto) return ResultCode::UnsupportedOperation;
+        const uint64_t required = GetWorkBufferSize(parameter);
+        if (required > workBufferSize) return ResultCode::WorkBufferTooSmall;
         int32_t sessionId = AcquireSessionId();
+        if (sessionId < 0) return ResultCode::OperationFailed;
 
         auto audioRenderer = std::make_unique<AudioRenderSystem>(*this, _sessionsSystemEvent[static_cast<size_t>(sessionId)]);
 
         // TODO (C#): Eventually, we should try to use the guest supplied work buffer instead of allocating our own.
-        std::vector<uint8_t> workBufferMemory(static_cast<size_t>(workBufferSize), 0);
+        std::vector<uint8_t> workBufferMemory(static_cast<size_t>(required), 0);
 
         ResultCode result = audioRenderer->Initialize(parameter, processHandle, std::move(workBufferMemory), workBufferAddress, workBufferSize,
                                                       sessionId, appletResourceUserId);
@@ -144,10 +149,10 @@ class AudioRendererManager {
 
             Register(renderer.get());
         } else {
-            // The session id is released by the renderer's own Unregister when it is destroyed here (C# releases it by hand).
+            // An unregistered renderer must not release a different live session.
             audioRenderer.reset();
-
-            renderer.reset();
+            std::lock_guard<std::mutex> guard(_sessionLock);
+            ReleaseSessionIdLocked(sessionId);
         }
 
         return result;
@@ -191,7 +196,7 @@ class AudioRendererManager {
 
         int32_t index = _activeSessionCount;
 
-        NXAUDREN_ASSERT(static_cast<size_t>(index) < _sessionIds.size());
+        if (_disposeState.load() || static_cast<size_t>(index) >= _sessionIds.size()) return -1;
 
         int32_t sessionId = _sessionIds[static_cast<size_t>(index)];
 
@@ -309,6 +314,9 @@ class AudioRendererManager {
             std::lock_guard<std::mutex> guard(_sessionLock);
 
             int32_t sessionId = renderer->GetSessionId();
+
+            if (sessionId < 0 || static_cast<size_t>(sessionId) >= _sessions.size() ||
+                _sessions[static_cast<size_t>(sessionId)] != renderer) return;
 
             _sessions[static_cast<size_t>(renderer->GetSessionId())] = nullptr;
 

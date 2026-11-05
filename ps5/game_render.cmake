@@ -45,6 +45,7 @@ target_sources(${target} PRIVATE "${startup_expectations}/private_startup_inputs
     "${root}/ps5/tests/game_trace_guards.cpp" "${root}/ps5/gfx/game_renderer.cpp"
     "${root}/ps5/tests/test_host_jumps.cpp"
     "${root}/ps5/app/startup_checkpoint.cpp"
+    "${root}/ps5/app/game_input.cpp"
     "${root}/runtime/tests/test_eh.cpp" "${root}/runtime/tests/test_eh_abi3.cpp" "${root}/runtime/tests/test_eh_typeinfo.cpp")
 # Import only the platform statistics declaration, without placing another
 # SDK's C headers before the compiler's own C++/sysroot headers.
