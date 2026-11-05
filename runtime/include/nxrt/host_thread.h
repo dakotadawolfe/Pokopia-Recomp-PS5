@@ -10,6 +10,8 @@ namespace nxrt::host_thread {
 // thread's registers, handle and scheduling can be published before execution.
 // Destruction joins a running worker, or cancels an unstarted gate. The owner
 // must outlive its entry function; destroying it on its own worker is invalid.
+// PS5 stacks use owned direct memory with an inaccessible lower guard page.
+// A successful join releases that backing; waiting for entry completion does not.
 class Thread {
 public:
     using Entry = void (*)(void*);

@@ -634,6 +634,84 @@ receipts are `game-renderer-account-result-console.json` and
 `game-renderer-locale-install-console.json`. The combined build is installed;
 game startup beyond the add-on status query remains unverified.
 
+## Worker stack allocation
+
+Report `game-native-1793838222-107.log` passes the add-on status query and the
+offline account/profile calls. The next failure is SVC `09` (StartThread),
+handle `0x10019`, returning `0xce01` (OutOfResource). Two earlier guest workers
+started successfully. The game then sets its termination result and calls
+Break (`26`); the observer stops with status 2. At 225 SVC calls, the report
+still records zero submissions, draws and presents. The loading message is
+not evidence that a game frame was generated.
+
+The native link routes thread creation through the pinned graphics platform's
+stack wrapper. In SDK revision `b83202be73e930050e00de0f1b4d9ec46c0391bf`,
+[`platform/src/threads.c`](https://github.com/mihawk-99/PS5_PayloadSDK/blob/b83202be73e930050e00de0f1b4d9ec46c0391bf/platform/src/threads.c)
+uses direct memory only for default/small stacks; an explicit size at least
+2 MiB takes the plain libkernel path. Our 64 MiB guest-worker stacks therefore
+used the limited flexible-memory pool. This is a source-supported explanation
+for the resource failure, not a captured native errno from that earlier run.
+
+The PS5 host-worker backend now owns direct-memory backing for its requested
+stack size, rounded to a host page, and supplies the address to pthreads.
+An unbacked lower guard page remains inaccessible. It releases the reservation
+and backing after a successful ordinary or timed join, including all TLS
+destruction, or if creation fails. Timeouts and entry-completion observations
+retain the stack. The guest default remains 64 MiB; this is an allocation-path
+change, not a stack-size reduction or a native-memory-capacity claim.
+
+Failures now record their stage and native errno; kernel logs record worker
+handles, entry points and requested sizes. A fatal four-byte SDK Break result
+is captured only when its guest buffer is readable. Break remains fatal;
+there is no new error-success bypass.
+
+The host platform CTest passes. Console component validation:
+
+| Report | Cases | Failures |
+| --- | ---: | ---: |
+| `platform-1793839390-148.log` | 78 | 0 |
+| `kernel-runtime-1793839473-151.log` | 22 | 0 |
+| `svc-runtime-1793839423-150.log` | 163 | 0 |
+
+The new concurrency case runs two rounds of eight workers, verifies actual
+stack addresses/sizes, executes with 1 MiB of local stack data, checks writable
+stack/inaccessible guard protections, and checks unmapping after both join
+paths. Payloads report a zero direct-memory limit and cannot support the
+native-app-sized test: the initial free-range query failed, and the subsequent
+64 MiB-per-worker attempt hit allocation error `80020023`. Those reports remain
+`platform-1793838747-128.log` and `platform-1793838844-132.log`. The final test
+uses eight 8 MiB stacks in the payload sandbox, or eight 64 MiB stacks when
+run as a native app with a reported memory budget. Only the payload variant
+has been executed. Existing cases also cover explicit exit, TLS destructors,
+unstarted cancellation, timed join retry and guest-thread lifecycle.
+
+The first kernel run lacked its original TLS fixture and failed one case.
+`runtime/tests/data/fixture_aarch64.elf` was restored to the reusable console
+test-data directory and readback-verified with SHA-256
+`9d4b3055134b2035d01c679713e4214a82c2ff85e7082b4838d7a91360cde27a`;
+the unchanged kernel payload then passed all 22 cases. No game files were used
+for these component tests. Payload identities, in table order:
+
+- `2fa65f516895ad34f86238d1dbe4b5f631e7868ac84f4be34a2175306681fe16`
+- `a82c8b87454c0dfb12ac94d18fc2663eaa5630eaf78280bb7ed93f2b21fb62ad`
+- `c9e5e8c0cd7f7af3c5fe02e31b443535cf85652148d1a5cac7754ced5bf75315`
+
+The native build and packaging pass. FSELF: 278,480,097 bytes, SHA-256
+`c2ec629b879be7e910376070e0bae2d887a891217491dbf528c692c16071af91`.
+Native ELF: 284,279,676 bytes, SHA-256
+`d7d17583882000b41ce28e7b4c617ad5a6a436e7c401c1bd8b693174454df3b2`.
+Only the executable differs from the preceding locale package. Actual game
+startup beyond the failing worker and the 64 MiB native stack path still need
+the next native launch.
+
+`game-renderer-thread-stacks-install.json` records replacement with the title
+stopped/unmounted, a verified backup, and matching staged/final full-file SHA-256
+readbacks. The installed hash is `c2ec629b879be7e910376070e0bae2d887a891217491dbf528c692c16071af91`.
+The transfer helper (PID 122) and all seven owned payload slots were removed;
+port 2121 is closed. The receipt is `game-renderer-thread-stacks-console.json`.
+The previous helper had already disappeared in the console restart and its
+remaining slot was also removed. No app launch was initiated during this batch.
+
 ## Interpreting a run
 
 Reports are `/data/pokopia-recomp/tests/game-native-<time>-<pid>.log`.

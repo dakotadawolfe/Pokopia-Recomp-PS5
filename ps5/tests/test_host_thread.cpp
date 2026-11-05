@@ -8,6 +8,13 @@
 #include <cerrno>
 #include <stdexcept>
 #include <thread>
+#ifdef NXRT_TARGET_PS5
+#include <pthread.h>
+#include <pthread_np.h>
+extern "C" int sceKernelQueryMemoryProtection(void*, void**, void**, uint32_t*);
+extern "C" int64_t sceKernelGetDirectMemorySize();
+extern "C" int sceKernelAvailableDirectMemorySize(int64_t, int64_t, size_t, int64_t*, size_t*);
+#endif
 
 NXTEST_GROUP(host_thread)
 using nxrt::host_thread::Thread;
@@ -207,3 +214,88 @@ NXTEST(host_workers_execute_lifted_code_with_independent_registers) {
         CHECK_EQ(*reinterpret_cast<uint64_t*>(contexts[i].registers.x[1]), uint64_t{0x1234} + i);
     }
 }
+
+#ifdef NXRT_TARGET_PS5
+NXTEST(host_workers_use_concurrent_large_guarded_stacks_and_release_them_after_join) {
+    constexpr size_t worker_count = 8;
+    const auto page = nxrt::host_vm::page_size();
+    int64_t free_at = -1;
+    size_t free_bytes = 0;
+    const int64_t limit = sceKernelGetDirectMemorySize();
+    REQUIRE(limit >= 0);
+    // The payload sandbox cannot allocate the game's native-app budget.
+    // Exercise the same guard/ownership path at 8 MiB there, 64 MiB in an app.
+    const size_t stack_bytes = (limit ? 64u : 8u) << 20;
+    if (limit) {
+        REQUIRE(sceKernelAvailableDirectMemorySize(0, limit, page, &free_at, &free_bytes) == 0);
+        REQUIRE(free_bytes >= stack_bytes * worker_count + (256u << 20));
+    }
+    // Payloads report limit=0: allocation accepts that sentinel, but the free
+    // range query does not. This is not a native-app capacity measurement.
+    std::printf("HOST_STACK_BUDGET direct_limit=%lld largest_free=%zu query_available=%u concurrent_bytes=%zu\n",
+        static_cast<long long>(limit), free_bytes, limit != 0, stack_bytes * worker_count);
+    for (unsigned round = 0; round < 2; ++round) {
+        struct Context {
+            std::atomic<bool> ready{false}, release{false};
+            uintptr_t base = 0;
+            size_t size = 0;
+            bool attributes_ok = false, inside_stack = false;
+        };
+        std::array<Context, worker_count> contexts{};
+        std::array<std::unique_ptr<Thread>, worker_count> workers;
+        struct Release {
+            decltype(contexts)& items;
+            ~Release() { for (auto& item : items) item.release = true; }
+        } release{contexts};
+        for (size_t i = 0; i < worker_count; ++i) {
+            workers[i] = Thread::create(+[](void* raw) {
+                auto& context = *static_cast<Context*>(raw);
+                pthread_attr_t attributes;
+                if (pthread_attr_init(&attributes) == 0) {
+                    void* base = nullptr;
+                    context.attributes_ok = pthread_attr_get_np(pthread_self(), &attributes) == 0 &&
+                        pthread_attr_getstack(&attributes, &base, &context.size) == 0;
+                    context.base = reinterpret_cast<uintptr_t>(base);
+                    pthread_attr_destroy(&attributes);
+                }
+                volatile unsigned char local[1u << 20];
+                for (size_t n = 0; n < sizeof local; n += 4096) local[n] = 0x5a;
+                const auto address = reinterpret_cast<uintptr_t>(&local[0]);
+                context.inside_stack = address >= context.base && address + sizeof local <= context.base + context.size;
+                context.ready = true;
+                while (!context.release) std::this_thread::sleep_for(1ms);
+                for (size_t n = 0; n < sizeof local; n += 4096)
+                    if (local[n] != 0x5a) context.inside_stack = false;
+            }, &contexts[i], stack_bytes);
+            REQUIRE(workers[i]);
+            REQUIRE(workers[i]->start());
+        }
+        const auto until = std::chrono::steady_clock::now() + 5s;
+        for (auto& context : contexts) {
+            while (!context.ready && std::chrono::steady_clock::now() < until) std::this_thread::yield();
+            REQUIRE(context.ready);
+            CHECK(context.attributes_ok);
+            CHECK_EQ(context.size, stack_bytes);
+            CHECK(context.inside_stack);
+            void* first = nullptr; void* last = nullptr;
+            uint32_t flags = 0;
+            REQUIRE(sceKernelQueryMemoryProtection(reinterpret_cast<void*>(context.base), &first, &last, &flags) == 0);
+            CHECK_EQ(flags & 7u, 3u);
+            flags = 0;
+            const int guard = sceKernelQueryMemoryProtection(reinterpret_cast<void*>(context.base - page), &first, &last, &flags);
+            CHECK(guard != 0 || (flags & 7u) == 0);
+        }
+        for (auto& context : contexts) context.release = true;
+        for (size_t i = 0; i < worker_count; ++i) {
+            // Both join paths must release our stack only after real TLS exit.
+            REQUIRE(i % 2 ? workers[i]->join() : workers[i]->join_for(5s));
+            CHECK(contexts[i].inside_stack);
+            CHECK(!workers[i]->failure());
+            void* first = nullptr; void* last = nullptr; uint32_t flags = 0;
+            const int query = sceKernelQueryMemoryProtection(reinterpret_cast<void*>(contexts[i].base), &first, &last, &flags);
+            CHECK(query != 0 || (flags & 7u) == 0);
+        }
+        std::printf("HOST_STACK_ROUND round=%u workers=%zu bytes_each=%zu\n", round, worker_count, stack_bytes);
+    }
+}
+#endif

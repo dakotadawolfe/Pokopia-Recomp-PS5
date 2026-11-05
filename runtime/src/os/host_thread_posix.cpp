@@ -5,6 +5,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstdio>
+#include <limits>
 #include <mutex>
 #include <pthread.h>
 #ifdef __FreeBSD__
@@ -12,6 +14,9 @@
 #endif
 #include <thread>
 #include <utility>
+#ifdef NXRT_TARGET_PS5
+#include "nxrt/ps5_vm.h"
+#endif
 #ifdef __GLIBC__
 #include <bits/cxxabi_forced.h>
 #endif
@@ -27,6 +32,9 @@ struct Thread::State {
     bool started = false, cancel_gate = false, finished = false;
     std::atomic<bool> joined{false};
     std::exception_ptr failure;
+#ifdef NXRT_TARGET_PS5
+    std::unique_ptr<ps5_vm::Reservation> stack;
+#endif
     State(Entry function, void* arg) : entry(function), argument(arg) {}
 };
 
@@ -37,17 +45,54 @@ std::unique_ptr<Thread> Thread::create(Entry entry, void* argument, size_t stack
     pthread_attr_t attributes;
     int error = pthread_attr_init(&attributes);
     if (error) { errno = error; return {}; }
+    const char* stage = "attributes";
     if (stack_bytes) error = pthread_attr_setstacksize(&attributes, stack_bytes);
     if (!error) error = pthread_attr_getstacksize(&attributes, &state->stack_size);
     // Allocate the owner before starting a worker: a failed C++ allocation must
     // never abandon a live thread that refers to freed state.
     std::unique_ptr<Thread> result;
-    try { if (!error) result.reset(new Thread(std::move(state))); }
+    try {
+#ifdef NXRT_TARGET_PS5
+        // Explicit large stack sizes bypass the graphics platform's default
+        // stack wrapper and otherwise consume libkernel's flexible-memory pool.
+        // Own direct backing until join, including pthread_exit and TLS cleanup.
+        if (!error) {
+            stage = "direct-stack";
+            const size_t page = host_vm::page_size();
+            if (!page || state->stack_size > std::numeric_limits<size_t>::max() - 2 * page) {
+                error = EOVERFLOW;
+            } else {
+                const size_t bytes = ((state->stack_size + page - 1) / page) * page;
+                auto mapping = ps5_vm::Reservation::reserve(bytes + page);
+                if (!mapping) error = errno;
+                else {
+                    auto backing = ps5_vm::DirectMemory::allocate(bytes);
+                    if (!backing || !mapping.map(page, backing, 0, bytes, host_vm::Access::ReadWrite)) error = errno;
+                    else {
+                        state->stack = std::make_unique<ps5_vm::Reservation>(std::move(mapping));
+                        state->stack_size = bytes;
+                        stage = "stack-attributes";
+                        error = pthread_attr_setstack(&attributes,
+                            static_cast<unsigned char*>(state->stack->data()) + page, bytes);
+                        // The reserved, unbacked first page is our guard.
+                        if (!error) error = pthread_attr_setguardsize(&attributes, 0);
+                    }
+                }
+            }
+        }
+#endif
+        if (!error) result.reset(new Thread(std::move(state)));
+    }
     catch (...) { pthread_attr_destroy(&attributes); throw; }
-    if (!error) error = pthread_create(&result->state_->worker, &attributes, run, result->state_.get());
+    if (!error) {
+        stage = "pthread-create";
+        error = pthread_create(&result->state_->worker, &attributes, run, result->state_.get());
+    }
     pthread_attr_destroy(&attributes);
     if (error) {
         if (result) result->state_.reset(); // No worker owns this failed creation.
+        state.reset();
+        std::fprintf(stderr, "HOST_THREAD_FAIL stage=%s requested_stack=%zu errno=%d\n", stage, stack_bytes, error);
         errno = error;
         return {};
     }
@@ -111,6 +156,9 @@ bool Thread::join() {
     }
     const int error = pthread_join(state_->worker, nullptr);
     if (error) { errno = error; return false; }
+#ifdef NXRT_TARGET_PS5
+    state_->stack.reset();
+#endif
     state_->joined = true;
     return true;
 }
@@ -147,7 +195,13 @@ bool Thread::join_for(std::chrono::milliseconds timeout) {
         absolute.tv_sec += absolute.tv_nsec / 1000000000;
         absolute.tv_nsec %= 1000000000;
         const int error = pthread_timedjoin_np(state_->worker, nullptr, &absolute);
-        if (!error) { state_->joined = true; return true; }
+        if (!error) {
+#ifdef NXRT_TARGET_PS5
+            state_->stack.reset();
+#endif
+            state_->joined = true;
+            return true;
+        }
         if (error != ETIMEDOUT || Clock::now() >= until) { errno = error; return false; }
     }
 }

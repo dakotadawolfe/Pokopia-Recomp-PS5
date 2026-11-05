@@ -475,6 +475,15 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
     constexpr bool allowed = Number == 2 || Number == 3 || Number == 6 || Number == 0x27 || Number == 0x29;
 #endif
     if (!rtld_handlers[Number] || !allowed) {
+        if constexpr (Number == 0x26) {
+            // A fatal SDK result normally points to one four-byte value. Keep
+            // Break fatal, but retain that value instead of hiding the cause.
+            if (d == sizeof(uint32_t) && mem::SubpageMap::allows(b, sizeof(uint32_t), 1)) {
+                uint32_t result = 0;
+                std::memcpy(&result, reinterpret_cast<const void*>(b), sizeof result);
+                std::printf("GAME_BREAK reason=%llx result=%08x\n", static_cast<unsigned long long>(a), result);
+            }
+        }
         std::printf("RTLD_STOP svc=%02zx fn=%llx lr=%llx x0=%llx x1=%llx x2=%llx\n", Number,
             static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]),
             static_cast<unsigned long long>(a), static_cast<unsigned long long>(b), static_cast<unsigned long long>(d));

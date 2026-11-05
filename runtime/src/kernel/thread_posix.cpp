@@ -139,17 +139,24 @@ uint32_t thread_start(uint32_t handle) {
     if (bytes > std::numeric_limits<size_t>::max()) return kOutOfResource;
     try { t->worker = host_thread::Thread::create(run, t.get(), static_cast<size_t>(bytes)); }
     catch (const std::bad_alloc&) { return kOutOfMemory; }
-    if (!t->worker) return kOutOfResource;
+    if (!t->worker) {
+        NXLOG_E("kernel", "host thread creation failed: handle=%x entry=%llx stack=%llu errno=%d",
+                handle, static_cast<unsigned long long>(t->entry), static_cast<unsigned long long>(bytes), errno);
+        return kOutOfResource;
+    }
     {
         detail::KernelGuard lock;
         t->started = true;
     }
     if (!t->worker->start()) {
+        NXLOG_E("kernel", "host thread start gate failed: handle=%x errno=%d", handle, errno);
         t->worker.reset();
         detail::KernelGuard lock;
         t->started = false;
         return kOutOfResource;
     }
+    NXLOG_I("kernel", "host thread started: handle=%x entry=%llx stack=%zu", handle,
+            static_cast<unsigned long long>(t->entry), t->worker->stack_size());
     return kOk;
 }
 
