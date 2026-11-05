@@ -9,6 +9,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -27,7 +28,7 @@ def checked_name(name):
     return name
 
 
-def prepare(previous, previous_manifest, addition, selection, output, validator, replace_existing=False):
+def prepare(previous, previous_manifest, addition, selection, output, validator, replace_existing=False, hardlink=False):
     previous, addition = previous.resolve(strict=True), addition.resolve(strict=True)
     output = output.resolve()
     if output.exists() or any(root == output or root in output.parents for root in (previous, addition)):
@@ -64,7 +65,10 @@ def prepare(previous, previous_manifest, addition, selection, output, validator,
         raise ValueError("Empty shader cache")
     output.mkdir(parents=True)
     for key, path in files.items():
-        shutil.copyfile(path, output / (key + ".spv"))
+        if hardlink:
+            os.link(path, output / (key + ".spv"))
+        else:
+            shutil.copyfile(path, output / (key + ".spv"))
     with (output / "results.tsv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, delimiter="\t", lineterminator="\n")
         writer.writeheader()
@@ -88,6 +92,7 @@ if __name__ == "__main__":
         parser.add_argument(name, type=Path)
     parser.add_argument("--spirv-val", type=Path, required=True)
     parser.add_argument("--replace-existing", action="store_true", help="Replace changed translations after a compiler correction, recording every replaced key")
+    parser.add_argument("--hardlink", action="store_true", help="Link immutable SPIR-V inputs on the same filesystem to avoid duplicating large private caches; never edit linked files in place")
     args = parser.parse_args()
     prepare(args.previous_cache, args.previous_manifest, args.addition,
-            args.selection, args.output, args.spirv_val, args.replace_existing)
+            args.selection, args.output, args.spirv_val, args.replace_existing, args.hardlink)

@@ -1133,12 +1133,26 @@ void dump_missing_block(const std::string& hash, const uint8_t* code, const uint
     if (dir.empty()) return;
     static std::mutex mu;
     static std::unordered_set<std::string> done;
+    static uint64_t written = 0;
+    static bool budget_reported = false;
     std::lock_guard<std::mutex> lk(mu);
     if (!done.insert(hash).second) return;
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     const ShaderControl c = read_control(control);
     const uint32_t kCtrlBytes = c.nvn2 ? std::max<uint32_t>(0xd8, rd32(control + 0x30)) : 0x880;
+    if (kCtrlBytes > 0x10000) {
+        NXLOG_W("nvn", "shader capture rejected oversized control for %s", hash.c_str());
+        return;
+    }
+    const auto configured = nxrt::config_get_int("nvn", "dump_missing_max_bytes", 64ll << 20);
+    const uint64_t bytes = uint64_t(code_size) + kCtrlBytes + 512;
+    if (configured <= 0 || bytes > uint64_t(configured) || written > uint64_t(configured) - bytes) {
+        if (!budget_reported) NXLOG_W("nvn", "shader capture reached its configured byte limit");
+        budget_reported = true;
+        return;
+    }
+    written += bytes;
     uint32_t stage_word = 0;
     if (c.nvn2) stage_word = static_cast<uint32_t>(c.stage);
     else std::memcpy(&stage_word, control + 0x714, 4);
@@ -1147,10 +1161,14 @@ void dump_missing_block(const std::string& hash, const uint8_t* code, const uint
     {
         std::ofstream f(dir + "/code_" + hash + ".bin", std::ios::binary | std::ios::trunc);
         f.write(reinterpret_cast<const char*>(code), code_size);
+        f.close();
+        if (!f) { NXLOG_W("nvn", "shader code capture failed for %s", hash.c_str()); return; }
     }
     {
         std::ofstream f(dir + "/ctrl_" + hash + ".bin", std::ios::binary | std::ios::trunc);
         f.write(reinterpret_cast<const char*>(control), kCtrlBytes);
+        f.close();
+        if (!f) { NXLOG_W("nvn", "shader control capture failed for %s", hash.c_str()); return; }
     }
     const std::string manifest = dir + "/manifest.tsv";
     const bool fresh = !std::filesystem::exists(manifest, ec);
@@ -1160,6 +1178,8 @@ void dump_missing_block(const std::string& hash, const uint8_t* code, const uint
     std::snprintf(row, sizeof row, "run_%s\t%s\t0x0\t0x%x\t0x0\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t%s\tcode_%s.bin\tctrl_%s.bin\n", hash.c_str(), stage, code_size,
                   kCtrlBytes, c.program_start, c.program_size, c.const_offset, c.const_size, hash.c_str(), hash.c_str(), hash.c_str());
     m << row;
+    m.close();
+    if (!m) NXLOG_W("nvn", "shader capture manifest write failed for %s", hash.c_str());
 }
 }  // namespace
 

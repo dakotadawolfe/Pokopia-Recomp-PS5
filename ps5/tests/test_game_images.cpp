@@ -31,6 +31,7 @@ extern "C" int sceKernelAvailableDirectMemorySize(int64_t, int64_t, size_t, int6
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <string>
 #ifdef NXRT_TEST_RTLD
 #include "nxrt/config.h"
@@ -222,6 +223,10 @@ void report_startup_profile(bool detailed);
     throw ProbeStop{};
 }
 std::mutex sdk_ipc_probe_mutex;
+// Called while holding sdk_ipc_probe_mutex. Retain first calls and periodic
+// counts without writing a line for every audio buffer or asset read.
+std::map<std::pair<std::string, uint32_t>, uint64_t> sdk_request_counts;
+bool trace_occurrence(uint64_t n) { return n <= 4 || (n & (n - 1)) == 0 || n % 1024 == 0; }
 std::array<nxrt::SvcHandler, nxrt::kSvcCount> rtld_handlers{};
 std::atomic<unsigned> rtld_calls{0};
 #ifdef NXRT_GAME_RENDER_NATIVE
@@ -620,9 +625,10 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
                     if (magic == 0x49434653) command = read_word(header + 8);
                 }
                 if (target && command != UINT32_MAX) {
-                    std::printf("SDK_REQUEST service=%s command=%u protocol=%s raw_bytes=%zu copies=%zu moves=%zu\n",
+                    const auto count = ++sdk_request_counts[{target->name(), command}];
+                    if (trace_occurrence(count)) std::printf("SDK_REQUEST service=%s command=%u protocol=%s raw_bytes=%zu copies=%zu moves=%zu calls=%llu\n",
                         target->name().c_str(), command, tipc_request ? "TIPC" : "CMIF",
-                        message.raw.size(), message.copy.size(), message.move.size());
+                        message.raw.size(), message.copy.size(), message.move.size(), static_cast<unsigned long long>(count));
                 }
                 if (target && (tipc_request || magic == 0x49434653)) {
                     check_ipc_result = true; cmif_header = header;
@@ -717,21 +723,28 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
     }
     if constexpr (Number == 0x21 || Number == 0x22) {
         if constexpr (!startup_trace) std::printf("SDK_IPC %s\n", nxrt::ipc::ipc_summary().c_str());
-        for (const auto& stats : nxrt::ipc::service_stats()) {
-            if (stats.requests && (stats.name == "IDisplayController" || stats.name == "IDebugFunctions")) {
-                std::printf("SDK_STOP unbacked endpoint used: %s\n", stats.name.c_str()); stop_probe();
+        if (ipc_target == "IDisplayController" || ipc_target == "IDebugFunctions") {
+            std::printf("SDK_STOP unbacked endpoint used: %s\n", ipc_target.c_str()); stop_probe();
+        }
+        // The ordinary path does not need copies of every service's counters.
+        // Keep the detailed audit whenever a stub or unknown command occurred.
+        if (nxrt::ipc::has_unsupported_requests()) {
+            for (const auto& stats : nxrt::ipc::service_stats()) {
+                if (stats.requests && (stats.name == "IDisplayController" || stats.name == "IDebugFunctions")) {
+                    std::printf("SDK_STOP unbacked endpoint used: %s\n", stats.name.c_str()); stop_probe();
+                }
+                if (!stats.unhandled.empty()) {
+                    for (const auto& [cmd, count] : stats.unhandled)
+                        std::printf("SDK_STOP service=%s command=%u calls=%llu\n", stats.name.c_str(), cmd, static_cast<unsigned long long>(count));
+                    stop_probe();
+                }
             }
-            if (!stats.unhandled.empty()) {
-                for (const auto& [cmd, count] : stats.unhandled)
-                    std::printf("SDK_STOP service=%s command=%u calls=%llu\n", stats.name.c_str(), cmd, static_cast<unsigned long long>(count));
+            const auto missing = nxrt::ipc::stub_names_requested();
+            if (!missing.empty()) {
+                for (const auto& name : missing) std::printf("SDK_STOP unported service=%s fn=%llx lr=%llx\n", name.c_str(),
+                    static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]));
                 stop_probe();
             }
-        }
-        const auto missing = nxrt::ipc::stub_names_requested();
-        if (!missing.empty()) {
-            for (const auto& name : missing) std::printf("SDK_STOP unported service=%s fn=%llx lr=%llx\n", name.c_str(),
-                static_cast<unsigned long long>(c->fn), static_cast<unsigned long long>(c->x[30]));
-            stop_probe();
         }
     }
 #endif
@@ -739,7 +752,9 @@ template<size_t Number> void rtld_svc(::Ctx* c) {
     // SleepThread and SignalProcessWideKey return void; GetSystemTick returns
     // a counter. Their nonzero x0 values are not error Results.
     constexpr bool returns_result = Number != 0x0b && Number != 0x1d && Number != 0x1e;
-    const bool trace_result = trace_call || (returns_result && c->x[0]);
+    static std::atomic<uint64_t> result_logs{0};
+    const bool trace_result = trace_call || (returns_result && c->x[0] &&
+        trace_occurrence(result_logs.fetch_add(1, std::memory_order_relaxed) + 1));
 #else
     const bool trace_result = trace_call || c->x[0];
 #endif

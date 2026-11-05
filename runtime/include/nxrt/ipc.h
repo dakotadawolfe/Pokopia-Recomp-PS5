@@ -100,6 +100,9 @@ bool has_service(const std::string& name);                           // a real (
 std::shared_ptr<Service> make_service(const std::string& name);
 std::vector<std::string> service_names();                            // registered real services
 std::vector<std::string> stub_names_requested();                     // names that were asked for and answered by a stub
+// Cheap diagnostic gate; detailed names/counts remain available above and in
+// service_stats(). Registry reset clears both kinds of unsupported request.
+bool has_unsupported_requests();
 void registry_reset();                                               // tests: forget registrations and counters, keep the built-in sm:
 
 // The service manager as an object (also reachable through connect_named_port("sm:")).

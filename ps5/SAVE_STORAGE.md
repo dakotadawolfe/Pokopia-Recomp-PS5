@@ -55,8 +55,8 @@ I/O failures and unported commands.
 - The native game app runs a small `/download0` write/commit/reopen/recovery
   check before startup and removes its synthetic fixture. It also verifies
   that a positive 20 ms thread sleep really waits. Failure prevents the game
-  from starting. These native checks still need the next manual launch;
-  payload results do not prove the app's filesystem permissions.
+  from starting. The native results below establish the app's permissions
+  separately from the payload checks.
 
 ### Native free-space query correction
 
@@ -74,7 +74,23 @@ I/O failure is ignored. Thirty-nine component cases pass on PS5 in private
 report `fs-runtime-1793902774-112.log`, including injected `_fstatfs`/`lstat`
 permission errors, commit recovery, extension, quota limits, write failures,
 and genuine zero-space/I/O-error replies. The fourteen host volume cases pass.
-The native save round trip and game startup still require a manual run.
+The following native run verifies the save round trip and passes game startup's
+save-creation request; actual gameplay saving remains unverified.
+
+### Native round trip and game save creation
+
+Private report `game-native-1793904273-113.log` records successful native
+write, commit, rollback and interrupted-commit recovery in `/download0`.
+The synthetic fixture was removed. The positive 20 ms sleep measured 20,072 us.
+The real game subsequently created its 64 MiB account save and 64 MiB journal
+policy at about 698 seconds, then requested the save mount through `fsp-srv`
+command 51. No filesystem/service failure stopped that run. This does not
+establish that gameplay wrote a save or that it appears in PS5 Saved Data.
+
+The app reached its diagnostic watchdog, returned status 2 and exited.
+The newly reached stage requested shaders absent from the private cache;
+no interactive menu or gameplay frame was verified. See
+[the combined startup batch](STARTUP_BATCH.md#save-stage-shaders-and-diagnostic-overhead).
 
 The corrected private app from `8c95e65` is installed with full executable
 readback verification: 279,847,321 bytes, SHA-256

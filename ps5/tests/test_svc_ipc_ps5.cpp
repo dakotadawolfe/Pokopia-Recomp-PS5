@@ -36,6 +36,8 @@ uint32_t call(Ctx& c, unsigned n) { nxrt::svc_dispatch(&c, n); return c.x[0]; }
 template<class T> void push(std::vector<uint8_t>& bytes, T v) {
     const auto offset = bytes.size(); bytes.resize(offset + sizeof v); std::memcpy(bytes.data() + offset, &v, sizeof v);
 }
+
+
 uint32_t word(const std::vector<uint8_t>& bytes, size_t offset) {
     uint32_t v = UINT32_MAX; if (offset + 4 <= bytes.size()) std::memcpy(&v, bytes.data() + offset, 4); return v;
 }
@@ -72,6 +74,24 @@ struct Fixture {
         hipc::Message m; if (!hipc::parse(words.data(), words.size(), m)) std::abort(); return m;
     }
 };
+}
+NXTEST(ipc_diagnostic_gate_retains_unknown_commands_and_services_until_reset) {
+    Fixture f;
+    CHECK(!ipc::has_unsupported_requests());
+    const auto handle = f.connect("test"); REQUIRE(handle);
+    CHECK_EQ(f.send(handle, request(7)), 0u);
+    CHECK(!ipc::has_unsupported_requests());
+    CHECK_EQ(f.send(handle, request(999)), 0u);
+    CHECK(ipc::has_unsupported_requests());
+    const auto stats = ipc::service_stats();
+    CHECK(std::any_of(stats.begin(), stats.end(), [](const auto& s) { return s.name == "test" && s.unhandled.contains(999); }));
+    ipc::registry_reset();
+    CHECK(!ipc::has_unsupported_requests());
+    const auto unknown = ipc::make_service("missing"); REQUIRE(unknown->is_stub());
+    CHECK(ipc::has_unsupported_requests());
+    CHECK_EQ(ipc::stub_names_requested().size(), 1u);
+    ipc::registry_reset();
+    CHECK(!ipc::has_unsupported_requests());
 }
 NXTEST(ipc_connect_and_close_preserve_session_ownership) {
     Fixture f; const auto count = k::handle_count(); const auto h = f.connect("sm:"); REQUIRE(h);

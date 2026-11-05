@@ -191,6 +191,10 @@ bool open_picker() {
     const auto errors_before = log_count(LogLevel::Error);
     config_set("nvn", "pipeline_cache", "/data/pokopia-recomp/graphics-cache/pipelines.bin");
     config_set("nvn", "bc7_cache", "/data/pokopia-recomp/graphics-cache/bc7");
+    // Private, title-contained capture of shaders absent from the static index.
+    // The first-frame diagnostic has a fixed lifetime and a bounded byte budget.
+    config_set("nvn", "dump_missing", "/download0/pokopia-shader-capture");
+    config_set("nvn", "dump_missing_max_bytes", "16777216");
     extras::Settings settings;
     settings.hdr.mode = extras::HdrMode::Off; settings.upscale.mode = extras::UpscaleMode::Off;
     settings.upscale.frame_generation = false; settings.latency.mode = extras::LatencyMode::Off;

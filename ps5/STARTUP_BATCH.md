@@ -323,6 +323,49 @@ filesystem/service cases pass on PS5. Native storage and the next game startup
 remain pending the manual integration run. See [save storage](SAVE_STORAGE.md)
 for the development policy, evidence and remaining Saved Data integration.
 
+## Save-stage shaders and diagnostic overhead
+
+The corrected native run passes the title-storage checks and creates the
+actual game's account save. Private report `game-native-1793904273-113.log`
+then reaches the 900-second watchdog and exits normally through the native
+wrapper with status 2. Its final profile is at 915,348 ms; concurrent workers
+continue logging briefly during shutdown. Rendering remains seven submissions,
+one draw and one presentation, with no guest frame verified.
+
+The full report contains 1,298 distinct missing shader hashes. Of these, 1,086
+match the verified static corpus; selecting their related material entries
+produces 2,910 shaders. All translate successfully and pass Vulkan 1.3 SPIR-V
+validation. Merging them with the previous 3,802-entry cache yields 6,704
+validated shaders. The remaining 212 are not present in that index. A scan of
+the executable modules and previously excluded archive-entry types did not
+recover them. Their origin is still unresolved; translations are not guessed
+or substituted. The indexed subset and its original-report provenance remain
+in private receipts.
+
+The next app captures missing code/control pairs under the title's
+`/download0/pokopia-shader-capture`, with a 16 MiB per-run write budget and
+checked file writes. This is private diagnostic data, not a public asset pack
+or the finished on-console compiler. Capture in the native sandbox still
+requires the next run. Existing captures may remain between runs; the budget
+is not a total-directory quota.
+
+The run completed 1,515 asset reads, 115,292,610 bytes, in 2,218 ms with no read
+failures. Cache lookups and diagnostic time increased later in startup. The
+observer also copied every service's statistics after each synchronous IPC.
+It now checks a small registry flag first, retaining detailed reports and
+stopping on unknown commands or services. Ordinary request logging and
+repeated SVC results retain initial calls and periodic counts instead of a
+line per audio buffer. Request inspection remains serialized, and summed
+observer time includes contention; it is not a CPU-cost measurement or proof
+of a loading-speed improvement.
+
+All 69 IPC component cases pass on PS5 in private report
+`ipc-runtime-1793905837-116.log`, including unknown-command/stub detection and
+registry reset. Four host shader-selection/installation checks pass. The app
+builds locally; installation and another native run are tracked separately.
+Normal Saved Data integration, title-contained import and on-console shader
+compilation remain release work. All game-derived artifacts stay private.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
@@ -352,6 +395,9 @@ The selector now refuses more than 10,000 shaders before copying by default.
 After translation, `prepare_shader_cache.py --replace-existing` validates all
 blocks, preserves binding metadata and records changed translations. All
 outputs remain ignored private data.
+For immutable caches on one filesystem, `--hardlink` avoids copying SPIR-V
+files again while retaining full validation and a new metadata manifest.
+Never edit those linked files in place; use a separate translation output.
 
 For the app, use the existing [build/package workflow](GAME_RENDERER_STARTUP.md).
 `replace_graphics_executable.py --install-shared-font` stages and reads back

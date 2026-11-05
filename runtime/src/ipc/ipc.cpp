@@ -52,6 +52,7 @@ struct Registry {
     std::map<std::string, ServiceFactory> factories;
     std::vector<std::string> stubs_requested;
     std::map<std::string, ServiceStats> stats;   // per service name, accumulated over sessions
+    bool unhandled = false;
 };
 
 Registry& reg() {
@@ -302,6 +303,7 @@ uint32_t Service::handle(Request& req, Response& rsp) {
 namespace detail {
 uint64_t note_unhandled(Service& s, uint32_t cmd) {
     std::lock_guard<std::recursive_mutex> lk(mu());
+    reg().unhandled = true;
     s.unhandled[cmd]++;
     ServiceStats& st = stats_for(s.name());
     st.stub = s.is_stub();
@@ -356,6 +358,11 @@ std::vector<std::string> stub_names_requested() {
     return reg().stubs_requested;
 }
 
+bool has_unsupported_requests() {
+    std::lock_guard<std::recursive_mutex> lk(mu());
+    return reg().unhandled || !reg().stubs_requested.empty();
+}
+
 void registry_reset() {
     std::lock_guard<std::recursive_mutex> lk(mu());
     Registry& r = reg();
@@ -364,6 +371,7 @@ void registry_reset() {
     r.factories["sm:"] = sm;
     r.stubs_requested.clear();
     r.stats.clear();
+    r.unhandled = false;
 }
 
 // ---- sessions -----------------------------------------------------------------------------------------------------------
