@@ -55,6 +55,13 @@ I/O failures and unported commands.
   from starting. These native checks still need the next manual launch;
   payload results do not prove the app's filesystem permissions.
 
+The private app built from `dfa80f1` is installed with full executable readback
+verification. Its native executable is 279,846,745 bytes, SHA-256
+`5aea9402d735de036d06964706d3a7db5aca994fffba08c8e8205d45472255b8`.
+The install receipt, previous executable and verified matching symbol archive
+are retained privately. The owned transfer helper and diagnostic payload slots
+were removed. No automatic game launch was performed.
+
 Build the standalone checks locally:
 
 ```sh
