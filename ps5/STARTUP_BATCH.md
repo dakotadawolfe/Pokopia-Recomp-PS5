@@ -277,6 +277,12 @@ separate result. The updated app builds and packages locally with the existing
 exception-linkage and FSELF checks. A game run against this service is still
 required; no menu or gameplay is verified.
 
+The app from `e525d0e` is installed with complete executable and license
+readback verification. The previous reduced-stack executable and the new
+matching symbols are retained privately. The owned transfer helper and test
+payload slots were removed after installation. No automatic game launch was
+performed; the offline service integration still needs a manual game run.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
