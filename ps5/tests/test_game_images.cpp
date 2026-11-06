@@ -958,6 +958,8 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
 #endif
     REQUIRE(register_game_modules());
     nxrt::install_libc_hle();
+    nxrt::kernel::install_spin_hint();
+    nxrt::kernel::install_busy_mutex_hle();
 #else
     auto registered = nxrt::nxmodule_register(nxrt::module_by_name("sdk"), &nxmod_sdk, nxmod_sdk_abi);
     REQUIRE(registered.ok()); REQUIRE(registered.functions == static_cast<size_t>(nxmod_sdk.nfns));

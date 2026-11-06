@@ -79,6 +79,25 @@ NXTEST(picker_checks_flat_and_direct_exefs_romfs_without_changing_assets) {
     }
     CHECK_EQ(fs::file_size(root / "romfs/test.bin"), 17u);
 }
+
+NXTEST(picker_automatic_run_requires_a_valid_saved_folder) {
+    Fixture f;
+    const auto root = f.path / "Pokopia";
+    game(root);
+    auto options = f.options();
+    std::string error;
+    REQUIRE(save_picker_location(options.config_file, root.string(), error));
+    FolderPicker manual(options);
+    CHECK(!manual.view().done);
+    options.use_saved = true;
+    FolderPicker automatic(options);
+    CHECK(automatic.view().done);
+    CHECK_EQ(automatic.path(), root.string());
+    REQUIRE(save_picker_location(options.config_file, (f.path / "missing").string(), error));
+    FolderPicker unavailable(options);
+    CHECK(!unavailable.view().done);
+    CHECK(unavailable.path().empty());
+}
 NXTEST(picker_directory_checks_kernel_metadata_and_rejects_symlink_escape) {
     Fixture f;
     fs::create_directories(f.path / "inside/nested");

@@ -33,6 +33,7 @@ struct PickerView {
 struct PickerOptions {
     std::string config_file = "/data/pokopia-recomp/game-location.txt";
     std::vector<StorageRoot> roots = picker_storage_roots();
+    bool use_saved = false;
 };
 class PickerPad;
 class FolderPicker {

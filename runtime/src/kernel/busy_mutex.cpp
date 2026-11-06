@@ -11,7 +11,12 @@
 // the disable count), so the lock word and the TLS field look exactly as they do on the console.
 //
 // Config: [sched] busy_mutex_hle (env NXRT_SCHED_BUSY_MUTEX_HLE), default on; off leaves the SDK code in charge.
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <chrono>
+#include <thread>
+#endif
 
 #include <atomic>
 #include <cstdint>
@@ -30,6 +35,24 @@ constexpr const char* kLockName = "_ZN2nn2os13LockBusyMutexEPNS0_13BusyMutexType
 constexpr uint64_t kWordOffset = 0x10;       // BusyMutexType: the lock word
 constexpr uint64_t kTlsDisableCount = 0x100; // ThreadLocalRegion: u16 disable count
 
+void pause_processor() {
+#ifdef _WIN32
+    YieldProcessor();
+#elif defined(__x86_64__)
+    __builtin_ia32_pause();
+#else
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+#endif
+}
+
+void sleep_waiter() {
+#ifdef _WIN32
+    Sleep(1);
+#else
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#endif
+}
+
 void lock_busy_mutex(::Ctx* c) {
     auto* word = reinterpret_cast<std::atomic<uint32_t>*>(c->x[0] + kWordOffset);
     auto* disable = reinterpret_cast<uint16_t*>(c->tpidrro + kTlsDisableCount);
@@ -37,9 +60,9 @@ void lock_busy_mutex(::Ctx* c) {
     for (uint32_t spins = 0;; spins++) {
         uint32_t expected = 0;
         if (word->load(std::memory_order_relaxed) == 0 && word->compare_exchange_weak(expected, 1, std::memory_order_acquire)) break;
-        if (spins < 64) YieldProcessor();
+        if (spins < 64) pause_processor();
         else if (spins < 20000) yield_host();
-        else Sleep(1);
+        else sleep_waiter();
     }
     *disable = static_cast<uint16_t>(held + 1);
 }
@@ -49,7 +72,7 @@ void lock_busy_mutex(::Ctx* c) {
 void spin_hint(int kind) {
     thread_local uint32_t n = 0;
     if (kind == 1 || (++n & 63) == 0) yield_host();
-    else YieldProcessor();
+    else pause_processor();
 }
 
 }  // namespace

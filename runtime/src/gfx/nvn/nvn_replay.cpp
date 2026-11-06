@@ -3781,9 +3781,17 @@ void trace_dump_targets() {
     for (const Ref<Texture>& t : list) {
         char buf[96];
         std::string stats;
+#if defined(NXRT_TARGET_PS5)
+        // PS5 has no SDL PNG encoder. Keep the readback statistics instead of
+        // discarding them when an otherwise successful capture cannot encode.
+        const bool ok = dump_texture(t.get(), "", &stats);
+        NXLOG_I("nvn.trace", "target %s -> %s: %s", tex_desc(t.get(), buf, sizeof buf),
+                ok ? "(statistics)" : "(not read back)", stats.c_str());
+#else
         const std::string png = std::string("trace_t") + std::to_string(t->id) + "_" + (t->fmt ? t->fmt->name : "x") + ".png";
         const bool ok = dump_texture(t.get(), png, &stats);
         NXLOG_I("nvn.trace", "target %s -> %s: %s", tex_desc(t.get(), buf, sizeof buf), ok ? png.c_str() : "(not dumped)", ok ? stats.c_str() : "");
+#endif
     }
 }
 

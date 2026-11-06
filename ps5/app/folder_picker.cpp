@@ -15,6 +15,7 @@ FolderPicker::FolderPicker(PickerOptions options) : options_(std::move(options))
     if (loaded && !remembered.empty() && !picker_directory(remembered, options_.roots).empty()) {
         browse(remembered);
         if (check_.usable) status_ = "Saved folder found. Use this folder or browse to change it.";
+        if (check_.usable && options_.use_saved) activate();
     } else {
         browse({});
         if (!remembered.empty()) status_ = "Saved folder unavailable. Connect its drive or choose another folder.";

@@ -22,12 +22,18 @@
 #include "nxrt/platform.h"
 #include "nxrt/subpage.h"
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <cerrno>
+#include <ctime>
+#include <vector>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <ps5platform/heap.h>
 
 extern "C" int sceSystemServiceHideSplashScreen();
@@ -48,6 +54,49 @@ std::atomic<uint64_t> presents{0};
 std::string selected_folder;
 std::chrono::steady_clock::time_point loading_started;
 std::atomic<uint64_t> loading_views{0};
+// Three bounded, title-owned readbacks distinguish an intentionally black
+// guest frame from an image lost between the NVN target and the display.
+std::vector<uint8_t> captured_frame;
+uint32_t capture_width = 0, capture_height = 0;
+uint64_t capture_number = 0;
+void capture_frame(uint64_t number) {
+    if (capture_number && !renderer->capture_pending()) {
+        const uint64_t bytes = uint64_t(capture_width) * capture_height * 4;
+        if (bytes && bytes <= (32u << 20) && captured_frame.size() == bytes) {
+            uint64_t colored = 0;
+            uint8_t maximum = 0;
+            for (size_t i = 0; i < captured_frame.size(); i += 4) {
+                const auto value = std::max({captured_frame[i], captured_frame[i+1], captured_frame[i+2]});
+                maximum = std::max(maximum, value);
+                colored += value != 0;
+            }
+            char path[200];
+            std::snprintf(path, sizeof path, "/download0/pokopia-frame-capture/%lld-%d-%llu.pam",
+                static_cast<long long>(std::time(nullptr)), int(getpid()), static_cast<unsigned long long>(capture_number));
+            bool saved = false;
+            if (mkdir("/download0/pokopia-frame-capture", 0755) == 0 || errno == EEXIST) {
+                if (FILE* out = std::fopen(path, "wb")) {
+                    saved = std::fprintf(out, "P7\nWIDTH %u\nHEIGHT %u\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n",
+                        capture_width, capture_height) > 0;
+                    saved = saved && std::fwrite(captured_frame.data(), 1, captured_frame.size(), out) == captured_frame.size();
+                    saved = std::fclose(out) == 0 && saved;
+                }
+            }
+            std::printf("GAME_FRAME_PIXELS frame=%llu width=%u height=%u colored_pixels=%llu max_rgb=%u saved=%d path=%s\n",
+                static_cast<unsigned long long>(capture_number), capture_width, capture_height,
+                static_cast<unsigned long long>(colored), unsigned(maximum), saved, saved ? path : "(none)");
+        } else {
+            std::printf("GAME_FRAME_PIXELS frame=%llu readback_unavailable=true\n", static_cast<unsigned long long>(capture_number));
+        }
+        captured_frame.clear();
+        capture_number = 0;
+    }
+    if ((number == 3 || number == 120 || number == 600) && !renderer->capture_pending()) {
+        capture_number = number;
+        capture_width = capture_height = 0;
+        renderer->capture_next_frame(&captured_frame, &capture_width, &capture_height);
+    }
+}
 bool loading_idle() {
     // The SDK's initial blank presentation is not a ready menu. Stop the shell
     // view permanently when the app declares itself running or presents again.
@@ -183,6 +232,7 @@ void frame() {
     int width = 0, height = 0; platform::pixel_size(&width, &height);
     services::amctl::set_display_resolution(width, height);
     const auto n = presents.fetch_add(1) + 1;
+    capture_frame(n);
     if (n <= 3 || n % 60 == 0) std::printf("GAME_NVN_PRESENT n=%llu\n", static_cast<unsigned long long>(n));
 }
 }
@@ -206,7 +256,22 @@ bool open_picker() {
     device = gfx::Device::create(dd, &error);
     if (device) renderer = gfx::Renderer::create(*device, {.present_mode=gfx::PresentMode::Fifo, .frames_in_flight=2}, &error);
     if (!renderer) { std::printf("GAME_RENDERER_FAIL error=%s\n", error.c_str()); return false; }
-    app::FolderPicker picker;
+    app::PickerOptions picker_options;
+    // A host-controlled, one-use request for the already selected folder. The
+    // request is consumed before validation, so a crash cannot create a loop.
+    constexpr const char* run_once = "/data/pokopia-recomp/tests/pokopia-run-once";
+    if (FILE* request = std::fopen(run_once, "rb")) {
+        char token[32]{};
+        const auto length = std::fread(token, 1, sizeof token, request);
+        const bool read_ok = !std::ferror(request);
+        std::fclose(request);
+        const bool consumed = unlink(run_once) == 0;
+        constexpr char expected[] = "PPSA98732\n";
+        picker_options.use_saved = read_ok && consumed && length == sizeof expected - 1 &&
+            std::memcmp(token, expected, sizeof expected - 1) == 0;
+        std::printf("GAME_AUTORUN consumed=%d valid=%d\n", consumed, picker_options.use_saved);
+    }
+    app::FolderPicker picker(std::move(picker_options));
     (void)sceSystemServiceHideSplashScreen();
     while (!picker.view().done && !picker.view().cancelled) {
         picker.update(); gfx::FrameInfo fi;
