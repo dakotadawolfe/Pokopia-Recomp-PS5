@@ -459,6 +459,13 @@ the renderer. These traces are private game-derived diagnostics. No new shader
 cache is needed: the previous run had no missing shader records. Native startup
 and the descriptor failure path still need integration validation.
 
+The app from `7d810a5` is installed with complete readback verification:
+279,846,681 bytes, SHA-256
+`32cfb842900264a272fe8ceca10156bd43e4c67cf77715efc93134cbeb0f73d1`.
+The previous executable and matching symbols are retained privately. The owned
+component/transfer slots were removed and the local build environment stopped.
+The existing 7,294-shader cache was retained; no automatic game launch occurred.
+
 ## Reproducing component checks
 
 The monitored follow-up (native PID 151) still fails during renderer startup,
