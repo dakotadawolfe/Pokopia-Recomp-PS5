@@ -2,6 +2,8 @@
 #include "nxrt/subpage.h"
 #include "nxrecomp/memory.h"
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +19,12 @@ namespace {
 constexpr uint64_t guest_page = 4096, host_page = 16384;
 std::mutex registry_mutex;
 std::map<uint64_t, SubpageMap*> registry;
+std::atomic<uint64_t> permission_generation{1};
+struct PermissionEntry {
+    uint64_t page = 0, generation = 0;
+    unsigned permissions = 0;
+};
+thread_local std::array<PermissionEntry, 64> permission_cache;
 host_vm::Access host_access(unsigned bits) {
     return bits & 2 ? host_vm::Access::ReadWrite : bits & 1 ? host_vm::Access::Read : host_vm::Access::None;
 }
@@ -50,6 +58,7 @@ std::unique_ptr<SubpageMap> SubpageMap::create_private(uint64_t base, uint64_t s
 SubpageMap::~SubpageMap() {
     if (!registered_) return;
     std::lock_guard lock(registry_mutex);
+    permission_generation.fetch_add(1, std::memory_order_release);
     registry.erase(base_);
     for (uint64_t a = base_; a < base_ + size_; a += host_page) flag(a, false);
 }
@@ -83,6 +92,9 @@ bool SubpageMap::protect(uint64_t address, uint64_t size, unsigned access) {
     }
     // Force affected guest accesses through the locked slow path while the
     // host permissions and guest metadata change. No unrelated block changes.
+    // Invalidate before changing either host or guest permissions. Cache misses
+    // acquire registry_mutex, so they cannot publish an intermediate policy.
+    if (registered_) permission_generation.fetch_add(1, std::memory_order_release);
     if (registered_)
         for (uint64_t b = block_first; b < block_end; ++b) flag(base_ + b * host_page, true);
     size_t applied = 0;
@@ -116,8 +128,14 @@ bool SubpageMap::protect(uint64_t address, uint64_t size, unsigned access) {
 bool SubpageMap::allows(uint64_t address, uint64_t size, unsigned access) {
     if (!size) return true;
     if (!access || access > 3 || address >= NX_GUEST_ADDRESS_END || size > NX_GUEST_ADDRESS_END - address) return false;
-    std::lock_guard lock(registry_mutex);
     const uint64_t end = address + size;
+    const uint64_t page = address / guest_page;
+    const bool single_page = page == (end - 1) / guest_page;
+    auto& cached = permission_cache[page % permission_cache.size()];
+    if (single_page && cached.page == page &&
+        cached.generation == permission_generation.load(std::memory_order_acquire) &&
+        (cached.permissions & access) == access) return true;
+    std::lock_guard lock(registry_mutex);
     for (uint64_t at = address; at < end;) {
         auto it = registry.upper_bound(at);
         if (it == registry.begin()) return false;
@@ -126,6 +144,8 @@ bool SubpageMap::allows(uint64_t address, uint64_t size, unsigned access) {
         const uint64_t stop = std::min(end, range->base_ + range->size_);
         for (uint64_t p = (at - range->base_) / guest_page; p < (stop - range->base_ + guest_page - 1) / guest_page; ++p)
             if ((range->permissions_[p] & access) != access) return false;
+        if (single_page) cached = {page, permission_generation.load(std::memory_order_relaxed),
+                                  range->permissions_[(at - range->base_) / guest_page]};
         at = stop;
     }
     return true;

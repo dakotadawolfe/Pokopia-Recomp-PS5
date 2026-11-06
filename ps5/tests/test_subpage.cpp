@@ -235,3 +235,61 @@ NXTEST(uniform_runs_coalesce_and_concurrent_readers_keep_access) {
     CHECK(correct.load());
     CHECK_EQ(region.apply_calls, 1u); // Logical changes needed no host reprotection.
 }
+
+NXTEST(cached_permissions_revalidate_changes_and_cross_page_accesses) {
+    Region region;
+    REQUIRE(region.policy);
+    REQUIRE(region.policy->protect(base, host, 3));
+    CHECK(SubpageMap::allows(base, 4, 3));
+    REQUIRE(region.policy->protect(base + page, page, 1));
+    CHECK(SubpageMap::allows(base, 4, 3));
+    CHECK(!SubpageMap::allows(base + page - 4, 8, 2));
+    CHECK(SubpageMap::allows(base + page - 4, 8, 1));
+    REQUIRE(region.policy->protect(base, page, 0));
+    CHECK(!SubpageMap::allows(base, 4, 1));
+    REQUIRE(region.policy->protect(base, page, 1));
+    CHECK(SubpageMap::allows(base, 4, 1));
+    CHECK(!SubpageMap::allows(base, 4, 2));
+    REQUIRE(region.policy->protect(base, page, 3));
+    CHECK(SubpageMap::allows(base, 4, 3));
+}
+
+NXTEST(cached_permissions_do_not_survive_mapping_replacement) {
+    {
+        Region region;
+        REQUIRE(region.policy);
+        REQUIRE(region.policy->protect(base, host, 3));
+        CHECK(SubpageMap::allows(base, 4, 3));
+    }
+    CHECK(!SubpageMap::allows(base, 4, 1));
+    Region replacement;
+    REQUIRE(replacement.policy);
+    REQUIRE(replacement.policy->protect(base, page, 1));
+    CHECK(SubpageMap::allows(base, 4, 1));
+    CHECK(!SubpageMap::allows(base, 4, 2));
+}
+
+NXTEST(cached_permissions_observe_another_threads_revocation_and_restore) {
+    Region region;
+    REQUIRE(region.policy);
+    REQUIRE(region.policy->protect(base, host, 3));
+    std::atomic<unsigned> phase{0}, acknowledged{0};
+    std::atomic<bool> correct{true};
+    std::thread reader([&] {
+        if (!SubpageMap::allows(base, 4, 3)) correct = false;
+        acknowledged = 1;
+        while (phase.load() != 1) std::this_thread::yield();
+        if (SubpageMap::allows(base, 4, 2) || !SubpageMap::allows(base, 4, 1)) correct = false;
+        acknowledged = 2;
+        while (phase.load() != 2) std::this_thread::yield();
+        if (!SubpageMap::allows(base, 4, 3)) correct = false;
+    });
+    while (acknowledged.load() != 1) std::this_thread::yield();
+    CHECK(region.policy->protect(base, page, 1));
+    phase = 1;
+    while (acknowledged.load() != 2) std::this_thread::yield();
+    CHECK(region.policy->protect(base, page, 3));
+    phase = 2;
+    reader.join();
+    CHECK(correct.load());
+}
