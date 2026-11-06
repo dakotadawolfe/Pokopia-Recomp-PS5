@@ -21,6 +21,9 @@
 #include <vector>
 
 namespace nxrt::nvn::be::gpu {
+// Read the draw's actual BaseInstance instead of the NVN driver-bank copy,
+// including indirect draws whose arguments are produced by the GPU.
+bool spirv_base_instance_from_c0(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
 
 enum class SpvScalar : uint8_t { Float, Sint, Uint };
 

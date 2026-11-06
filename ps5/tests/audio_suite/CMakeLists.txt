@@ -44,7 +44,8 @@ else()
     enable_testing()
     add_test(NAME audio COMMAND ps5_audio_tests)
     set_tests_properties(audio PROPERTIES TIMEOUT 45)
-    add_executable(ps5_shader_control_tests "${root}/ps5/tests/test_shader_control.cpp" "${root}/runtime/src/gfx/nvn/nvn_shaders.cpp")
+    add_executable(ps5_shader_control_tests "${root}/ps5/tests/test_shader_control.cpp" "${root}/runtime/src/gfx/nvn/nvn_shaders.cpp"
+        "${root}/runtime/src/gfx/nvn/nvn_driver_bank.cpp")
     target_include_directories(ps5_shader_control_tests PRIVATE "${root}/runtime/include" "${root}/runtime/src/gfx/nvn")
     target_compile_features(ps5_shader_control_tests PRIVATE cxx_std_20)
     target_compile_definitions(ps5_shader_control_tests PRIVATE NXRT_TARGET_PS5=1 NXRT_DISABLE_FRAME_TRACE=1)
@@ -52,4 +53,32 @@ else()
     target_link_options(ps5_shader_control_tests PRIVATE "LINKER:--gc-sections")
     target_link_libraries(ps5_shader_control_tests PRIVATE nxrt_ps5_platform)
     add_test(NAME shader_control COMMAND ps5_shader_control_tests)
+    add_executable(ps5_driver_bank_tests "${root}/ps5/tests/sync_main.cpp"
+        "${root}/runtime/tests/gfx/test_nvn_driver_bank.cpp"
+        "${root}/runtime/src/gfx/nvn/nvn_driver_bank.cpp" "${root}/runtime/src/gfx/nvn/nvn_shaders.cpp")
+    target_include_directories(ps5_driver_bank_tests PRIVATE "${root}/runtime/include" "${root}/runtime/tests"
+        "${root}/runtime/src/gfx/nvn")
+    target_compile_features(ps5_driver_bank_tests PRIVATE cxx_std_20)
+    target_compile_definitions(ps5_driver_bank_tests PRIVATE NXRT_TARGET_PS5=1 NXRT_DISABLE_FRAME_TRACE=1)
+    target_compile_options(ps5_driver_bank_tests PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(ps5_driver_bank_tests PRIVATE "LINKER:--gc-sections")
+    target_link_libraries(ps5_driver_bank_tests PRIVATE nxrt_ps5_platform)
+    add_test(NAME driver_bank COMMAND ps5_driver_bank_tests)
+    add_executable(ps5_base_instance_tests "${root}/ps5/tests/sync_main.cpp"
+        "${root}/ps5/tests/test_nvn_base_instance.cpp"
+        "${root}/runtime/src/gfx/nvn/nvn_spirv_patch.cpp"
+        "${root}/runtime/src/gfx/nvn/nvn_driver_bank.cpp" "${root}/runtime/src/gfx/nvn/nvn_shaders.cpp")
+    target_include_directories(ps5_base_instance_tests PRIVATE "${root}/runtime/include" "${root}/runtime/tests"
+        "${root}/runtime/src/gfx/nvn")
+    target_compile_features(ps5_base_instance_tests PRIVATE cxx_std_20)
+    target_compile_definitions(ps5_base_instance_tests PRIVATE NXRT_TARGET_PS5=1 NXRT_DISABLE_FRAME_TRACE=1)
+    target_compile_options(ps5_base_instance_tests PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(ps5_base_instance_tests PRIVATE "LINKER:--gc-sections")
+    target_link_libraries(ps5_base_instance_tests PRIVATE nxrt_ps5_platform)
+    add_test(NAME base_instance COMMAND ps5_base_instance_tests)
+    add_executable(ps5_copy_span_tests "${root}/ps5/tests/sync_main.cpp" "${root}/ps5/tests/test_nvn_copy_span.cpp")
+    target_include_directories(ps5_copy_span_tests PRIVATE "${root}/runtime/tests" "${root}/runtime/src/gfx/nvn")
+    target_compile_features(ps5_copy_span_tests PRIVATE cxx_std_20)
+    target_link_libraries(ps5_copy_span_tests PRIVATE nxrt_ps5_platform)
+    add_test(NAME copy_span COMMAND ps5_copy_span_tests)
 endif()

@@ -194,6 +194,8 @@ static VkShaderModule create_module(const std::vector<uint32_t>& words, const ch
             code = &fixed;
         }
     }
+    std::vector<uint32_t> base_instance;
+    if (spirv_base_instance_from_c0(*code, base_instance)) code = &base_instance;
     // [nvn] spirv_salt (measurement only): an OpSourceExtension with the salt in every module gives the driver a new shader hash, so a run
     // compiles every shader from scratch without touching the driver's own cache on disk.
     static const std::string salt = config_get_str("nvn", "spirv_salt", "");
@@ -411,6 +413,8 @@ const ProgLayout* prog_layout(const ShaderInfo* const stages[6]) {
             }
         }
     }
+    for (const BindingDesc& d : pl.bindings)
+        pl.c0_graphics |= d.nvn_stage != 5 && d.shader->refl.bindings[d.index].nvn.source == NvnSource::DriverConstants;
     std::vector<VkDescriptorSetLayoutBinding> lbs[4];
     std::string sig;                                   // the descriptors of the program, as bytes: the key of the shared layout
     for (int set = 0; set < 4; ++set) {

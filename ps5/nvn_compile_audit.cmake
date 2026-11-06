@@ -5,7 +5,7 @@ set(nvn_root "${CMAKE_CURRENT_LIST_DIR}/../runtime/src/gfx/nvn")
 set(nvn_units
     api_blend_color api_builders api_cmd_state api_cmd_work api_cmdbuf api_depth_poly_ms
     api_device api_memory api_program api_sampler api_texture_builder api_texture api_vertex
-    nvn_abi nvn_cmd_handles nvn_enums nvn_format nvn_gpl nvn_gpu_pool nvn_gpu_texture nvn_gpu
+    nvn_abi nvn_cmd_handles nvn_driver_bank nvn_enums nvn_format nvn_gpl nvn_gpu_pool nvn_gpu_texture nvn_gpu
     nvn_loader nvn_mask_clear nvn_objects nvn_pipeline nvn_present_pass nvn_present nvn_prewarm
     nvn_register nvn_replay nvn_shaders nvn_spirv_patch nvn_tex_edit nvn_tex_override nvn_tex_patch
     nvn_texdata nvn_texprep nvn_texture_layout nvn_texture_registry nvn_texup)

@@ -15,6 +15,7 @@
 #include <fstream>
 #include <sstream>
 #include <map>
+#include <array>
 #include <set>
 #include <tuple>
 #include <memory>
@@ -27,6 +28,8 @@
 #include "nxrt/gfx_tuning.h"
 #include "nxrt/log.h"
 #include "nvn_decoded.h"
+#include "nvn_copy_span.h"
+#include "nvn_driver_bank.h"
 #include "nvn_enums.h"
 #include "nvn_format.h"
 #include "nvn_mask_clear.h"
@@ -140,6 +143,8 @@ VkPipeline g_bound_pipeline = VK_NULL_HANDLE;
 UploadAlloc g_support;
 UploadAlloc g_draw_support;     // the support buffer the next descriptor sets bind: g_support, or one with render scales (support_for_draw)
 std::unordered_map<uint64_t, UploadAlloc> g_support_scaled;   // this submission's support buffers with render scales, by content
+std::map<std::array<uint8_t, kDriverBankBytes>, UploadAlloc> g_driver_banks;
+uint32_t g_draw_base_instance = 0, g_bank_base_instance = 0;
 MaskClear g_mask;
 bool g_mask_ready = false, g_mask_ok = false;
 
@@ -1404,6 +1409,35 @@ bool tsr_jitter(uint32_t* words, size_t n_words) {
 }
 #endif
 
+// Keep an immutable snapshot per distinct table in this submission's upload ring.
+// A later dispatch may change every address while the GPU still reads this one.
+VkDescriptorBufferInfo driver_bank_for(const BindingDesc& d) {
+    const ShaderControl& c = d.shader->control;
+    const bool compute = d.nvn_stage == kCompute;
+    if ((compute && (!c.nvn2 || c.stage != 5)) || d.nvn_stage < 0 || d.nvn_stage > kCompute) {
+        VkDeviceSize range = 0;
+        VkBuffer buffer = driver_constants_buffer(&range);
+        return {buffer, 0, range};
+    }
+    std::array<uint8_t, kDriverBankBytes> bank{};
+    DriverRange ubo[16], ssbo[16];
+    for (int n = 0; n < 16; ++n) {
+        ubo[n] = {S.ubo[d.nvn_stage][n].addr, S.ubo[d.nvn_stage][n].size};
+        ssbo[n] = {S.ssbo[d.nvn_stage][n].addr, S.ssbo[d.nvn_stage][n].size};
+    }
+    if (compute) fill_driver_bank_nvn2_compute(bank.data(), c, ubo, ssbo, S.tex[kCompute], S.img[kCompute]);
+    else fill_driver_bank_graphics(bank.data(), d.nvn_stage, ssbo, g_draw_base_instance);
+    auto it = g_driver_banks.find(bank);
+    if (it == g_driver_banks.end()) {
+        const VkDeviceSize align = std::max<VkDeviceSize>(device().properties().limits.minUniformBufferOffsetAlignment, 256);
+        UploadAlloc u = F->upload(kDriverBankBytes, align);
+        if (!u) return {};
+        std::memcpy(u.ptr, bank.data(), bank.size());
+        it = g_driver_banks.emplace(bank, u).first;
+    }
+    return {it->second.buffer, it->second.offset, kDriverBankBytes};
+}
+
 VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
     std::vector<VkWriteDescriptorSet> writes;
     std::vector<VkDescriptorBufferInfo> binfo;
@@ -1420,6 +1454,12 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
         if (d.set != set) continue;
         const DescriptorBinding& b = d.shader->refl.bindings[d.index];
         VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        if (b.count != 1) {
+            NXLOG_E(kTag, "unsupported descriptor array: shader %s set %u binding %u count %u",
+                    d.shader->hash.c_str(), d.set, d.binding, b.count);
+            note_unsupported("descriptor arrays require complete array writes");
+            return VK_NULL_HANDLE;
+        }
         w.dstBinding = d.binding;
         w.descriptorCount = 1;
         w.descriptorType = d.type;
@@ -1431,9 +1471,11 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                                         : VkDescriptorBufferInfo{g_support.buffer, g_support.offset, sizeof(SupportBuffer)};
                     break;
                 case NvnSource::DriverConstants: {
-                    VkDeviceSize range = 0;
-                    VkBuffer buf = driver_constants_buffer(&range);
-                    if (buf) bi = {buf, 0, range};
+                    bi = driver_bank_for(d);
+                    if (!bi.buffer) {
+                        note_unsupported("required driver constant bank could not be allocated");
+                        return VK_NULL_HANDLE;
+                    }
                     break;
                 }
                 case NvnSource::ConstantData: {
@@ -1451,6 +1493,10 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                             out_draw_read(bind.addr, bind.size ? bind.size : 65536, ua && (bind.addr % ua) == 0, kOutDrawBuffer);   // resolve_read serves the copy
                         }
                         BufRef br = resolve_read(bind.addr, bind.size, kReadUniform);
+                        if (!br.ok || !br.avail) {
+                            note_unsupported("uniform binding is outside its backing memory");
+                            return VK_NULL_HANDLE;
+                        }
                         const VkDeviceSize align = device().properties().limits.minUniformBufferOffsetAlignment;
                         const float ufs = ufs_scale_for(d, idx);
 #if defined(NXRT_TARGET_PS5)
@@ -1462,7 +1508,8 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                             // the game's scale on some floats of this block (nxrt/gfx_tuning.h): bound from a patched copy in the upload ring
                             const VkDeviceSize n = std::min<VkDeviceSize>({bind.size ? bind.size : 65536, br.avail, 65536});
                             UploadAlloc u = F->upload(n, std::max<VkDeviceSize>(align, 256));
-                            if (u) {
+                            if (!u) return VK_NULL_HANDLE;
+                            {
                                 std::memcpy(u.ptr, host_ptr(bind.addr), n);
 #if !defined(NXRT_TARGET_PS5)
                                 if (tsr && n >= 272) tsr_jitter(reinterpret_cast<uint32_t*>(u.ptr), static_cast<size_t>(n / 4));   // temporal upscaling
@@ -1481,9 +1528,10 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                             bi = {br.buffer, br.offset, std::min<VkDeviceSize>({bind.size ? bind.size : 65536, br.avail, 65536})};
                         } else if (br.ok) {
                             // unaligned binding: copy into the upload ring
-                            const VkDeviceSize n = std::min<VkDeviceSize>(bind.size ? bind.size : 65536, 65536);
+                            const VkDeviceSize n = std::min<VkDeviceSize>({bind.size ? bind.size : 65536, br.avail, 65536});
                             UploadAlloc u = F->upload(n, std::max<VkDeviceSize>(align, 256));
-                            if (u) {
+                            if (!u) return VK_NULL_HANDLE;
+                            {
                                 std::memcpy(u.ptr, host_ptr(bind.addr), n);
                                 bi = {u.buffer, u.offset, n};
                             }
@@ -1496,6 +1544,10 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                     if (slot >= 0 && slot < 16 && S.ssbo[d.nvn_stage][slot].addr) {
                         const GState::Bind& bind = S.ssbo[d.nvn_stage][slot];
                         BufRef br = resolve_buffer(bind.addr, bind.size);
+                        if (!br.ok || !br.avail) {
+                            note_unsupported("storage buffer binding is outside its backing memory");
+                            return VK_NULL_HANDLE;
+                        }
                         bi = {br.buffer, br.offset, std::min<VkDeviceSize>(bind.size ? bind.size : br.avail, br.avail)};
                         if (!g_shadowing && br.ok && out_lazy() && out_overlaps(bind.addr, bi.range)) {   // a draw over a held compute result: the copy
                             const BufRef hb = held_or_pool(bind.addr, bi.range, kOutStorageXfb, false);
@@ -1522,6 +1574,10 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                     if (idx >= 0 && idx < 16 && S.ubo[d.nvn_stage][idx].addr) {
                         const GState::Bind& bind = S.ubo[d.nvn_stage][idx];
                         const BufRef br0 = resolve_buffer(bind.addr, bind.size);
+                        if (!br0.ok || !br0.avail) {
+                            note_unsupported("uniform-as-storage binding is outside its backing memory");
+                            return VK_NULL_HANDLE;
+                        }
                         const VkDeviceSize range = std::min<VkDeviceSize>(bind.size ? bind.size : br0.avail, br0.avail);
                         const BufRef br = held_or_pool(bind.addr, range, kOutDispatch, true);
                         bi = {br.buffer, br.offset, range};
@@ -1530,7 +1586,11 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                 }
                 default:
                     note_unsupported("shader buffer binding of an unknown NVN source");
-                    break;
+                    return VK_NULL_HANDLE;
+            }
+            if (!bi.buffer || !bi.range) {
+                note_unsupported("required buffer descriptor has no backing memory");
+                return VK_NULL_HANDLE;
             }
             binfo.push_back(bi);
             w.pBufferInfo = &binfo.back();
@@ -1587,6 +1647,10 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                             r.has_view && r.view.has_layers ? r.view.min_layer : -1, r.has_view && r.view.has_layers ? r.view.num_layers : -1);
                 }
             }
+            if (!ii.imageView || !ii.sampler) {
+                note_unsupported("required sampled image descriptor has no view or sampler");
+                return VK_NULL_HANDLE;
+            }
             iinfo.push_back(ii);
             w.pImageInfo = &iinfo.back();
             mix(reinterpret_cast<uint64_t>(ii.imageView));
@@ -1608,6 +1672,10 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                                    r.tex->b.width, r.tex->b.height, r.tex->b.depth, tex_gpu(r.tex) ? 1 : 0, tex_has_storage(r.tex) ? 1 : 0);
                 log_once("storage-image-dummy", "a storage image binding has no usable texture: a dummy storage image is bound");
                 ii.imageView = dummy_storage_view(view_type_for(b), shader_fmt);
+            }
+            if (!ii.imageView) {
+                note_unsupported("required storage image descriptor has no view");
+                return VK_NULL_HANDLE;
             }
             iinfo.push_back(ii);
             w.pImageInfo = &iinfo.back();
@@ -1651,15 +1719,15 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                 v = dummy_buffer_view(shader_fmt, storage);
             }
             if (!v) {
-                note_unsupported("texel buffer descriptor without any view (the binding stays unwritten)");
-                continue;
+                note_unsupported("required texel buffer descriptor has no view");
+                return VK_NULL_HANDLE;
             }
             tinfo.push_back(v);
             w.pTexelBufferView = &tinfo.back();
             mix(reinterpret_cast<uint64_t>(v));
         } else {
-            note_unsupported("descriptor of an unhandled type (the binding stays unwritten)");
-            continue;
+            note_unsupported("required descriptor has an unhandled type");
+            return VK_NULL_HANDLE;
         }
         writes.push_back(w);
     }
@@ -2158,6 +2226,7 @@ bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopology* top
     }
     const ProgLayout* pl = g_pl;
     if (!pl) return false;
+    if (pl->c0_graphics && g_draw_base_instance != g_bank_base_instance) g_dirty |= kDesc;
 #if !defined(NXRT_TARGET_PS5)
     if (extras::temporal_wanted()) temporal_gbuffer_note();
 #endif
@@ -2333,6 +2402,7 @@ bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopology* top
     if (g_dirty & kDesc) {
         support_for_draw(*pl, false);
         if (!bind_sets(*pl, VK_PIPELINE_BIND_POINT_GRAPHICS)) return false;
+        g_bank_base_instance = g_draw_base_instance;
     }
     if (pl->push_bytes && g_gen_tcs) {
         // the pass-through control shader's tessellation levels (NVN's fixed SetInner/OuterTessellationLevels), every draw: cheap, and
@@ -2473,6 +2543,7 @@ bool bind_u32_indices(const std::vector<uint32_t>& idx) {
 }
 
 void do_draw_arrays(const P_DrawArrays& p) {
+    g_draw_base_instance = p.base_instance;
     count_primitives(p.mode, p.count, p.instance_count);
     VkPrimitiveTopology topo;
     if (!begin_draw(static_cast<int>(p.mode), false, 0, &topo)) { counters().draws_skipped.fetch_add(1); return; }
@@ -2496,6 +2567,7 @@ void do_draw_arrays(const P_DrawArrays& p) {
 }
 
 void do_draw_elements(const P_DrawElements& p) {
+    g_draw_base_instance = p.base_instance;
     count_primitives(p.mode, p.count, p.instance_count);
     VkPrimitiveTopology topo;
     if (!begin_draw(static_cast<int>(p.mode), true, static_cast<int>(p.type), &topo)) { counters().draws_skipped.fetch_add(1); return; }
@@ -2661,6 +2733,7 @@ void draw_indirect_cpu(const P_DrawIndirect& p, PrimConversion conv, uint32_t is
 }
 
 void do_draw_indirect(const P_DrawIndirect& p) {
+    g_draw_base_instance = 0; // BaseInstance comes from the GPU's indirect arguments in the rewritten shader.
     const bool indexed = p.type != 0xffffffffu;
     VkPrimitiveTopology topo;
     if (!begin_draw(static_cast<int>(p.mode), indexed, indexed ? static_cast<int>(p.type) : 0, &topo)) { counters().draws_skipped.fetch_add(1); return; }
@@ -2700,6 +2773,7 @@ void do_draw_indirect(const P_DrawIndirect& p) {
 // (vkCmdDrawIndirectByteCountEXT over the section's byte counter, divided by the stride of the vertex stream that reads the feedback buffer). The game
 // binds the feedback buffer as an ordinary vertex buffer. The feedback writes are ordered before the vertex fetch by ending the pass first.
 void do_draw_xfb(const P_DrawXfb& p) {
+    g_draw_base_instance = 0;
     static bool noted = false;
     if (!noted) { noted = true; NXLOG_I("nvn.xfb", "replay: transform feedback draw (first): mode %u control %llx", p.mode, static_cast<unsigned long long>(p.control)); }
     if (!S.render_enable) return;
@@ -2971,26 +3045,62 @@ void do_copy_buffer_texture(const P_CopyBufTex& p, bool to_texture) {
         }
     }
     SubRes s = sub_of(p.view, p.has_view);
+    if (s.level >= tex_levels(t) || s.layer >= tex_layers(t)) {
+        note_unsupported("buffer/image copy subresource is outside the texture");
+        return;
+    }
     const VkExtent3D ext = tex_extent(t, s.level);
     P_CopyRegion r = p.has_region ? p.region : P_CopyRegion{0, 0, 0, static_cast<int32_t>(ext.width), static_cast<int32_t>(ext.height), static_cast<int32_t>(ext.depth)};
     const FormatInfo* fi = t->fmt;
+    if (!fi || fi->vk != tex_vk_format(t)) {
+        note_unsupported("buffer/image copy requires a texture format conversion");
+        return;
+    }
+    if (r.x < 0 || r.y < 0 || r.z < 0 || r.w <= 0 || r.h <= 0 || r.d <= 0 ||
+        uint64_t(r.x) + uint32_t(r.w) > ext.width || uint64_t(r.y) + uint32_t(r.h) > ext.height) {
+        note_unsupported("buffer/image copy region is outside the texture");
+        return;
+    }
     const uint32_t bw = fi ? fi->block_w : 1, bh = fi ? fi->block_h : 1, bpb = fi ? fi->bytes : 4;
     uint32_t rw = static_cast<uint32_t>(r.w), rh = static_cast<uint32_t>(r.h), rd = std::max<int32_t>(1, r.d);
     VkBufferImageCopy c = {};
-    const uint64_t row_blocks = (rw + bw - 1) / bw;
-    const uint64_t row_bytes = row_blocks * bpb;
-    const uint64_t stride = p.row_stride > 0 ? static_cast<uint64_t>(p.row_stride) : row_bytes;
-    c.bufferRowLength = static_cast<uint32_t>(stride / bpb * bw);
-    c.bufferImageHeight = p.image_stride > 0 ? static_cast<uint32_t>(static_cast<uint64_t>(p.image_stride) / stride * bh) : 0;
     c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, s.level, s.layer, 1};
     if (tex_is_depth(t)) c.imageSubresource.aspectMask = tex_aspect(t) & VK_IMAGE_ASPECT_DEPTH_BIT;
     c.imageOffset = {r.x, r.y, r.z};
     c.imageExtent = {rw, rh, rd};
     if (t->b.target != NVN_TEXTURE_TARGET_3D && t->layers > 1 && !p.has_view) { c.imageSubresource.layerCount = tex_layers(t); c.imageExtent.depth = 1; }
     if (t->b.target != NVN_TEXTURE_TARGET_3D && rd > 1) { c.imageSubresource.layerCount = rd; c.imageSubresource.baseArrayLayer = s.layer + static_cast<uint32_t>(std::max(0, r.z)); c.imageOffset.z = 0; c.imageExtent.depth = 1; }
-    const uint64_t buf_bytes = stride * ((rh + bh - 1) / bh) * rd;
+    if (t->b.target != NVN_TEXTURE_TARGET_3D) {
+        if (rd == 1 && r.z) c.imageSubresource.baseArrayLayer += uint32_t(r.z);
+        c.imageOffset.z = 0;
+    }
+    CopySpan span;
+    if (uint64_t(c.imageSubresource.baseArrayLayer) + c.imageSubresource.layerCount > tex_layers(t) ||
+        uint64_t(c.imageOffset.z) + c.imageExtent.depth > ext.depth ||
+        (r.x % bw) || (r.y % bh) ||
+        ((rw % bw) && uint64_t(r.x) + rw != ext.width) ||
+        ((rh % bh) && uint64_t(r.y) + rh != ext.height) ||
+        !copy_span(rw, rh, uint64_t(c.imageExtent.depth) * c.imageSubresource.layerCount,
+                   bw, bh, bpb, p.row_stride, p.image_stride, span)) {
+        note_unsupported("buffer/image copy has invalid block alignment, slices or pitches");
+        return;
+    }
+    c.bufferRowLength = span.row_texels;
+    c.bufferImageHeight = span.image_texels;
+    const uint64_t buf_bytes = span.bytes;
+    if (p.address > UINT64_MAX - buf_bytes) {
+        note_unsupported("buffer/image copy address range overflows");
+        return;
+    }
     if (!to_texture) compute_out_guard(p.address, buf_bytes, kOutBufferWrite);     // written: held results there go back first
     BufRef br = to_texture ? held_or_pool(p.address, buf_bytes, kOutBufferRead, true) : resolve_buffer(p.address, buf_bytes);
+    if (!br.ok || buf_bytes > br.avail || br.offset % bpb || (tex_is_depth(t) && br.offset % 4)) {
+        NXLOG_E(kTag, "buffer/image copy rejected: address %llx requires %llu bytes, available %llu, offset %llu",
+                (unsigned long long)p.address, (unsigned long long)buf_bytes,
+                (unsigned long long)br.avail, (unsigned long long)br.offset);
+        note_unsupported("buffer/image copy exceeds or misaligns its backing buffer");
+        return;
+    }
     c.bufferOffset = br.offset;
     if (to_texture) {
         tex_ensure_current(t, *F);
@@ -3003,7 +3113,7 @@ void do_copy_buffer_texture(const P_CopyBufTex& p, bool to_texture) {
         tex_ensure_current(t, *F);
         tex_transition(t, *F, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         vkCmdCopyImageToBuffer(F->cb, tex_image(t), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, br.buffer, 1, &c);
-        gpu_wrote(p.address, stride * ((rh + bh - 1) / bh) * rd, kWriteImageCopy);
+        gpu_wrote(p.address, buf_bytes, kWriteImageCopy);
     }
     memory_barrier(F->cb);
     counters().copies.fetch_add(1, std::memory_order_relaxed);
@@ -3642,6 +3752,7 @@ void replay_begin_submit(Frame& f) {
     // one support buffer per submission (Ryujinx SupportBuffer: render scales 1.0, no BGRA remap)
     g_support = f.upload(sizeof(SupportBuffer), 256);
     g_support_scaled.clear();
+    g_driver_banks.clear();
     g_draw_support = UploadAlloc();
     if (g_support) {
         SupportBuffer sb = support_buffer_defaults();
