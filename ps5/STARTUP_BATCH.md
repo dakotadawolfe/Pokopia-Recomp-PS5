@@ -403,6 +403,15 @@ pass, and the native app builds locally. Deployment and the next integration
 run remain separate checks. Captures, translations, reports and binaries remain
 private; the release still needs on-console compilation from user inputs.
 
+The captured-shader iteration is installed with the title stopped. Complete
+readback verifies all 6,916 shaders plus metadata and the app from `0ca157f`:
+279,846,105 bytes, SHA-256
+`1daf5b03d37a1611e3c7d776a6ea41842f7fb8a525122c6286cadf0830061fd8`.
+The previous cache and executable, matching symbols and capture provenance
+remain private. The owned transfer helper and its payload slot were removed,
+and FTP port 2121 was verified closed. No automatic app launch occurred; the
+expanded-cache integration run remains pending.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
