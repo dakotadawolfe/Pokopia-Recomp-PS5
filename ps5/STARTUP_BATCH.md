@@ -438,6 +438,19 @@ occurred, and rendering/gameplay validation remains pending.
 
 ## Reproducing component checks
 
+The monitored follow-up (native PID 151) still fails during renderer startup,
+around 1,115 seconds. Its last shader progress is 5,512 loaded, zero missing;
+the complete report contains no missing-shader records. Presentation reaches
+calls 2 and 3 before texture preparation starts, but game imagery is unverified.
+Live kernel capture identifies `GPU_FAULT_PAGE_FAULT_ASYNC` (`0xa0d0c005`):
+SQC Data attempts a read at unmapped GPU VA `0x200000000`. This is the base of
+the driver's separate 32-bit window, not proof of which descriptor or instruction
+is responsible. Stencil normalization did not resolve the crash. The monitor's
+generic SIGSEGV match was from the restarted ShellUI's capability listing;
+the app's recorded fault is the asynchronous GPU page fault above.
+The report, 105 compressed kernel snapshots and fault receipt remain private.
+The owned helper was removed after collection. No rerun was requested.
+
 The host checks contain synthetic inputs and need no game data:
 
 ```sh
