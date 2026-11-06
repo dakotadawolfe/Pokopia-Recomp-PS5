@@ -796,7 +796,9 @@ struct RtldDeadline {
     std::thread worker{[this] {
         std::unique_lock lock(mutex);
 #ifdef NXRT_GAME_RENDER_NATIVE
-        constexpr int seconds = 900;
+        // Shader initialization is still progressing near fifteen minutes on
+        // hardware. Keep the diagnostic bounded without cutting off that phase.
+        constexpr int seconds = 1800;
         const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
         for (;;) {
             const auto next = std::min(end, std::chrono::steady_clock::now() + std::chrono::seconds(10));

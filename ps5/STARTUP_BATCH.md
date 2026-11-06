@@ -375,6 +375,34 @@ retained. The owned helper and diagnostic slots were removed afterward.
 No automatic game launch was performed. The next manual run must establish
 whether this reaches a game frame and whether native shader capture works.
 
+## Captured save-stage shaders
+
+Private report `game-native-1793929601-131.log` verifies native shader capture:
+all 212 previously unindexed misses were recovered from the live title's
+`/download0/pokopia-shader-capture`. Each code/control pair was downloaded
+before the sandbox unmounted, checked against its recorded sizes and code
+hash, and preserved in an immutable private snapshot with SHA-256 identities.
+All 212 translate successfully and pass Vulkan 1.3 SPIR-V validation. The
+merged cache contains 6,916 validated blocks; its provenance distinguishes
+runtime captures from static source-entry selection. This covers the observed
+misses, not every shader in the game, and does not prove rendering correctness.
+
+The run reopened the game's account save and ended at the 900-second watchdog
+with native status 2. It loaded 5,018 shaders and reported 212 misses. The final
+asset counters are 1,521 reads, 116,177,619 bytes, 2,259 ms and zero failures.
+Shader lookups total 12,826 ms, with a 20 ms maximum. No guest frame appeared:
+the seven submissions, one draw and one presentation are still initialization.
+The largest contiguous direct-memory range was 220,659,712 bytes; that is not
+total free memory. No new unsupported-service stop was reported.
+
+Shader loading advanced from 4,219 to 5,016 blocks around 883 seconds, shortly
+before the old deadline. The next app permits a bounded 1,800-second diagnostic
+run so continued initialization can be observed. This is additional diagnostic
+time, not a startup-speed fix. Five host cache-selection/installation checks
+pass, and the native app builds locally. Deployment and the next integration
+run remain separate checks. Captures, translations, reports and binaries remain
+private; the release still needs on-console compilation from user inputs.
+
 ## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:

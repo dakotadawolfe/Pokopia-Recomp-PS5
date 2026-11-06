@@ -975,7 +975,7 @@ The source review for the next batch is [UPSTREAM_REVIEW.md](UPSTREAM_REVIEW.md)
 ## Interpreting a run
 
 Reports are `/data/pokopia-recomp/tests/game-native-<time>-<pid>.log`.
-The current 900-second deadline starts at guest dispatch, after folder selection and
+The current 1,800-second deadline starts at guest dispatch, after folder selection and
 input checks. `GAME_GRAPHICS_BRIDGE` confirms host routing is installed;
 `GAME_GRAPHICS_READY` confirms the title called it. `GAME_NVN_PRESENT` records
 presentation, while `GAME_RENDER_REPORT` records submissions and draws. Those

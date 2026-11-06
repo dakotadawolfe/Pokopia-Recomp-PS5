@@ -77,8 +77,10 @@ def prepare(previous, previous_manifest, addition, selection, output, validator,
                   "addition_results_sha256": identity(addition / "results.tsv")["sha256"],
                   "selection": json.loads(selection.read_text()), "retranslated_shaders": replaced}
     (output / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
-    scope = ("startup-and-observed-source-files" if provenance["selection"]["scope"] ==
-             "runtime-misses-and-source-files" else "startup-and-observed-source-entries")
+    selection_scope = provenance["selection"]["scope"]
+    scope = ("startup-and-observed-runtime-captures" if selection_scope == "verified-runtime-captures" else
+             "startup-and-observed-source-files" if selection_scope == "runtime-misses-and-source-files" else
+             "startup-and-observed-source-entries")
     manifest = {"scope": scope, "full_game_coverage": False,
                 "blocks": len(rows), "validation": "spirv-val --target-env vulkan1.3",
                 "files": {p.name: identity(p) for p in sorted(output.iterdir())}}
