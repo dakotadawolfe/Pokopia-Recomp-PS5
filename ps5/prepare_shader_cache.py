@@ -7,6 +7,7 @@ The previous manifest is the manifest produced when that cache was prepared.
 """
 import argparse
 import csv
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -28,7 +29,9 @@ def checked_name(name):
     return name
 
 
-def prepare(previous, previous_manifest, addition, selection, output, validator, replace_existing=False, hardlink=False):
+def prepare(previous, previous_manifest, addition, selection, output, validator, replace_existing=False, hardlink=False, jobs=1):
+    if jobs not in range(1, 5):
+        raise ValueError("Shader validation jobs must be between one and four")
     previous, addition = previous.resolve(strict=True), addition.resolve(strict=True)
     output = output.resolve()
     if output.exists() or any(root == output or root in output.parents for root in (previous, addition)):
@@ -38,6 +41,7 @@ def prepare(previous, previous_manifest, addition, selection, output, validator,
         if identity(previous / checked_name(name)) != expected:
             raise ValueError(f"Previous cache differs from its manifest: {name}")
     rows, files, columns, replaced = {}, {}, None, []
+    validation = []
     for root in (previous, addition):
         with (root / "results.tsv").open(newline="") as stream:
             reader = csv.DictReader(stream, delimiter="\t")
@@ -51,7 +55,7 @@ def prepare(previous, previous_manifest, addition, selection, output, validator,
                 path = root / (key + ".spv")
                 if path.stat().st_size != int(row["spv_bytes"]):
                     raise ValueError(f"Shader size differs from translation result: {key}")
-                subprocess.run([str(validator), "--target-env", "vulkan1.3", str(path)], check=True)
+                validation.append(path)
                 if key in rows:
                     semantic = lambda r: {k: v for k, v in r.items() if k != "ms"}
                     if identity(path) != identity(files[key]) or semantic(row) != semantic(rows[key]):
@@ -63,6 +67,14 @@ def prepare(previous, previous_manifest, addition, selection, output, validator,
                     rows[key], files[key] = row, path
     if not rows:
         raise ValueError("Empty shader cache")
+    def validate(path):
+        subprocess.run([str(validator), "--target-env", "vulkan1.3", str(path)], check=True)
+    # Every file is still validated, including byte-identical previous entries.
+    # Parallel processes shorten iteration without weakening the cache checks.
+    with ThreadPoolExecutor(max_workers=jobs) as workers:
+        for count, _ in enumerate(workers.map(validate, validation), 1):
+            if count % 500 == 0 or count == len(validation):
+                print(f"Validated {count}/{len(validation)} shader inputs", flush=True)
     output.mkdir(parents=True)
     for key, path in files.items():
         if hardlink:
@@ -95,6 +107,8 @@ if __name__ == "__main__":
     parser.add_argument("--spirv-val", type=Path, required=True)
     parser.add_argument("--replace-existing", action="store_true", help="Replace changed translations after a compiler correction, recording every replaced key")
     parser.add_argument("--hardlink", action="store_true", help="Link immutable SPIR-V inputs on the same filesystem to avoid duplicating large private caches; never edit linked files in place")
+    parser.add_argument("--jobs", type=int, choices=range(1, 5), default=1,
+                        help="Concurrent validator processes; every input is checked")
     args = parser.parse_args()
     prepare(args.previous_cache, args.previous_manifest, args.addition,
-            args.selection, args.output, args.spirv_val, args.replace_existing, args.hardlink)
+            args.selection, args.output, args.spirv_val, args.replace_existing, args.hardlink, args.jobs)
