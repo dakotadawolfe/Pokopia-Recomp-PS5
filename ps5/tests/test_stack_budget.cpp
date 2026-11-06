@@ -13,8 +13,8 @@ NXTEST_GROUP(stack_budget)
 namespace {
 // A returned deep frame distinguishes a painted watermark from a sample of
 // the current stack pointer. Touch every page, including both ends.
-__attribute__((noinline)) unsigned deep_stack_frame() {
-    volatile unsigned char data[24u << 20];
+template<size_t FrameBytes> __attribute__((noinline)) unsigned deep_stack_frame() {
+    volatile unsigned char data[FrameBytes];
     unsigned total = 0;
     for (size_t n = 0; n < sizeof data; n += 4096) data[n] = 0x5a;
     data[sizeof data-1] = 0x73;
@@ -22,10 +22,10 @@ __attribute__((noinline)) unsigned deep_stack_frame() {
     return total + data[sizeof data-1];
 }
 }
-NXTEST(compact_worker_stacks_preserve_deep_frames_guards_and_release_backing) {
+template<size_t StackBytes, size_t FrameBytes> void check_worker_stacks() {
     using nxrt::host_thread::Thread;
     using namespace std::chrono_literals;
-    constexpr size_t bytes = 32u << 20;
+    constexpr size_t bytes = StackBytes;
     struct Context {
         std::atomic<bool> ready{false}, release{false};
         nxrt::host_thread::CurrentSample sample;
@@ -43,7 +43,7 @@ NXTEST(compact_worker_stacks_preserve_deep_frames_guards_and_release_backing) {
     for (size_t n = 0; n < workers.size(); ++n) {
         workers[n] = Thread::create(+[](void* raw) {
             auto& context = *static_cast<Context*>(raw);
-            context.checksum = deep_stack_frame();
+            context.checksum = deep_stack_frame<FrameBytes>();
             context.sample = Thread::sample_current();
             pthread_attr_t attributes;
             if (!pthread_attr_init(&attributes)) {
@@ -62,10 +62,10 @@ NXTEST(compact_worker_stacks_preserve_deep_frames_guards_and_release_backing) {
     for (auto& context : contexts) {
         while (!context.ready && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(1ms);
         REQUIRE(context.ready); REQUIRE(context.attributes_ok);
-        CHECK_EQ(context.checksum, unsigned((24u << 20)/4096*0x5a + 0x73));
+        CHECK_EQ(context.checksum, unsigned(FrameBytes/4096*0x5a + 0x73));
         CHECK_EQ(context.capacity, bytes); CHECK_EQ(context.sample.stack_bytes, bytes);
         CHECK(context.sample.stack_used < 65536);
-        CHECK(context.sample.touched_stack_bytes >= (24u << 20));
+        CHECK(context.sample.touched_stack_bytes >= FrameBytes);
         CHECK(context.sample.touched_stack_bytes < bytes - (1u << 20));
         void* first = nullptr; void* last = nullptr; uint32_t flags = 0;
         const int guard = sceKernelQueryMemoryProtection(reinterpret_cast<void*>(context.base-nxrt::host_vm::page_size()), &first, &last, &flags);
@@ -81,4 +81,10 @@ NXTEST(compact_worker_stacks_preserve_deep_frames_guards_and_release_backing) {
         const int query = sceKernelQueryMemoryProtection(reinterpret_cast<void*>(contexts[n].base), &first, &last, &flags);
         CHECK(query != 0 || (flags & 7u) == 0);
     }
+}
+NXTEST(compact_worker_stacks_preserve_deep_frames_guards_and_release_backing) {
+    check_worker_stacks<32u << 20, 24u << 20>();
+}
+NXTEST(eight_mib_workers_preserve_six_mib_frames_guards_and_release_backing) {
+    check_worker_stacks<8u << 20, 6u << 20>();
 }

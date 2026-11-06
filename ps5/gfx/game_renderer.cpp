@@ -195,6 +195,7 @@ bool open_picker() {
     // The first-frame diagnostic has a fixed lifetime and a bounded byte budget.
     config_set("nvn", "dump_missing", "/download0/pokopia-shader-capture");
     config_set("nvn", "dump_missing_max_bytes", "16777216");
+    config_set("nvn", "trace_frame", "0,1,2,3,4,5");
     extras::Settings settings;
     settings.hdr.mode = extras::HdrMode::Off; settings.upscale.mode = extras::UpscaleMode::Off;
     settings.upscale.frame_generation = false; settings.latency.mode = extras::LatencyMode::Off;

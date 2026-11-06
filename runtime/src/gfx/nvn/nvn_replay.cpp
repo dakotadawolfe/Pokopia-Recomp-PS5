@@ -1740,12 +1740,18 @@ void support_for_draw(const ProgLayout& pl, bool compute) {
     g_draw_support = u;
 }
 
-void bind_sets(const ProgLayout& pl, VkPipelineBindPoint bp) {
+bool bind_sets(const ProgLayout& pl, VkPipelineBindPoint bp) {
     for (uint32_t set = 0; set < 4; ++set) {
         if (!pl.has_set[set]) continue;
         VkDescriptorSet ds = build_set(pl, set);
-        if (ds) vkCmdBindDescriptorSets(F->cb, bp, pl.layout, set, 1, &ds, 0, nullptr);
+        if (!ds) {
+            NXLOG_E(kTag, "descriptor allocation failed: bind point %u set %u; GPU operation skipped", static_cast<unsigned>(bp), set);
+            note_unsupported("required descriptor set could not be allocated");
+            return false;
+        }
+        vkCmdBindDescriptorSets(F->cb, bp, pl.layout, set, 1, &ds, 0, nullptr);
     }
+    return true;
 }
 
 // ---- draws -------------------------------------------------------------------------------------------------------------------
@@ -2326,7 +2332,7 @@ bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopology* top
     set_dynamic_state(g_dirty, topo, indexed, index_type);
     if (g_dirty & kDesc) {
         support_for_draw(*pl, false);
-        bind_sets(*pl, VK_PIPELINE_BIND_POINT_GRAPHICS);
+        if (!bind_sets(*pl, VK_PIPELINE_BIND_POINT_GRAPHICS)) return false;
     }
     if (pl->push_bytes && g_gen_tcs) {
         // the pass-through control shader's tessellation levels (NVN's fixed SetInner/OuterTessellationLevels), every draw: cheap, and
@@ -2767,7 +2773,10 @@ void do_dispatch(uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
     g_shadowing = compute_shadows_on();
     g_shadow_uses.clear();
     g_sh_barrier = g_sh_copied = false;
-    bind_sets(*pl, VK_PIPELINE_BIND_POINT_COMPUTE);
+    if (!bind_sets(*pl, VK_PIPELINE_BIND_POINT_COMPUTE)) {
+        g_shadowing = false;
+        return;
+    }
     if (g_sh_copied) {
         memory_barrier(F->cb);     // the copies into the shadows before the dispatch reads them
         gstamp("shadow in");

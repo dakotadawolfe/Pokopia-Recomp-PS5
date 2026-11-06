@@ -909,13 +909,12 @@ NXTEST(decrypted_rtld_reaches_the_sdk_handoff_without_executing_sdk_code) {
     // do not truncate SetHeapSize or report successful backing we cannot supply.
     const auto native_budget = std::to_string(PKP_NATIVE_GAME_MEMORY_MIB);
     nxrt::config_set("memory", "app_memory_mb", native_budget.c_str());
-    // The compact build exhausted direct memory starting its 35th 64 MiB
-    // worker. Use a guarded 32 MiB budget and measure touched stack memory;
-    // the earlier SVC point samples alone did not capture returned deep calls.
-    nxrt::config_set("threads", "host_stack_mb", "32");
+    // Startup watermarks remain below 16 KiB. Keep guarded 8 MiB stacks and
+    // continue measuring deeper paths while leaving memory for GPU resources.
+    nxrt::config_set("threads", "host_stack_mb", "8");
     nxrt::config_set("threads", "measure_host_stack", "true");
     REQUIRE(nxrt::svc_total_memory() == (uint64_t{PKP_NATIVE_GAME_MEMORY_MIB} << 20));
-    std::printf("GAME_MEMORY_PROFILE guest_application_mib=%u minimum_host_free_mib=1024 worker_stack_mib=32 stack_watermarks=true\n",
+    std::printf("GAME_MEMORY_PROFILE guest_application_mib=%u minimum_host_free_mib=1024 worker_stack_mib=8 stack_watermarks=true\n",
         unsigned(PKP_NATIVE_GAME_MEMORY_MIB));
 #endif
 #ifdef NXRT_GAME_STARTUP_TRACE

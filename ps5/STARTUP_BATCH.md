@@ -436,6 +436,29 @@ The next run should capture the kernel log during startup: the retained ring
 buffer from the previous failure did not contain the fault. No automatic launch
 occurred, and rendering/gameplay validation remains pending.
 
+## Descriptor allocation and worker memory
+
+The next batch refuses draws and dispatches when a required descriptor set
+cannot be allocated. Previously those operations could continue with stale or
+unbound sets. Descriptor-pool failures now record the Vulkan result; only pool
+exhaustion and fragmentation retry in a fresh pool. This fixes a source-level
+error path, but does not establish that allocation failure caused PID 151's
+GPU fault.
+
+The diagnostic uses guarded 8 MiB worker stacks instead of 32 MiB, retaining
+owner-only stack watermarks. PID 151's largest observed touched stack was
+14,648 bytes; that is startup evidence, not a bound on future gameplay. The
+change saves 24 MiB per worker. Both the existing 32 MiB/24 MiB frame test and
+a new 8 MiB/6 MiB frame test pass on PS5, including concurrent workers, returned
+frame detection, guard pages and backing release. Private report
+`audio-runtime-1793945253-157.log` records 81 cases and zero failures.
+
+The native app builds locally. Early NVN frames 0 through 5 now log their
+operations and bindings, so the next live kernel fault can be correlated with
+the renderer. These traces are private game-derived diagnostics. No new shader
+cache is needed: the previous run had no missing shader records. Native startup
+and the descriptor failure path still need integration validation.
+
 ## Reproducing component checks
 
 The monitored follow-up (native PID 151) still fails during renderer startup,

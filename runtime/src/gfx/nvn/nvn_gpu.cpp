@@ -209,7 +209,11 @@ VkDescriptorPool new_dpool() {
     ci.poolSizeCount = sizeof(sizes) / sizeof(sizes[0]);
     ci.pPoolSizes = sizes;
     VkDescriptorPool p = VK_NULL_HANDLE;
-    if (vkCreateDescriptorPool(g->dev->device(), &ci, nullptr, &p) != VK_SUCCESS) return VK_NULL_HANDLE;
+    const VkResult result = vkCreateDescriptorPool(g->dev->device(), &ci, nullptr, &p);
+    if (result != VK_SUCCESS) {
+        NXLOG_E(kTag, "vkCreateDescriptorPool failed (%d)", static_cast<int>(result));
+        return VK_NULL_HANDLE;
+    }
     vk_gauge_descriptor_pools().add(1);
     return p;
 }
@@ -348,6 +352,8 @@ VkDescriptorSet Frame::alloc_set(VkDescriptorSetLayout layout) {
             vk_gauge_descriptor_sets().add(1);
             return set;
         }
+        NXLOG_E(kTag, "vkAllocateDescriptorSets failed (%d), pool %u, attempt %d", static_cast<int>(r), static_cast<unsigned>(s.dpool_cur), attempt);
+        if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) return VK_NULL_HANDLE;
         ++s.dpool_cur;   // exhausted or fragmented: move on to the next pool (created on demand)
     }
     return VK_NULL_HANDLE;
