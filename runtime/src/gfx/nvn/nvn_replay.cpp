@@ -2871,15 +2871,17 @@ void do_clear_depth_stencil(const P_ClearDepthStencil& p) {
     if (!S.render_enable) return;
     if (!S.depth_tex) return;
     if (!ensure_pass()) return;
+    // Stencil attachments contain eight bits; callers also use ~0u for all bits.
+    const uint32_t stencil_mask = p.stencil_mask & 0xffu;
     VkClearAttachment ca = {};
     if (p.depth_mask) ca.aspectMask |= VK_IMAGE_ASPECT_DEPTH_BIT;
-    if (p.stencil_mask && P.has_stencil) ca.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+    if (stencil_mask && P.has_stencil) ca.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
     if (!ca.aspectMask) return;
-    if (p.stencil_mask && p.stencil_mask != 0xff && P.has_stencil && !P.depth_ro) {
+    if (stencil_mask && stencil_mask != 0xff && P.has_stencil && !P.depth_ro) {
         // vkCmdClearAttachments has no stencil write mask: a masked stencil clear is a draw with that write mask (depth goes along)
         if (!g_mask_ready) { g_mask_ok = g_mask.init(device()); g_mask_ready = true; }
         const VkClearRect cr = full_rect();
-        if (g_mask_ok && g_mask.record_depth_stencil(F->cb, P.color_fmt, P.ncolor, P.depth_fmt, true, P.samples, p.depth_mask != 0, p.depth, p.stencil_mask,
+        if (g_mask_ok && g_mask.record_depth_stencil(F->cb, P.color_fmt, P.ncolor, P.depth_fmt, true, P.samples, p.depth_mask != 0, p.depth, stencil_mask,
                                                     static_cast<uint32_t>(p.stencil), cr.rect)) {
             static bool noted = false;
             if (!noted) { noted = true; NXLOG_I("nvn.replay", "replay: ClearDepthStencil with a partial stencil mask (first): mask %x, drawn with that stencil write mask", p.stencil_mask); }

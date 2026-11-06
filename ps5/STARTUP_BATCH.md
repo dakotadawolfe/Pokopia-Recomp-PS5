@@ -414,6 +414,19 @@ expanded-cache integration run remains pending.
 
 ## Reproducing component checks
 
+The subsequent private report `game-native-1793931637-134.log` reaches
+presentation calls 2 and 3 and background texture preparation around 1,124
+seconds, then ends without a controlled-stop marker. Visible game imagery and
+the crash cause remain unverified. All 378 new missing shader hashes were
+captured; the retained folder also includes the previous 212 captures. All
+590 translate and pass Vulkan 1.3 SPIR-V validation locally.
+
+The last renderer message exposes a separate clear-path error: stencil mask
+`0xffffffff` is classified as partial despite selecting all eight stencil
+bits. The renderer now normalizes the mask to eight bits before deciding
+between an attachment clear and a masked draw. The native app builds locally;
+this correction is not yet console-verified or established as the crash fix.
+
 The host checks contain synthetic inputs and need no game data:
 
 ```sh
