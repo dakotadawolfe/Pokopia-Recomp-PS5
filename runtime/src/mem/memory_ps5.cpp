@@ -86,20 +86,27 @@ struct Part {
     bool accessible() const { return region ? region->is_mapped(address, size) : heap->is_mapped(address, size); }
     bool protect(Prot p) const { return region ? region->protect(address, size, p) : heap->protect(address, size, p); }
 };
+bool next_part(uint64_t first, uint64_t end, Part& out) {
+    auto it = fixed.upper_bound(first);
+    if (it != fixed.begin()) {
+        --it;
+        if (first < it->first + it->second.size) {
+            const auto stop = std::min(end, it->first + it->second.size);
+            out = {first, stop - first, it->second.owner.get()};
+            return true;
+        }
+    }
+    const uint64_t heap_end = heap ? heap->view_end(first) : 0;
+    if (!heap_end) return false;
+    out = {first, std::min(end, heap_end) - first, nullptr};
+    return true;
+}
 bool parts(uint64_t first, uint64_t end, std::vector<Part>& out) {
     while (first < end) {
-        auto it = fixed.upper_bound(first);
-        if (it != fixed.begin()) {
-            --it;
-            if (first < it->first + it->second.size) {
-                const auto stop = std::min(end, it->first + it->second.size);
-                out.push_back({first, stop - first, it->second.owner.get()}); first = stop; continue;
-            }
-        }
-        const uint64_t heap_end = heap ? heap->view_end(first) : 0;
-        if (!heap_end) return false;
-        const auto stop = std::min(end, heap_end);
-        out.push_back({first, stop - first, nullptr}); first = stop;
+        Part part;
+        if (!next_part(first, end, part)) return false;
+        out.push_back(part);
+        first += part.size;
     }
     return true;
 }
@@ -220,11 +227,15 @@ bool copy_readable(uint64_t address, void* dst, uint64_t size) {
     std::lock_guard lock(mutex);
     uint64_t first, end;
     if (!span(address, size, first, end)) return false;
-    std::vector<Part> ranges;
     // Service-owned shared aliases have a different lifetime owner, so they
-    // cannot be borrowed under this mutex.
-    if (!parts(first, end, ranges) || !SubpageMap::allows(address, size, 1) ||
-        !std::all_of(ranges.begin(), ranges.end(), [](const Part& r) { return r.accessible(); })) return false;
+    // cannot be borrowed under this mutex. Check every owned span before copying,
+    // without allocating a temporary vector for each texture snapshot page.
+    for (auto at = first; at < end;) {
+        Part part;
+        if (!next_part(at, end, part) || !part.accessible()) return false;
+        at += part.size;
+    }
+    if (!SubpageMap::allows(address, size, 1)) return false;
     std::memcpy(dst, reinterpret_cast<const void*>(address), static_cast<size_t>(size));
     return true;
 }

@@ -6,6 +6,7 @@
 #include "nxrt/write_watch.h"
 #include "nxrecomp/ctx.h"
 #include "protect_fault.h"
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstring>
@@ -36,6 +37,26 @@ NXTEST(snapshot_copies_readable_pages_and_rejects_entire_invalid_span) {
     CHECK(mem::copy_readable(0, nullptr, 0));
     REQUIRE(mem::release_fixed(base));
     CHECK(!mem::copy_readable(base, output.data(), mem::kPage));
+}
+
+NXTEST(snapshot_checks_adjacent_owners_and_rejects_holes_before_copying) {
+    Reset reset;
+    REQUIRE(mem::init());
+    REQUIRE(mem::reserve_fixed(base, granule, "snapshot-first"));
+    REQUIRE(mem::reserve_fixed(base + granule, granule, "snapshot-second"));
+    REQUIRE(mem::commit(base, granule));
+    REQUIRE(mem::commit(base + granule, granule));
+    std::memset(reinterpret_cast<void*>(base), 0x31, granule);
+    std::memset(reinterpret_cast<void*>(base + granule), 0x72, granule);
+    std::vector<uint8_t> output(2 * mem::kPage, 0xa7);
+    const auto start = base + granule - mem::kPage;
+    REQUIRE(mem::copy_readable(start, output.data(), output.size()));
+    CHECK(std::all_of(output.begin(), output.begin() + mem::kPage, [](uint8_t v) { return v == 0x31; }));
+    CHECK(std::all_of(output.begin() + mem::kPage, output.end(), [](uint8_t v) { return v == 0x72; }));
+    REQUIRE(mem::release_fixed(base + granule));
+    output.assign(output.size(), 0xa7);
+    CHECK(!mem::copy_readable(start, output.data(), output.size()));
+    CHECK(output == std::vector<uint8_t>(output.size(), 0xa7));
 }
 
 NXTEST(gpu_import_views_reject_holes_and_preserve_primary_policy) {
@@ -147,6 +168,27 @@ NXTEST(texture_tracker_range_checks_preserve_changes_for_unused_textures) {
     changed.clear();
     REQUIRE(mem::heap_alias_unmap(alias)); REQUIRE(mem::heap_decommit(0, granule));
     mem::ww::take_written_range(region, 2, 2, changed); CHECK(changed == std::vector<uint64_t>({2, 3}));
+}
+
+NXTEST(texture_tracker_rearms_existing_and_new_pages_atomically) {
+    Reset reset;
+    REQUIRE(mem::init()); REQUIRE(mem::heap_create(granule)); REQUIRE(mem::heap_commit(0, granule));
+    auto* region = mem::ww::region_create(mem::kHeapBase, granule); REQUIRE(region);
+    struct RegionOwner { mem::ww::Region* r; ~RegionOwner() { mem::ww::region_destroy(r); } } owner{region};
+    REQUIRE(mem::ww::arm(region, 0, 1));
+    wr32(mem::kHeapBase, 42);
+    wr32(mem::kHeapBase + mem::kPage, 73);
+    REQUIRE(mem::ww::arm(region, 0, 2));
+    CHECK(mem::ww::all_valid(region, 0, 2));
+    mem::ww::before_os_write(reinterpret_cast<void*>(mem::kHeapBase), 1);
+    REQUIRE(mem::ww::arm(region, 0, 2));
+    std::vector<uint64_t> changed;
+    mem::ww::take_written(region, changed); CHECK(changed.empty());
+    wr32(mem::kHeapBase, 84);
+    REQUIRE(mem::protect(mem::kHeapBase + 2 * mem::kPage, mem::kPage, mem::Prot::None));
+    CHECK(!mem::ww::arm(region, 0, 3));
+    mem::ww::take_written(region, changed); CHECK(changed == std::vector<uint64_t>({0}));
+    CHECK(mem::ww::page_valid(region, 1));
 }
 
 NXTEST(failed_init_keeps_foreign_reservation_and_releases_its_stack) {

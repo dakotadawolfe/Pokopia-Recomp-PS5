@@ -48,7 +48,12 @@ bool arm(Region* r, uint64_t first, uint64_t count) {
         auto& p = pending[n];
         if (!copy_readable(r->base + n * 4096, p.bytes.data(), p.bytes.size())) return false;
     }
-    for (auto& [n, p] : pending) { r->watched[n] = std::move(p); r->written.erase(n); }
+    // Transfer new page nodes instead of allocating a second full snapshot.
+    // Existing pages stay in pending and replace their old bytes only after
+    // the entire requested range has been read successfully.
+    r->watched.merge(pending);
+    for (auto& [n, p] : pending) r->watched.find(n)->second = std::move(p);
+    r->written.erase(r->written.lower_bound(first), r->written.lower_bound(first + count));
     return true;
 }
 bool all_valid(const Region* r, uint64_t first, uint64_t count) {
