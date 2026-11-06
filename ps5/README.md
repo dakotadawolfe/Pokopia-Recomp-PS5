@@ -10,7 +10,9 @@ The initial upstream revision is `2c29515b23a6d78d967775fd7e9f24f50402cca7`.
   including native code generation and shader translation. No PC, keys or
   firmware should be required for setup or play. At console launch, let the
   user browse USB or internal storage for their existing game folder, validate
-  it, and remember that choice without copying the assets. PC compilation from
+  it, and import a verified copy into title-owned storage for subsequent launches
+  without USB. The current development picker only remembers the source folder;
+  the release import workflow remains unimplemented. PC compilation from
   `C:/Games/pokopia` or another explicit path is private development tooling.
 - Produce a native PS5 application launched through ShadowMountPlus, using
   the existing homebrew SDK, RADV and native presentation work where appropriate.
@@ -44,8 +46,11 @@ The public ShadowMountPlus application will contain the platform runtime,
 folder picker and redistributable preparation tools, with no game code or
 game-derived cache. On first use, it must generate native code and shaders on
 the PS5 from the user's selected decrypted dump. Those private outputs stay
-on that console, separate from the distributable application. Game assets
-remain in the selected USB or internal-storage folder and are not moved.
+on that console, separate from the distributable application. The release must
+copy game assets into verified title-owned storage while preserving the selected
+USB or internal-storage originals. Normal title deletion must remove the imported
+assets and generated outputs; the exact writable layout and uninstall behavior
+still require validation.
 
 This on-console preparation pipeline is not implemented. Current development
 builds link PC-generated x86-64 game code into `eboot.bin` and install a
@@ -57,15 +62,18 @@ user's selected folder; complete in-game asset loading remains unverified.
 
 The bounded [game/renderer integration build](GAME_RENDERER_STARTUP.md) now
 connects the selected folder and compiled modules to the native NVN renderer.
-It has not yet established a working game menu or gameplay. The earlier native
+The native menu, controller response and audio have been physically confirmed,
+and character selection has been reached. Character rendering still has missing
+or black content, and playable-world progression remains unverified. The earlier native
 renderer batch, including all 49,981 texture-conversion checks, passed on PS5;
 see [the recorded console evidence](NVN_RUNTIME_PORT.md#recorded-validation).
 
 The release requirement covers first-run preparation as well as playing:
 neither may require a PC, keys or firmware. USB and internal-storage gameplay
-both require runtime validation. Save data and
-controller/audio preferences will live in writable application-data directories,
-separate from game inputs and the app package.
+both require runtime validation. Release saves must use native PS5 save-data
+integration and appear in the console's Saved Data management. Current prototype
+save storage does not establish that integration. Controller/audio preferences
+must persist without changing the user's source files.
 
 ## Input validation
 
