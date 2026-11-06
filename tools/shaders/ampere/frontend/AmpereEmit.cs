@@ -849,7 +849,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
             else if (HasSuffix(x, ".F32")) r = [v, v];
             // HFMA2 names these lanes high first: rotate B, negating the new low lane.
             // Matches nxnative AHfma2 and the corrected Eden-NS2 lane ordering.
-            else if (HasSuffix(x, ".H0_NH1")) r = [ctx.FPAbsNeg(ctx.UnpackHalf2x16High(v), false, true), ctx.UnpackHalf2x16Low(v)];
+            else if (HasSuffix(x, ".H0_NH1"))
+            {
+                // Apply operand modifiers before rotation so abs does not erase the low lane's sign.
+                r = FPAbsNeg(ctx, new[] { ctx.UnpackHalf2x16Low(v), ctx.UnpackHalf2x16High(v) }, x.Abs, x.Neg);
+                return [ctx.FPAbsNeg(r[1], false, true), r[0]];
+            }
             else r = [ctx.UnpackHalf2x16Low(v), ctx.UnpackHalf2x16High(v)];
             return FPAbsNeg(ctx, r, x.Abs, x.Neg);
         }

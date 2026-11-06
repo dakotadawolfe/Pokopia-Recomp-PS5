@@ -27,6 +27,7 @@ Host checks:
 
 ```sh
 python3 -B ps5/test_radv_retirement.py /path/to/partition/radv_ps5_bo.c
+python3 -B ps5/test_half_rotation.py --dotnet /path/to/dotnet
 cmake --build /path/to/audio-host --target ps5_shader_control_tests ps5_driver_bank_tests ps5_base_instance_tests ps5_copy_span_tests
 ctest --test-dir /path/to/audio-host -R 'shader_control|driver_bank|base_instance|copy_span' --output-on-failure
 ```
@@ -38,6 +39,12 @@ graphics stage mapping, point size and instance data. Synthetic SPIR-V tests
 validate rewritten modules with `spirv-val`, including repeat application and
 nonmatching modules. Copy tests cover padding, arrays, compression and overflow.
 The native PS5 compile/link and FSELF checks are separate from these host tests.
+
+The half-selector check executes the production `HalfPair` method against a
+bit-exact host adapter, testing eight signed inputs and modifier combinations.
+Absolute-value modifiers apply before rotation, preserving the negated output
+lane. The modifier correction regenerated identical SPIR-V for all 224 affected
+modules in the current private startup cache; none needed another replacement.
 
 Private shaders are rebuilt locally and validated before installation; none of
 the cache, generated game code, binaries or runtime captures belong in Git.
