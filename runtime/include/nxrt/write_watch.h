@@ -40,6 +40,11 @@ bool page_banned(const Region* r, uint64_t page);
 void invalidate(Region* r, uint64_t first, uint64_t count);
 // Owner: appends the pages written by the CPU since the last call (page indices) and clears that record.
 void take_written(Region* r, std::vector<uint64_t>& out);
+#if defined(NXRT_TARGET_PS5)
+// Exact snapshot checks for a texture about to be used. Changes outside the
+// requested range remain pending for its eventual consumer.
+void take_written_range(Region* r, uint64_t first, uint64_t count, std::vector<uint64_t>& out);
+#endif
 
 // Any thread: the operating system is about to write [p, p + n) (a file read into guest memory): armed pages in the range become writable
 // and count as written. Cheap when no region exists.

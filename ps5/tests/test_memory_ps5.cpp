@@ -123,6 +123,32 @@ NXTEST(texture_tracker_failed_arm_preserves_prior_snapshot) {
     CHECK(!mem::ww::arm(region, UINT64_MAX, 1));
 }
 
+NXTEST(texture_tracker_range_checks_preserve_changes_for_unused_textures) {
+    Reset reset;
+    REQUIRE(mem::init()); REQUIRE(mem::heap_create(granule)); REQUIRE(mem::heap_commit(0, granule));
+    const auto alias = mem::heap_alias(0, granule); REQUIRE(alias);
+    auto* region = mem::ww::region_create(mem::kHeapBase, granule); REQUIRE(region);
+    struct RegionOwner { mem::ww::Region* r; ~RegionOwner() { mem::ww::region_destroy(r); } } owner{region};
+    REQUIRE(mem::ww::arm(region, 0, 8));
+    wr32(mem::kHeapBase + 4096 + 20, 21);
+    wr32(alias + 6 * 4096 + 12, 31);
+    std::vector<uint64_t> changed;
+    mem::ww::take_written_range(region, 2, 3, changed); CHECK(changed.empty());
+    mem::ww::take_written_range(region, 0, 2, changed); CHECK(changed == std::vector<uint64_t>({1}));
+    changed.clear();
+    mem::ww::take_written_range(region, 1, 2, changed); CHECK(changed.empty());
+    mem::ww::invalidate(region, 4, 1);
+    mem::ww::before_os_write(reinterpret_cast<void*>(mem::kHeapBase + 7 * 4096), 1);
+    mem::ww::take_written_range(region, UINT64_MAX, 2, changed); CHECK(changed.empty());
+    mem::ww::take_written_range(region, 2, 0, changed); CHECK(changed.empty());
+    mem::ww::take_written_range(region, 5, 3, changed); CHECK(changed == std::vector<uint64_t>({6, 7}));
+    changed.clear();
+    mem::ww::take_written(region, changed); CHECK(changed == std::vector<uint64_t>({4}));
+    changed.clear();
+    REQUIRE(mem::heap_alias_unmap(alias)); REQUIRE(mem::heap_decommit(0, granule));
+    mem::ww::take_written_range(region, 2, 2, changed); CHECK(changed == std::vector<uint64_t>({2, 3}));
+}
+
 NXTEST(failed_init_keeps_foreign_reservation_and_releases_its_stack) {
     Reset reset;
     auto occupied = mem::GuestRegion::create(mem::kKernelBase, granule); REQUIRE(occupied);

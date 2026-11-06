@@ -108,6 +108,9 @@ Texture::~Texture() {
 
 namespace gpu {
 namespace {
+#if defined(NXRT_TARGET_PS5)
+void check_texture_snapshot(Texture* t, bool force = false);
+#endif
 
 constexpr const char* kTag = "nvn.tex";
 std::atomic<uint64_t> g_live_images{0};
@@ -636,7 +639,12 @@ TexGpu* create_texture_gpu(Texture* t, float want_scale) {
 // The texture's image, created on first use. Null when the texture has no usable image (the failure is counted and logged once).
 TexGpu* tex_or_null(Texture* t, float want_scale = 1.0f) {
     if (!t || !active()) return nullptr;
-    if (t->gpu) return t->gpu->failed ? nullptr : t->gpu;
+    if (t->gpu) {
+#if defined(NXRT_TARGET_PS5)
+        if (!t->gpu->failed) check_texture_snapshot(t);
+#endif
+        return t->gpu->failed ? nullptr : t->gpu;
+    }
     if (Ref<Texture> alias = texture_registry_find_alias(t)) {
         TexGpu* ag = alias->gpu;
         if (ag && !ag->failed) {
@@ -644,7 +652,12 @@ TexGpu* tex_or_null(Texture* t, float want_scale = 1.0f) {
             // object); what the image holds is as current for this object as for the one it was made for
             t->gpu = ag;
             ++ag->refs;
+#if defined(NXRT_TARGET_PS5)
+            if (ag->uploaded || ag->gpu_written) t->cpu_dirty.store(alias->cpu_dirty.load());
+            check_texture_snapshot(t);
+#else
             if (ag->uploaded || ag->gpu_written) t->cpu_dirty.store(false);
+#endif
             static int logged = 0;
             if (logged++ < 20) NXLOG_I(kTag, "texture %u shares the image of texture %u (the same storage)", t->id, alias->id);
             return ag;
@@ -1208,6 +1221,34 @@ namespace {
 mem::ww::Region* g_tex_ww = nullptr;
 bool g_tex_ww_tried = false;
 std::vector<uint64_t> g_tex_ww_pages;
+#if defined(NXRT_TARGET_PS5)
+uint64_t g_snapshot_submission = 1;
+bool snapshots_on_use() {
+    static const bool enabled = config_get_bool("nvn", "tex_snapshot_on_use", true);
+    return enabled;
+}
+void check_texture_snapshot(Texture* t, bool force) {
+    if (!snapshots_on_use() || !g_tex_ww || !t->cpu_coherent || !t->mem || !t->storage_size ||
+        (!force && t->snapshot_checked_submission == g_snapshot_submission)) return;
+    const uint64_t base = mem::ww::region_base(g_tex_ww), address = reinterpret_cast<uint64_t>(t->mem);
+    const uint64_t bytes = mem::ww::region_pages(g_tex_ww) * 4096;
+    if (address < base || address - base >= bytes || t->storage_size > bytes - (address - base)) return;
+    const uint64_t first = (address - base) / 4096;
+    const uint64_t last = (address - base + t->storage_size - 1) / 4096;
+    std::vector<uint64_t> changed;
+    mem::ww::take_written_range(g_tex_ww, first, last - first + 1, changed);
+    t->snapshot_checked_submission = g_snapshot_submission;
+    // Notify every overlapping texture, including aliases of the current one.
+    // Unused textures keep their snapshots until they are actually consumed.
+    for (size_t i = 0; i < changed.size();) {
+        size_t j = i + 1;
+        while (j < changed.size() && changed[j] == changed[j - 1] + 1) ++j;
+        textures_cpu_wrote(reinterpret_cast<const void*>(base + changed[i] * 4096),
+                           (changed[j - 1] - changed[i] + 1) * 4096);
+        i = j;
+    }
+}
+#endif
 
 mem::ww::Region* tex_ww() {
     if (!g_tex_ww_tried) {
@@ -1445,6 +1486,13 @@ bool tex_rescale(Texture* t, Frame& f, float to, const char* why) {
 }
 
 void tex_poll_cpu_writes() {
+#if defined(NXRT_TARGET_PS5)
+    // Snapshot scanning is proportional to bytes, unlike the Windows dirty-bit
+    // tracker. Check only textures used by this submission, before the replay
+    // reads their dirty flags or records an upload, copy or attachment use.
+    ++g_snapshot_submission;
+    if (snapshots_on_use()) return;
+#endif
     if (!g_tex_ww) return;
     g_tex_ww_pages.clear();
     mem::ww::take_written(g_tex_ww, g_tex_ww_pages);
@@ -2394,6 +2442,10 @@ bool download_texture(Texture* t) {
     finish();   // earlier submissions must be done before the copy reads the image
     gfx::Buffer rb;
     run_frame_sync([&](Frame& f) {
+#if defined(NXRT_TARGET_PS5)
+        check_texture_snapshot(t, true);
+        if (t->cpu_dirty.load()) return; // Never overwrite newer CPU storage.
+#endif
         if (device().create_buffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, gfx::MemoryUse::Readback, &rb, "nvn texture readback") != VK_SUCCESS)
             return;
         const VkImageLayout prev = g->layout;

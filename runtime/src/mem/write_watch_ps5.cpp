@@ -67,13 +67,20 @@ void invalidate(Region* r, uint64_t first, uint64_t count) {
     if (!range(r, first, count)) return;
     for (auto it = r->watched.lower_bound(first); it != r->watched.end() && it->first < first + count; ++it) it->second.valid = false;
 }
-void take_written(Region* r, std::vector<uint64_t>& out) {
-    std::lock_guard lock(mu); if (!r) return;
-    for (auto it = r->watched.begin(); it != r->watched.end();) {
+void take_written_range(Region* r, uint64_t first, uint64_t count, std::vector<uint64_t>& out) {
+    std::lock_guard lock(mu);
+    if (!range(r, first, count)) return;
+    const auto end = first + count;
+    for (auto it = r->watched.lower_bound(first); it != r->watched.end() && it->first < end;) {
         if (!same(r, it->first, it->second)) { r->written.insert(it->first); it = r->watched.erase(it); }
         else ++it;
     }
-    out.insert(out.end(), r->written.begin(), r->written.end()); r->written.clear();
+    const auto begin = r->written.lower_bound(first), stop = r->written.lower_bound(end);
+    out.insert(out.end(), begin, stop);
+    r->written.erase(begin, stop);
+}
+void take_written(Region* r, std::vector<uint64_t>& out) {
+    if (r) take_written_range(r, 0, r->pages, out);
 }
 void forget(uint64_t addr, uint64_t size, bool) {
     if (!size || size > UINT64_MAX - addr) return;
