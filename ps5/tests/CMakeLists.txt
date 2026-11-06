@@ -21,7 +21,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/../exceptions.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../kernel.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../svc.cmake")
 set(platform_test_sources sync_main.cpp "${root}/runtime/tests/test_sync.cpp"
-    "${root}/runtime/tests/test_log_config.cpp" test_host_vm.cpp test_subpage.cpp test_host_thread.cpp)
+    "${root}/runtime/tests/test_log_config.cpp" test_host_vm.cpp test_subpage.cpp test_host_thread.cpp test_page_compare.cpp)
 add_executable(ps5_sync_tests ${platform_test_sources} "${CMAKE_CURRENT_LIST_DIR}/../app/thread_exit.cpp")
 target_link_options(ps5_sync_tests PRIVATE "LINKER:--wrap,pthread_create")
 add_executable(ps5_memory_capabilities memory_capabilities.cpp)

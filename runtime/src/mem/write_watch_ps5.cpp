@@ -4,6 +4,7 @@
 // disabled on this backend; imported UMA pools retain the original storage.
 #include "nxrt/write_watch.h"
 #include "nxrt/memory.h"
+#include "nxrt/page_compare.h"
 #include <algorithm>
 #include <array>
 #include <map>
@@ -25,7 +26,8 @@ bool range(const Region* r, uint64_t first, uint64_t count) {
 }
 bool same(const Region* r, uint64_t n, const Region::Page& p) {
     std::array<uint8_t, 4096> current;
-    return p.valid && copy_readable(r->base + n * 4096, current.data(), current.size()) && current == p.bytes;
+    return p.valid && copy_readable(r->base + n * 4096, current.data(), current.size()) &&
+           page_equal(current.data(), p.bytes.data());
 }
 }
 Region* region_create(uint64_t addr, uint64_t size) {
