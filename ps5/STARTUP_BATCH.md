@@ -412,7 +412,7 @@ remain private. The owned transfer helper and its payload slot were removed,
 and FTP port 2121 was verified closed. No automatic app launch occurred; the
 expanded-cache integration run remains pending.
 
-## Reproducing component checks
+## First-render startup batch
 
 The subsequent private report `game-native-1793931637-134.log` reaches
 presentation calls 2 and 3 and background texture preparation around 1,124
@@ -426,6 +426,17 @@ The last renderer message exposes a separate clear-path error: stencil mask
 bits. The renderer now normalizes the mask to eight bits before deciding
 between an attachment clear and a masked draw. The native app builds locally;
 this correction is not yet console-verified or established as the crash fix.
+
+The combined update is installed with full readback verification: 7,294 shader
+blocks plus metadata and the app from `f441e32`, SHA-256
+`27918d3e392960f42ec9a8bbf97e955469f436e8d9e02f0777083f2bd02354f0`.
+The previous cache and executable and matching symbols remain private. Five
+host cache checks pass. The owned transfer helper was removed after installation.
+The next run should capture the kernel log during startup: the retained ring
+buffer from the previous failure did not contain the fault. No automatic launch
+occurred, and rendering/gameplay validation remains pending.
+
+## Reproducing component checks
 
 The host checks contain synthetic inputs and need no game data:
 
