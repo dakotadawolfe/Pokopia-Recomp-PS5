@@ -164,6 +164,9 @@ int main() {
         return (std::strcmp(a.group, "game_images") != 0) > (std::strcmp(b.group, "game_images") != 0);
     });
 #endif
+#ifdef NXRT_GAME_RENDER_NATIVE
+    nxrt::ps5_graphics::prepare_capture_storage();
+#endif
     for (const auto& test : nxtest::cases()) {
 #ifdef NXRT_GAME_EH
         if (!std::strcmp(test.group, "game_images")) {

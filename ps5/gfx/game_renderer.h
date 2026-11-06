@@ -4,6 +4,7 @@
 namespace nxrt::ps5_graphics {
 // Owns the native renderer for the bounded game-startup diagnostic.
 bool open_picker();
+void prepare_capture_storage(); // consumes an explicit request to remove old diagnostic captures
 bool startup_status(std::string_view message); // loader thread, before guest dispatch
 bool install_game_bridge(); // mapped/registered/protected game modules required
 void report();

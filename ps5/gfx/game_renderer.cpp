@@ -33,6 +33,8 @@
 #include <ctime>
 #include <vector>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <ps5platform/heap.h>
 
@@ -54,11 +56,21 @@ std::atomic<uint64_t> presents{0};
 std::string selected_folder;
 std::chrono::steady_clock::time_point loading_started;
 std::atomic<uint64_t> loading_views{0};
+bool consume_request(const char* path) {
+    FILE* request = std::fopen(path, "rb");
+    if (!request) return false;
+    char token[32]{};
+    const auto length = std::fread(token, 1, sizeof token, request);
+    const bool valid = !std::ferror(request) && length == 10 && std::memcmp(token, "PPSA98732\n", 10) == 0;
+    std::fclose(request);
+    return unlink(path) == 0 && valid;
+}
 // Three bounded, title-owned readbacks distinguish an intentionally black
 // guest frame from an image lost between the NVN target and the display.
 std::vector<uint8_t> captured_frame;
 uint32_t capture_width = 0, capture_height = 0;
 uint64_t capture_number = 0;
+unsigned requested_captures = 0;
 void capture_frame(uint64_t number) {
     if (capture_number && !renderer->capture_pending()) {
         const uint64_t bytes = uint64_t(capture_width) * capture_height * 4;
@@ -71,15 +83,28 @@ void capture_frame(uint64_t number) {
                 colored += value != 0;
             }
             char path[200];
-            std::snprintf(path, sizeof path, "/download0/pokopia-frame-capture/%lld-%d-%llu.pam",
-                static_cast<long long>(std::time(nullptr)), int(getpid()), static_cast<unsigned long long>(capture_number));
+            const unsigned slot = capture_number == 3 ? 0 : capture_number == 120 ? 1 : capture_number == 600 ? 2 : 3;
+            std::snprintf(path, sizeof path, "/download0/pokopia-frame-capture/capture-%u.pam", slot);
             bool saved = false;
             if (mkdir("/download0/pokopia-frame-capture", 0755) == 0 || errno == EEXIST) {
                 if (FILE* out = std::fopen(path, "wb")) {
-                    saved = std::fprintf(out, "P7\nWIDTH %u\nHEIGHT %u\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n",
-                        capture_width, capture_height) > 0;
-                    saved = saved && std::fwrite(captured_frame.data(), 1, captured_frame.size(), out) == captured_frame.size();
+                    // Keep four files below 25 MiB in total, leaving the title's
+                    // small download volume available for its save journal.
+                    const uint32_t step = std::max((capture_width + 1919) / 1920, (capture_height + 1079) / 1080);
+                    const uint32_t width = (capture_width + step - 1) / step;
+                    const uint32_t height = (capture_height + step - 1) / step;
+                    saved = std::fprintf(out, "P7\nWIDTH %u\nHEIGHT %u\nDEPTH 3\nMAXVAL 255\nTUPLTYPE RGB\nENDHDR\n",
+                        width, height) > 0;
+                    std::vector<uint8_t> row(size_t(width) * 3);
+                    for (uint32_t y = 0; saved && y < height; ++y) {
+                        for (uint32_t x = 0; x < width; ++x) {
+                            const auto source = (size_t(y * step) * capture_width + x * step) * 4;
+                            std::memcpy(row.data() + size_t(x) * 3, captured_frame.data() + source, 3);
+                        }
+                        saved = std::fwrite(row.data(), 1, row.size(), out) == row.size();
+                    }
                     saved = std::fclose(out) == 0 && saved;
+                    if (!saved) unlink(path);
                 }
             }
             std::printf("GAME_FRAME_PIXELS frame=%llu width=%u height=%u colored_pixels=%llu max_rgb=%u saved=%d path=%s\n",
@@ -91,7 +116,13 @@ void capture_frame(uint64_t number) {
         captured_frame.clear();
         capture_number = 0;
     }
-    if ((number == 3 || number == 120 || number == 600) && !renderer->capture_pending()) {
+    bool requested = false;
+    if (number % 60 == 0 && requested_captures < 3 && !renderer->capture_pending()) {
+        constexpr const char* request_path = "/data/pokopia-recomp/tests/pokopia-capture-once";
+        requested = consume_request(request_path);
+        if (requested) ++requested_captures;
+    }
+    if ((number == 3 || number == 120 || number == 600 || requested) && !renderer->capture_pending()) {
         capture_number = number;
         capture_width = capture_height = 0;
         renderer->capture_next_frame(&captured_frame, &capture_width, &capture_height);
@@ -235,6 +266,42 @@ void frame() {
     capture_frame(n);
     if (n <= 3 || n % 60 == 0) std::printf("GAME_NVN_PRESENT n=%llu\n", static_cast<unsigned long long>(n));
 }
+}
+
+void prepare_capture_storage() {
+    if (!consume_request("/data/pokopia-recomp/tests/pokopia-clear-captures")) return;
+    const char* directory = "/download0/pokopia-frame-capture";
+    DIR* entries = opendir(directory);
+    if (!entries) {
+        std::printf("GAME_CAPTURE_CLEANUP open_failed=true errno=%d\n", errno);
+        return;
+    }
+    unsigned removed = 0, failed = 0, inspected = 0, matched = 0;
+    while (auto* entry = readdir(entries)) {
+        ++inspected;
+        unsigned long long stamp = 0, frame = 0;
+        unsigned pid = 0;
+        int length = 0;
+        if (std::sscanf(entry->d_name, "%llu-%u-%llu.pam%n", &stamp, &pid, &frame, &length) != 3 ||
+            length != int(std::strlen(entry->d_name)) || !stamp || !pid ||
+            (frame != 3 && frame != 120 && frame != 600)) continue;
+        ++matched;
+        char path[512];
+        const int written = std::snprintf(path, sizeof path, "%s/%s", directory, entry->d_name);
+        if (written < 0 || size_t(written) >= sizeof path) { ++failed; continue; }
+        // The native app sandbox denies lstat. Like the folder picker, inspect
+        // an opened descriptor without following links instead.
+        const int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+        if (fd < 0) { ++failed; continue; }
+        struct stat status{};
+        const int metadata_result = fstat(fd, &status);
+        const int close_result = close(fd);
+        if (metadata_result || close_result || !S_ISREG(status.st_mode)) { ++failed; continue; }
+        if (unlink(path) == 0) ++removed;
+        else ++failed;
+    }
+    closedir(entries);
+    std::printf("GAME_CAPTURE_CLEANUP removed=%u failed=%u inspected=%u matched=%u\n", removed, failed, inspected, matched);
 }
 
 bool open_picker() {
